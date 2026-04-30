@@ -28,7 +28,7 @@ type ForensicSink interface {
 
 // Store wraps Redis for all gateway state.
 type Store struct {
-	client      *redis.Client
+	client       *redis.Client
 	forensicSink ForensicSink
 }
 
@@ -172,9 +172,9 @@ func (s *Store) CalcBehaviorScore(ctx context.Context, ip string, threshold int)
 
 	// Score components
 	reqScore := int(min64(reqs/5, 30))      // High request volume
-	errScore := int(min64(errs*3, 30))       // Error ratio
-	entropyScore := int(min64(paths/3, 20))  // Path scanning
-	burstBonus := int(min64(burst*5, 20))    // Burst activity
+	errScore := int(min64(errs*3, 30))      // Error ratio
+	entropyScore := int(min64(paths/3, 20)) // Path scanning
+	burstBonus := int(min64(burst*5, 20))   // Burst activity
 
 	total := min(reqScore+errScore+entropyScore+burstBonus+int(penalty), 100)
 
@@ -185,7 +185,7 @@ func (s *Store) CalcBehaviorScore(ctx context.Context, ip string, threshold int)
 // IncrBehaviorScore adds penalty points to an IP's risk score.
 func (s *Store) IncrBehaviorScore(ctx context.Context, ip string, points int) {
 	key := "gw:behavior:" + ip + ":penalty"
-	s.client.IncrBy(ctx, key, int64(points)) //nolint:errcheck
+	s.client.IncrBy(ctx, key, int64(points))  //nolint:errcheck
 	s.client.Expire(ctx, key, 60*time.Second) //nolint:errcheck
 }
 
@@ -195,7 +195,7 @@ func (s *Store) IncrBehaviorScore(ctx context.Context, ip string, points int) {
 // Returns true if the IP has used too many different fingerprints.
 func (s *Store) CheckJA3Consistency(ctx context.Context, ip, ja3 string) (bool, error) {
 	key := "gw:ja3:" + ip
-	s.client.SAdd(ctx, key, ja3)       //nolint:errcheck
+	s.client.SAdd(ctx, key, ja3)             //nolint:errcheck
 	s.client.Expire(ctx, key, 5*time.Minute) //nolint:errcheck
 	count, err := s.client.SCard(ctx, key).Result()
 	if err != nil {
@@ -319,7 +319,7 @@ func (s *Store) PushForensic(ctx context.Context, e ForensicEntry) {
 	data := fmt.Sprintf("%s|%s|%s|%s|%s|%d",
 		e.Timestamp.Format(time.RFC3339),
 		e.IP, e.Path, e.Method, e.Reason, e.Code)
-	s.client.LPush(ctx, keyForensic, data) //nolint:errcheck
+	s.client.LPush(ctx, keyForensic, data)   //nolint:errcheck
 	s.client.LTrim(ctx, keyForensic, 0, 999) //nolint:errcheck
 
 	// Also persist to PostgreSQL if configured

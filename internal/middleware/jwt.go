@@ -19,11 +19,11 @@ import (
 // JWTAuth validates JWT tokens and propagates identity downstream.
 // Supports both HMAC (shared secret) and RSA/ECDSA (JWKS URL) validation.
 type JWTAuth struct {
-	cfg     config.AuthConfig
-	log     Logger
-	st      Store
-	jwks    keyfunc.Keyfunc
-	jwksMu  sync.RWMutex
+	cfg    config.AuthConfig
+	log    Logger
+	st     Store
+	jwks   keyfunc.Keyfunc
+	jwksMu sync.RWMutex
 }
 
 // NewJWTAuth creates a new JWT authentication middleware instance.

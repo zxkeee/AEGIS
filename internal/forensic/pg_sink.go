@@ -21,11 +21,11 @@ type Logger interface {
 
 // PGSink writes forensic log entries to PostgreSQL in buffered batches.
 type PGSink struct {
-	db     *sql.DB
-	log    Logger
-	ch     chan store.ForensicEntry
-	wg     sync.WaitGroup
-	quit   chan struct{}
+	db   *sql.DB
+	log  Logger
+	ch   chan store.ForensicEntry
+	wg   sync.WaitGroup
+	quit chan struct{}
 }
 
 const createTableSQL = `

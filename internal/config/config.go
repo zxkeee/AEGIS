@@ -9,17 +9,17 @@ import (
 
 // GatewayConfig is the root configuration.
 type GatewayConfig struct {
-	Listen      string          `yaml:"listen"`
-	AdminListen string          `yaml:"admin_listen"`
-	AdminAuth   bool            `yaml:"admin_auth"`
-	AdminSecret string          `yaml:"admin_secret"`
-	ForensicDSN string          `yaml:"forensic_dsn"` // PostgreSQL DSN for persistent forensic logs
-	TLS         TLSConfig       `yaml:"tls"`
-	Security    SecurityConfig  `yaml:"security"`
-	Routes      []RouteConfig   `yaml:"routes"`
-	Registry    RegistryConfig  `yaml:"registry"`
-	Redis       RedisConfig     `yaml:"redis"`
-	Logging     LoggingConfig   `yaml:"logging"`
+	Listen      string         `yaml:"listen"`
+	AdminListen string         `yaml:"admin_listen"`
+	AdminAuth   bool           `yaml:"admin_auth"`
+	AdminSecret string         `yaml:"admin_secret"`
+	ForensicDSN string         `yaml:"forensic_dsn"` // PostgreSQL DSN for persistent forensic logs
+	TLS         TLSConfig      `yaml:"tls"`
+	Security    SecurityConfig `yaml:"security"`
+	Routes      []RouteConfig  `yaml:"routes"`
+	Registry    RegistryConfig `yaml:"registry"`
+	Redis       RedisConfig    `yaml:"redis"`
+	Logging     LoggingConfig  `yaml:"logging"`
 }
 
 type TLSConfig struct {
@@ -29,17 +29,17 @@ type TLSConfig struct {
 }
 
 type SecurityConfig struct {
-	RateLimit   RateLimitConfig   `yaml:"rate_limit"`
-	Auth        AuthConfig        `yaml:"auth"`
-	WAF         WAFConfig         `yaml:"waf"`
-	Bot         BotConfig         `yaml:"bot"`
-	Behavior    BehaviorConfig    `yaml:"behavior"`
-	IPGuard     IPGuardConfig     `yaml:"ip_guard"`
-	DLP         DLPConfig         `yaml:"dlp"`
-	CORS        CORSConfig        `yaml:"cors"`
-	Challenge   ChallengeConfig   `yaml:"challenge"`
-	Inventory   APIInventoryConfig `yaml:"api_inventory"`
-	ThreatFeed  ThreatFeedConfig  `yaml:"threat_feed"`
+	RateLimit  RateLimitConfig    `yaml:"rate_limit"`
+	Auth       AuthConfig         `yaml:"auth"`
+	WAF        WAFConfig          `yaml:"waf"`
+	Bot        BotConfig          `yaml:"bot"`
+	Behavior   BehaviorConfig     `yaml:"behavior"`
+	IPGuard    IPGuardConfig      `yaml:"ip_guard"`
+	DLP        DLPConfig          `yaml:"dlp"`
+	CORS       CORSConfig         `yaml:"cors"`
+	Challenge  ChallengeConfig    `yaml:"challenge"`
+	Inventory  APIInventoryConfig `yaml:"api_inventory"`
+	ThreatFeed ThreatFeedConfig   `yaml:"threat_feed"`
 }
 
 type RateLimitConfig struct {
@@ -68,11 +68,11 @@ type WAFConfig struct {
 type BotConfig struct {
 	Enabled       bool     `yaml:"enabled"`
 	BlockedJA3    []string `yaml:"blocked_ja3"`
-	ChallengeMode bool    `yaml:"challenge_mode"`
+	ChallengeMode bool     `yaml:"challenge_mode"`
 }
 
 type BehaviorConfig struct {
-	Enabled       bool `yaml:"enabled"`
+	Enabled        bool `yaml:"enabled"`
 	ScoreThreshold int  `yaml:"score_threshold"`
 	WindowSeconds  int  `yaml:"window_seconds"`
 }
@@ -90,11 +90,11 @@ type DLPConfig struct {
 }
 
 type CORSConfig struct {
-	Enabled        bool     `yaml:"enabled"`
-	AllowOrigins   []string `yaml:"allow_origins"`
-	AllowMethods   []string `yaml:"allow_methods"`
-	AllowHeaders   []string `yaml:"allow_headers"`
-	MaxAge         int      `yaml:"max_age"`
+	Enabled      bool     `yaml:"enabled"`
+	AllowOrigins []string `yaml:"allow_origins"`
+	AllowMethods []string `yaml:"allow_methods"`
+	AllowHeaders []string `yaml:"allow_headers"`
+	MaxAge       int      `yaml:"max_age"`
 }
 
 type ChallengeConfig struct {
@@ -104,8 +104,8 @@ type ChallengeConfig struct {
 }
 
 type APIInventoryConfig struct {
-	Enabled     bool `yaml:"enabled"`
-	AlertOnNew  bool `yaml:"alert_on_new"`
+	Enabled    bool `yaml:"enabled"`
+	AlertOnNew bool `yaml:"alert_on_new"`
 }
 
 type ThreatFeedConfig struct {

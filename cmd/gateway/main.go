@@ -91,13 +91,13 @@ func main() {
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
-		ReadHeaderTimeout: 5 * time.Second,              // ARCH: prevent slowloris
-		MaxHeaderBytes:    1 << 20,                       // 1MB max header
+		ReadHeaderTimeout: 5 * time.Second, // ARCH: prevent slowloris
+		MaxHeaderBytes:    1 << 20,         // 1MB max header
 	}
 
 	// ── Admin API Server ──────────────────────────────────────────────────────
 	adminSrv := api.NewServer(st, log, cfg, gw, alerts)
-	
+
 	// FIX SEC: Protect admin API against brute force and DDoS
 	adminRateLimit := config.RateLimitConfig{
 		Enabled:    true,
@@ -175,9 +175,9 @@ func buildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st *store.S
 
 	// Assemble middleware chain (order matters: outermost first)
 	handler := middleware.Chain(gw,
-		middleware.CleanHeaders(),                                     // SEC: Strip spoofed X-Gateway-* headers
-		middleware.SecurityHeaders(),                                  // ARCH-6: Security headers on every response
-		middleware.RequestID(),                                        // ARCH-4: Request ID for log correlation
+		middleware.CleanHeaders(),    // SEC: Strip spoofed X-Gateway-* headers
+		middleware.SecurityHeaders(), // ARCH-6: Security headers on every response
+		middleware.RequestID(),       // ARCH-4: Request ID for log correlation
 		middleware.CORS(cfg.Security.CORS),
 		middleware.IPGuard(cfg.Security.IPGuard, log, st),
 		middleware.ThreatFeed(cfg.Security.ThreatFeed, log, st),
@@ -265,7 +265,7 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 			}
 			debounce = time.AfterFunc(500*time.Millisecond, reload)
 
-		 case err, ok := <-watcher.Errors:
+		case err, ok := <-watcher.Errors:
 			if !ok {
 				return
 			}

@@ -10,7 +10,7 @@ import (
 func main() {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		
+
 		// Логгируем, что бекенд получил запрос
 		fmt.Printf("[Backend] Received %s %s\n", r.Method, r.URL.Path)
 

@@ -17,9 +17,9 @@ func DLP(cfg config.DLPConfig, log Logger, st Store) Middleware {
 
 	// Compile PII patterns
 	defaults := []string{
-		`\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b`,                    // Credit cards
-		`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b`,        // Emails
-		`\b\d{3}-\d{2}-\d{4}\b`,                                       // SSN
+		`\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b`,             // Credit cards
+		`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b`, // Emails
+		`\b\d{3}-\d{2}-\d{4}\b`,                               // SSN
 	}
 
 	allPatterns := cfg.Patterns
