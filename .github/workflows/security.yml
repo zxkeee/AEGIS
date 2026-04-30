@@ -12,19 +12,15 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
+          cache: true
 
       - name: Run gosec
-        uses: securego/gosec@master
+        uses: securego/gosec@v2.22.1
         with:
           args: ./...
-
-      - name: Dependabot (automated)
-        # This runs automatically via GitHub Actions
-        # Just ensuring it's enabled in repository settings
-        run: echo "Dependabot checks are enabled"
