@@ -1,0 +1,15 @@
+apiVersion: v2
+name: aegis
+description: AEGIS API Security Gateway — Enterprise API protection with WAF, rate limiting, bot detection, and real-time threat analytics.
+type: application
+version: 1.0.0
+appVersion: "2.1.0"
+keywords:
+  - api-gateway
+  - waf
+  - security
+  - reverse-proxy
+  - rate-limiting
+  - bot-protection
+maintainers:
+  - name: AEGIS Team

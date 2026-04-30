@@ -1,0 +1,1096 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AEGIS // API Protection Console</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:       #0b0d10;
+  --bg2:      #0e1014;
+  --surf:     #111318;
+  --surf2:    #14171d;
+  --line:     #1c2028;
+  --line2:    #252b36;
+
+  --ink:      #c8d0da;
+  --ink2:     #7a8594;
+  --ink3:     #3d4450;
+
+  --amber:    #c9a84c;
+  --amber2:   #8a6e2a;
+  --olive:    #5a7a4a;
+  --red:      #9b3a3a;
+  --red2:     #c94040;
+  --blue:     #3a6080;
+
+  --mono: 'JetBrains Mono', 'Courier New', monospace;
+  --sans: 'Inter', system-ui, sans-serif;
+
+  --r: 3px;
+}
+
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+html, body { height:100%; }
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+svg { display:block; flex-shrink:0; }
+a { text-decoration:none; color:inherit; }
+button { cursor:pointer; font-family:var(--sans); }
+input { font-family:var(--mono); }
+
+::-webkit-scrollbar { width:3px; height:3px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:var(--line2); }
+
+/* ─── Login ─── */
+#login {
+  position:fixed; inset:0; z-index:99;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--bg);
+}
+.lbox {
+  width:320px;
+  border:1px solid var(--line2);
+  background:var(--surf);
+}
+.lbox-head {
+  padding:20px 24px 16px;
+  border-bottom:1px solid var(--line);
+  display:flex; align-items:center; gap:10px;
+}
+.lbox-head svg { color:var(--amber); }
+.lbox-head-text .t1 { font-size:12px; font-weight:600; letter-spacing:2px; text-transform:uppercase; color:var(--ink); }
+.lbox-head-text .t2 { font-size:10px; color:var(--ink3); letter-spacing:.5px; text-transform:uppercase; margin-top:1px; }
+.lbox-body { padding:24px; }
+.lbox-body label { display:block; font-size:10px; letter-spacing:1.2px; text-transform:uppercase; color:var(--ink3); margin-bottom:6px; }
+.lbox-body input {
+  width:100%; background:var(--bg);
+  border:1px solid var(--line2); color:var(--ink);
+  padding:9px 12px; font-size:12px;
+  outline:none; border-radius:var(--r);
+  transition:border-color .15s;
+}
+.lbox-body input:focus { border-color:var(--amber2); }
+.lbtn {
+  margin-top:16px; width:100%;
+  background:var(--amber); color:var(--bg);
+  border:none; padding:9px 16px;
+  font-size:11px; font-weight:600;
+  letter-spacing:1.5px; text-transform:uppercase;
+  border-radius:var(--r);
+  transition:background .15s;
+}
+.lbtn:hover { background:#d4ad56; }
+.lerr { margin-top:12px; font-size:11px; color:var(--red2); font-family:var(--mono); display:none; }
+
+/* ─── Shell ─── */
+.app { display:none; height:100vh; }
+.app.show { display:grid; grid-template-columns:200px 1fr; grid-template-rows:auto 1fr; }
+
+/* ─── Header ─── */
+.hd {
+  grid-column:1/-1;
+  background:var(--bg2);
+  border-bottom:1px solid var(--line);
+  display:flex; align-items:stretch;
+  height:44px;
+}
+.hd-logo {
+  width:200px; flex-shrink:0;
+  border-right:1px solid var(--line);
+  display:flex; align-items:center; gap:9px;
+  padding:0 16px;
+}
+.hd-logo svg { color:var(--amber); }
+.hd-logo .wordmark {
+  font-family:var(--mono); font-size:12px; font-weight:600;
+  letter-spacing:3px; text-transform:uppercase; color:var(--ink);
+}
+.hd-logo .wordmark em { color:var(--amber); font-style:normal; }
+.hd-center {
+  flex:1; display:flex; align-items:center;
+  padding:0 20px; gap:20px;
+}
+.hd-breadcrumb {
+  font-size:11px; color:var(--ink3); letter-spacing:.5px;
+  text-transform:uppercase; display:flex; align-items:center; gap:8px;
+}
+.hd-breadcrumb span { color:var(--ink2); }
+.hd-right {
+  display:flex; align-items:center; gap:0;
+  border-left:1px solid var(--line);
+}
+.hd-cell {
+  padding:0 16px; height:100%;
+  display:flex; align-items:center; gap:8px;
+  border-right:1px solid var(--line);
+  font-size:11px; color:var(--ink3); font-family:var(--mono);
+  white-space:nowrap;
+}
+.hd-cell.status-ok { color:var(--olive); }
+.hd-cell.status-bad { color:var(--red2); }
+.hd-cell .dot { width:5px; height:5px; border-radius:50%; background:currentColor; flex-shrink:0; }
+.hd-cell.clickable { cursor:pointer; transition:background .15s; }
+.hd-cell.clickable:hover { background:var(--surf); color:var(--red2); }
+
+/* ─── Sidebar ─── */
+.sb {
+  background:var(--bg2);
+  border-right:1px solid var(--line);
+  display:flex; flex-direction:column;
+  overflow:hidden;
+}
+.sb-section { padding:16px 0 4px; }
+.sb-section-label {
+  padding:0 16px 6px;
+  font-size:9px; font-weight:600; letter-spacing:2px;
+  text-transform:uppercase; color:var(--ink3);
+}
+.nav a {
+  display:flex; align-items:center; gap:9px;
+  padding:7px 16px; font-size:12px; color:var(--ink2);
+  border-left:2px solid transparent;
+  transition:color .15s, background .15s, border-color .15s;
+}
+.nav a svg { opacity:.5; }
+.nav a:hover { color:var(--ink); background:var(--surf); }
+.nav a.active {
+  color:var(--amber); border-left-color:var(--amber);
+  background:var(--surf);
+}
+.nav a.active svg { opacity:1; color:var(--amber); }
+.sb-footer {
+  margin-top:auto; padding:12px 16px;
+  border-top:1px solid var(--line);
+  font-size:10px; color:var(--ink3); font-family:var(--mono);
+  display:flex; justify-content:space-between; align-items:center;
+}
+
+/* ─── Main ─── */
+.main {
+  overflow: hidden;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+
+/* ─── Pages ─── */
+.pg {
+  display: none;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 16px 20px;
+  gap: 12px;
+  min-height: 0;
+}
+.pg.active { display: flex; }
+
+/* ─── Metric row ─── */
+.metric-row {
+  display: grid; grid-template-columns: repeat(4,1fr);
+  border: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.metric {
+  padding: 12px 18px;
+  border-right: 1px solid var(--line);
+}
+.metric:last-child { border-right: none; }
+.metric-label {
+  font-size: 9px; font-weight: 600; letter-spacing: 1.5px;
+  text-transform: uppercase; color: var(--ink3); margin-bottom: 6px;
+}
+.metric-value {
+  font-family: var(--mono); font-size: 24px; font-weight: 600;
+  line-height: 1; letter-spacing: -1px;
+}
+.metric-value.amber { color: var(--amber); }
+.metric-value.red   { color: var(--red2); }
+.metric-value.olive { color: var(--olive); }
+.metric-value.ink   { color: var(--ink2); }
+.metric-note { font-size: 10px; color: var(--ink3); margin-top: 5px; font-family: var(--mono); }
+
+/* ─── Row layout ─── */
+.row { display: grid; gap: 12px; flex-shrink: 0; }
+.row.c2   { grid-template-columns: 1fr 1fr; }
+.row.c2-1 { grid-template-columns: 2fr 1fr; }
+.row.c3   { grid-template-columns: repeat(3,1fr); }
+
+/* ─── Flex-fill: block that grows to fill remaining space ─── */
+.fill {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.fill .t-scroll {
+  flex: 1;
+  max-height: none;
+  overflow-y: auto;
+}
+
+/* ─── Analytics layout ─── */
+.pg-analytics-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 12px;
+}
+.pg-analytics-grid .block { display: flex; flex-direction: column; overflow: hidden; }
+.pg-analytics-grid .block-body { flex: 1; min-height: 0; overflow: hidden; }
+.pg-analytics-grid .t-scroll  { max-height: none; flex: 1; overflow-y: auto; }
+
+/* ─── Block ─── */
+.block {
+  border:1px solid var(--line);
+  background:var(--surf);
+}
+.block-head {
+  padding:10px 16px;
+  border-bottom:1px solid var(--line);
+  display:flex; align-items:center; justify-content:space-between;
+  background:var(--surf2);
+}
+.block-head-left { display:flex; align-items:center; gap:8px; }
+.block-title { font-size:11px; font-weight:600; letter-spacing:.5px; text-transform:uppercase; color:var(--ink2); }
+.block-sub { font-size:10px; color:var(--ink3); }
+.badge {
+  font-family:var(--mono); font-size:10px;
+  padding:2px 7px;
+  border:1px solid var(--line2); color:var(--ink3);
+  border-radius:2px;
+}
+.badge.amber { border-color:var(--amber2); color:var(--amber); }
+.badge.red   { border-color:var(--red); color:var(--red2); }
+.badge.olive { border-color:var(--olive); color:var(--olive); }
+.block-body { padding:16px; }
+
+/* ─── Table ─── */
+.t-wrap { overflow-x:auto; }
+.t-scroll { overflow-y:auto; max-height: 260px; }
+table { width:100%; border-collapse:collapse; }
+thead th {
+  padding:7px 14px;
+  font-size:9px; font-weight:600; letter-spacing:1.5px;
+  text-transform:uppercase; color:var(--ink3);
+  border-bottom:1px solid var(--line);
+  text-align:left; white-space:nowrap;
+  background:var(--surf2); position:sticky; top:0;
+}
+tbody td { padding:9px 14px; border-bottom:1px solid var(--line); }
+tbody tr:last-child td { border-bottom:none; }
+tbody tr:hover td { background:var(--surf2); }
+.td-mono { font-family:var(--mono); font-size:11px; }
+.td-dim  { color:var(--ink3); }
+.td-path { color:var(--ink2); font-family:var(--mono); font-size:11px; }
+.td-ip   { color:var(--amber); font-family:var(--mono); font-size:11px; }
+
+/* ─── Tags ─── */
+.tag {
+  display:inline-block;
+  font-family:var(--mono); font-size:9px; font-weight:600;
+  letter-spacing:.8px; text-transform:uppercase;
+  padding:2px 6px; border-radius:2px;
+  border:1px solid;
+}
+.tag-waf  { color:var(--red2);   border-color:var(--red);   background:rgba(155,58,58,.12); }
+.tag-rate { color:#c9a040;        border-color:#7a6020;      background:rgba(201,160,64,.10); }
+.tag-bot  { color:#7a8a9a;        border-color:#3a4a5a;      background:rgba(90,110,130,.10); }
+.tag-auth { color:#6a9acc;        border-color:#2a4a6a;      background:rgba(60,90,140,.10); }
+.tag-ok   { color:var(--olive);   border-color:#2a4a20;      background:rgba(90,122,74,.10); }
+.tag-ip   { color:var(--ink2);    border-color:var(--line2); background:transparent; }
+
+.method {
+  font-family:var(--mono); font-size:9px; font-weight:600;
+  letter-spacing:.5px;
+  padding:2px 6px; border-radius:2px;
+}
+.m-get  { color:#5a9a6a; background:rgba(90,154,106,.10); }
+.m-post { color:#6a90c0; background:rgba(106,144,192,.10); }
+.m-put  { color:#c0a050; background:rgba(192,160,80,.10); }
+.m-del  { color:var(--red2); background:rgba(155,58,58,.10); }
+.m-pat  { color:#8a70b0; background:rgba(138,112,176,.10); }
+
+/* ─── Canvas ─── */
+.chart-wrap { position:relative; }
+canvas { background: var(--bg); display:block; }
+
+/* ─── Donut ─── */
+.donut-layout {
+  display:flex; align-items:center; gap:24px;
+}
+.donut-legend { display:flex; flex-direction:column; gap:9px; flex:1; }
+.dl-row { display:flex; align-items:center; gap:8px; font-size:11px; }
+.dl-sq { width:8px; height:8px; flex-shrink:0; }
+.dl-label { color:var(--ink2); flex:1; font-family:var(--mono); font-size:10px; }
+.dl-val { font-family:var(--mono); font-size:11px; color:var(--ink); }
+.dl-pct { font-family:var(--mono); font-size:9px; color:var(--ink3); }
+
+/* ─── Bar: threat breakdown ─── */
+.bar-row { display:flex; align-items:center; gap:12px; padding:7px 0; border-bottom:1px solid var(--line); }
+.bar-row:last-child { border-bottom:none; }
+.bar-row-label { font-family:var(--mono); font-size:10px; color:var(--ink2); width:80px; flex-shrink:0; text-transform:uppercase; letter-spacing:.5px; }
+.bar-track { flex:1; height:3px; background:var(--line2); }
+.bar-fill { height:100%; }
+.bar-count { font-family:var(--mono); font-size:11px; color:var(--ink); width:36px; text-align:right; flex-shrink:0; }
+
+/* ─── IP form ─── */
+.ip-form {
+  display:flex; gap:8px;
+  padding:12px 16px; border-bottom:1px solid var(--line);
+  background:var(--surf2);
+}
+.ip-form input {
+  flex:1; background:var(--bg);
+  border:1px solid var(--line2);
+  color:var(--ink); padding:7px 12px; font-size:12px;
+  outline:none; border-radius:var(--r);
+  transition:border-color .15s;
+}
+.ip-form input:focus { border-color:var(--amber2); }
+.btn {
+  background:var(--surf2); color:var(--ink2);
+  border:1px solid var(--line2); padding:6px 14px;
+  font-size:11px; font-weight:500; letter-spacing:.5px;
+  border-radius:var(--r); transition:all .15s;
+}
+.btn:hover { border-color:var(--amber2); color:var(--amber); }
+.btn-primary { background:var(--amber); color:var(--bg); border-color:var(--amber); color:#000; font-weight:600; letter-spacing:1px; text-transform:uppercase; font-size:10px; }
+.btn-primary:hover { background:#d4ad56; border-color:#d4ad56; color:#000; }
+.btn-del { }
+.btn-del:hover { border-color:var(--red); color:var(--red2); background:rgba(155,58,58,.08); }
+
+/* ─── Geo ─── */
+.geo-row {
+  display:flex; align-items:center; gap:12px;
+  padding:8px 16px; border-bottom:1px solid var(--line);
+}
+.geo-row:last-child { border-bottom:none; }
+.geo-flag { width:22px; text-align:center; font-size:16px; }
+.geo-cc { font-family:var(--mono); font-size:10px; color:var(--ink3); width:28px; }
+.geo-bar-outer { flex:1; height:2px; background:var(--line2); }
+.geo-bar-inner { height:100%; background:var(--amber); }
+.geo-n { font-family:var(--mono); font-size:11px; color:var(--ink); width:36px; text-align:right; }
+
+/* ─── Config ─── */
+.code { padding:16px; font-family:var(--mono); font-size:11px; color:var(--ink2); white-space:pre-wrap; line-height:1.8; overflow-y:auto; max-height:420px; }
+
+/* ─── Key cards ─── */
+.key-grid { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); }
+.key-card {
+  background:var(--surf); padding:16px;
+  border-left:2px solid transparent;
+}
+.key-card.on  { border-left-color:var(--olive); }
+.key-card.off { border-left-color:var(--line2); opacity:.6; }
+.key-name { font-size:12px; font-weight:600; color:var(--ink); margin-bottom:4px; }
+.key-hash { font-family:var(--mono); font-size:10px; color:var(--ink3); margin-bottom:10px; word-break:break-all; }
+.key-meta { display:flex; gap:16px; }
+.key-meta-item { font-size:10px; color:var(--ink3); font-family:var(--mono); }
+.key-meta-item b { color:var(--ink2); font-weight:400; }
+
+/* ─── Empty ─── */
+.empty { padding:40px; text-align:center; color:var(--ink3); font-size:11px; font-family:var(--mono); letter-spacing:.5px; }
+</style>
+</head>
+<body>
+
+<!-- Login -->
+<div id="login">
+  <div class="lbox">
+    <div class="lbox-head">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      </svg>
+      <div class="lbox-head-text">
+        <div class="t1">AEGIS</div>
+        <div class="t2">API Protection Console</div>
+      </div>
+    </div>
+    <div class="lbox-body">
+      <label>Authentication Secret</label>
+      <input type="password" id="ak" placeholder="••••••••••••••••••••••" onkeypress="if(event.key==='Enter')login()">
+      <button class="lbtn" onclick="login()">Authenticate</button>
+      <div id="lerr" class="lerr">ERR: Invalid credentials. Access denied.</div>
+    </div>
+  </div>
+</div>
+
+<!-- App -->
+<div class="app" id="app">
+
+  <!-- Header -->
+  <header class="hd">
+    <div class="hd-logo">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      </svg>
+      <div class="wordmark">AE<em>GIS</em></div>
+    </div>
+    <div class="hd-center">
+      <div class="hd-breadcrumb">
+        <span>Console</span> / <span id="bc-page">Overview</span>
+      </div>
+    </div>
+    <div class="hd-right">
+      <div class="hd-cell" id="clock-cell">--:--:--</div>
+      <div class="hd-cell" id="status-cell">
+        <span class="dot"></span>
+        <span id="status-text">…</span>
+      </div>
+      <div class="hd-cell clickable" onclick="logout()">Sign Out</div>
+    </div>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="sb">
+    <nav class="nav">
+      <div class="sb-section">
+        <div class="sb-section-label">Monitor</div>
+        <a href="#" data-tab="overview" class="active">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+          Overview
+        </a>
+        <a href="#" data-tab="threats">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          Threat Feed
+        </a>
+        <a href="#" data-tab="analytics">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          Analytics
+        </a>
+      </div>
+      <div class="sb-section">
+        <div class="sb-section-label">Manage</div>
+        <a href="#" data-tab="keys">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          API Keys
+        </a>
+        <a href="#" data-tab="access">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+          Access Control
+        </a>
+        <a href="#" data-tab="inventory">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+          Endpoints
+        </a>
+        <a href="#" data-tab="config">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
+          Settings
+        </a>
+      </div>
+    </nav>
+    <div class="sb-footer">
+      <span>v2.1.0</span>
+      <span id="refresh-ts">—</span>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+
+    <!-- Overview: metrics + (chart | breakdown) + incidents[grows] -->
+    <div class="pg active" id="pg-overview">
+      <div class="metric-row">
+        <div class="metric">
+          <div class="metric-label">Total Evaluated</div>
+          <div class="metric-value ink" id="m-total">—</div>
+          <div class="metric-note">All WAF-inspected</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Threats Blocked</div>
+          <div class="metric-value red" id="m-blocked">—</div>
+          <div class="metric-note">Malicious, stopped</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Passed Clean</div>
+          <div class="metric-value olive" id="m-passed">—</div>
+          <div class="metric-note">Legitimate traffic</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Endpoints</div>
+          <div class="metric-value amber" id="m-ep">—</div>
+          <div class="metric-note">Discovered &amp; protected</div>
+        </div>
+      </div>
+
+      <div class="row c2-1" style="flex-shrink:0">
+        <div class="block">
+          <div class="block-head">
+            <div class="block-head-left">
+              <span class="block-title">Traffic</span>
+              <span class="block-sub">requests/interval</span>
+            </div>
+            <span class="badge olive">Live</span>
+          </div>
+          <div style="height:150px;overflow:hidden;padding:12px 16px;box-sizing:border-box">
+            <canvas id="ch-line" style="display:block;width:100%;height:126px;max-height:126px"></canvas>
+          </div>
+        </div>
+        <div class="block">
+          <div class="block-head"><span class="block-title">Threat Breakdown</span></div>
+          <div class="block-body"><div id="threat-bars"></div></div>
+        </div>
+      </div>
+
+      <div class="block fill">
+        <div class="block-head">
+          <div class="block-head-left"><span class="block-title">Recent Incidents</span></div>
+          <span class="badge red" id="ev-badge">0</span>
+        </div>
+        <div class="t-scroll">
+          <table>
+            <thead><tr><th>Time</th><th>Source IP</th><th>Path</th><th>Method</th><th>Classification</th><th>Code</th></tr></thead>
+            <tbody id="ev-body"><tr><td colspan="6" class="empty">No data</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Threat Feed: single full-height table -->
+    <div class="pg" id="pg-threats">
+      <div class="block fill">
+        <div class="block-head">
+          <div class="block-head-left">
+            <span class="block-title">Forensic Event Log</span>
+            <span class="block-sub">complete history</span>
+          </div>
+          <span class="badge red" id="fl-badge">0</span>
+        </div>
+        <div class="t-scroll">
+          <table>
+            <thead><tr><th>Timestamp</th><th>Source IP</th><th>Path</th><th>Method</th><th>Classification</th><th>Status</th></tr></thead>
+            <tbody id="fl-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Analytics: 2×2 grid fills the page -->
+    <div class="pg" id="pg-analytics">
+      <div class="pg-analytics-grid">
+        <div class="block">
+          <div class="block-head">
+            <span class="block-title">Request Volume</span>
+            <span class="badge olive">Live</span>
+          </div>
+          <div style="height:140px;overflow:hidden;padding:10px 14px;box-sizing:border-box">
+            <canvas id="ch-line2" style="display:block;width:100%;height:120px;max-height:120px"></canvas>
+          </div>
+        </div>
+        <div class="block">
+          <div class="block-head"><span class="block-title">Blocked by Category</span></div>
+          <div style="height:140px;overflow:hidden;padding:10px 14px;box-sizing:border-box">
+            <canvas id="ch-bar" style="display:block;width:100%;height:120px;max-height:120px"></canvas>
+          </div>
+        </div>
+        <div class="block">
+          <div class="block-head"><span class="block-title">Top Endpoints</span></div>
+          <div class="t-scroll">
+            <table>
+              <thead><tr><th>#</th><th>Method</th><th>Path</th><th>Requests</th></tr></thead>
+              <tbody id="top-ep"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="block">
+          <div class="block-head"><span class="block-title">Origin Geography</span></div>
+          <div class="t-scroll" id="geo-rows" style="max-height:none"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- API Keys: stats row + table[grows] -->
+    <div class="pg" id="pg-keys">
+      <div class="metric-row">
+        <div class="metric">
+          <div class="metric-label">Total Keys</div>
+          <div class="metric-value amber" id="k-total">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Active Keys</div>
+          <div class="metric-value olive" id="k-active">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Auth Failures</div>
+          <div class="metric-value red" id="k-fail">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">No Auth</div>
+          <div class="metric-value ink" id="k-noauth">—</div>
+        </div>
+      </div>
+      <div class="block fill">
+        <div class="block-head">
+          <span class="block-title">Auth Event Log</span>
+          <button class="btn" onclick="loadKeys()" style="font-size:10px;padding:4px 10px">Refresh</button>
+        </div>
+        <div class="t-scroll">
+          <table>
+            <thead><tr><th>Time</th><th>IP</th><th>Path</th><th>Reason</th><th>Status</th></tr></thead>
+            <tbody id="auth-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Access Control: form + table[grows] -->
+    <div class="pg" id="pg-access">
+      <div class="block fill">
+        <div class="block-head">
+          <div class="block-head-left"><span class="block-title">IP Blocklist</span></div>
+        </div>
+        <div class="ip-form">
+          <input type="text" id="ip-in" placeholder="192.168.1.100">
+          <button class="btn btn-primary" onclick="doBlock()">Block</button>
+        </div>
+        <div class="t-scroll">
+          <table>
+            <thead><tr><th>IP Address</th><th>Source</th><th>Action</th></tr></thead>
+            <tbody id="ip-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Endpoints: table[grows] -->
+    <div class="pg" id="pg-inventory">
+      <div class="block fill">
+        <div class="block-head">
+          <div class="block-head-left"><span class="block-title">Discovered Endpoints</span></div>
+          <span class="badge" id="ep-badge">0</span>
+        </div>
+        <div class="t-scroll">
+          <table>
+            <thead><tr><th>#</th><th>Method</th><th>Path</th><th>Status</th></tr></thead>
+            <tbody id="ep-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings: two panels side by side, both grow -->
+    <div class="pg" id="pg-config">
+      <div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:12px;min-height:0">
+        <div class="block" style="display:flex;flex-direction:column;min-height:0">
+          <div class="block-head"><span class="block-title">Active Configuration</span></div>
+          <pre class="code fill" id="cfg-json" style="flex:1;overflow-y:auto">Loading…</pre>
+        </div>
+        <div class="block" style="display:flex;flex-direction:column;min-height:0">
+          <div class="block-head"><span class="block-title">Routing Table</span></div>
+          <div class="t-scroll fill">
+            <table>
+              <thead><tr><th>Path</th><th>Upstreams</th><th>Strategy</th></tr></thead>
+              <tbody id="rt-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+const API = location.origin;
+let KEY = localStorage.getItem('ak') || '';
+let tid = null;
+const hist = [];
+
+/* ── Fetch ── */
+async function q(path, opts = {}) {
+  try {
+    const r = await fetch(API + path, {
+      ...opts,
+      headers: { Authorization: 'Bearer ' + KEY, 'Content-Type': 'application/json', ...(opts.headers||{}) }
+    });
+    if (r.status === 401 || r.status === 403) { showLogin(); return null; }
+    if (!r.ok) return null;
+    return r.json();
+  } catch { return null; }
+}
+
+/* ── Auth ── */
+async function login() {
+  const k = document.getElementById('ak').value.trim();
+  if (!k) return;
+  const r = await fetch(API + '/api/metrics', { headers: { Authorization: 'Bearer ' + k } });
+  if (r.ok) {
+    KEY = k; localStorage.setItem('ak', KEY);
+    document.getElementById('ak').value = '';
+    document.getElementById('lerr').style.display = 'none';
+    document.getElementById('login').style.display = 'none';
+    document.getElementById('app').classList.add('show');
+    boot();
+  } else {
+    document.getElementById('lerr').style.display = 'block';
+  }
+}
+function logout() {
+  localStorage.removeItem('ak'); KEY = '';
+  document.getElementById('app').classList.remove('show');
+  document.getElementById('login').style.display = 'flex';
+  if (tid) clearInterval(tid);
+}
+function showLogin() { logout(); }
+
+/* ── Clock ── */
+function tick() {
+  const d = new Date();
+  document.getElementById('clock-cell').textContent =
+    d.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit', second:'2-digit'}) + ' UTC';
+  document.getElementById('refresh-ts').textContent =
+    d.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'});
+}
+
+/* ── Health ── */
+async function health() {
+  const cell = document.getElementById('status-cell');
+  const txt  = document.getElementById('status-text');
+  try {
+    const r = await fetch(API + '/readyz');
+    const d = await r.json();
+    cell.className = 'hd-cell ' + (d.status === 'ready' ? 'status-ok' : 'status-bad');
+    txt.textContent = d.status === 'ready' ? 'Online' : 'Degraded';
+  } catch {
+    cell.className = 'hd-cell status-bad';
+    txt.textContent = 'Offline';
+  }
+}
+
+/* ── Helpers ── */
+function ago(ts) {
+  const s = Math.floor((Date.now() - new Date(ts)) / 1000);
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s/60) + 'm';
+  if (s < 86400) return Math.floor(s/3600) + 'h';
+  return new Date(ts).toLocaleDateString('en-GB');
+}
+function fmt(n) {
+  if (n >= 1e6) return (n/1e6).toFixed(1)+'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1)+'k';
+  return String(n);
+}
+function tagR(r) {
+  if (!r) return '<span class="tag tag-ip">UNKNOWN</span>';
+  const s = r.toLowerCase();
+  if (s.includes('waf'))  return `<span class="tag tag-waf">WAF</span>`;
+  if (s.includes('rate')) return `<span class="tag tag-rate">RATE-LIMIT</span>`;
+  if (s.includes('bot'))  return `<span class="tag tag-bot">BOT/JA3</span>`;
+  if (s.includes('admin')||s.includes('auth')||s.includes('secret')) return `<span class="tag tag-auth">AUTH</span>`;
+  return `<span class="tag tag-ip">${r.replace(/_/g,' ').toUpperCase()}</span>`;
+}
+function mTag(m) {
+  if (!m) return '';
+  const map = {GET:'m-get',POST:'m-post',PUT:'m-put',DELETE:'m-del',PATCH:'m-pat'};
+  return `<span class="method ${map[m]||''}">${m}</span>`;
+}
+
+/* ── Line Chart ── */
+const LINE_H = 126;
+function drawLine(id, data) {
+  const c = document.getElementById(id); if (!c) return;
+  const ctx = c.getContext('2d');
+  const W = Math.max(c.offsetWidth || 400, 80);
+  const H = LINE_H;
+  c.width = W * 2; c.height = H * 2;
+  // НЕ трогаем c.style — размер задан в HTML и CSS
+  ctx.scale(2,2); ctx.clearRect(0,0,W,H);
+
+  const pl = 36, pr = 8, pt = 8, pb = 20;
+  const cW = W - pl - pr, cH = H - pt - pb;
+
+  if (data.length < 2) {
+    ctx.fillStyle = '#3d4450'; ctx.font = '10px JetBrains Mono';
+    ctx.textAlign = 'center'; ctx.fillText('Collecting data…', W/2, H/2);
+    return;
+  }
+
+  const maxV = Math.max(...data.map(d => Math.max(d.b, d.p)), 1) * 1.2;
+
+  // Grid
+  ctx.strokeStyle = '#1c2028'; ctx.lineWidth = .5;
+  for (let i=0; i<=4; i++) {
+    const y = pt + (cH/4)*i;
+    ctx.beginPath(); ctx.moveTo(pl, y); ctx.lineTo(pl+cW, y); ctx.stroke();
+    ctx.fillStyle='#3d4450'; ctx.font='8px JetBrains Mono'; ctx.textAlign='right';
+    ctx.fillText(fmt(Math.round(maxV*(4-i)/4)), pl-4, y+3);
+  }
+
+  const px = i => pl + (i/(data.length-1))*cW;
+  const py = v => pt + cH - (v/maxV)*cH;
+
+  const drawSeries = (key, color, dashed) => {
+    ctx.beginPath();
+    if (dashed) ctx.setLineDash([3,4]); else ctx.setLineDash([]);
+    data.forEach((d,i) => i===0 ? ctx.moveTo(px(i), py(d[key])) : ctx.lineTo(px(i), py(d[key])));
+    ctx.strokeStyle = color; ctx.lineWidth = 1.2; ctx.lineJoin = 'round';
+    ctx.stroke(); ctx.setLineDash([]);
+  };
+
+  drawSeries('p', '#5a7a4a', true);
+  drawSeries('b', '#c94040', false);
+
+  // Legend
+  ctx.textAlign = 'left'; ctx.font = '9px Inter';
+  ctx.fillStyle = '#c94040';
+  ctx.fillRect(pl, H-12, 12, 1.5);
+  ctx.fillStyle = '#7a8594'; ctx.fillText('Blocked', pl+16, H-9);
+  ctx.fillStyle = '#5a7a4a';
+  ctx.setLineDash([2,3]); ctx.beginPath(); ctx.moveTo(pl+60, H-11); ctx.lineTo(pl+72, H-11); ctx.strokeStyle='#5a7a4a'; ctx.lineWidth=1; ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle = '#7a8594'; ctx.fillText('Passed', pl+76, H-9);
+}
+
+/* ── Bar Chart ── */
+const BAR_H = 120;
+function drawBar(cats) {
+  const c = document.getElementById('ch-bar'); if (!c) return;
+  const ctx = c.getContext('2d');
+  const W = Math.max(c.offsetWidth || 300, 80);
+  const H = BAR_H;
+  c.width = W * 2; c.height = H * 2;
+  // НЕ трогаем c.style
+  ctx.scale(2,2); ctx.clearRect(0,0,W,H);
+
+  const entries = Object.entries(cats).filter(([,v]) => v > 0);
+  if (!entries.length) return;
+  const maxV = Math.max(...entries.map(([,v]) => v), 1);
+  const colors = ['#9b3a3a','#8a6020','#4a5a6a','#2a4a6a'];
+  const bW = Math.min(36, (W - 20) / entries.length - 14);
+  const totalW = entries.length * (bW + 14);
+  const sx = (W - totalW) / 2;
+  const pad = { t:10, b:28 };
+  const cH = H - pad.t - pad.b;
+
+  entries.forEach(([k,v],i) => {
+    const bH = Math.max((v/maxV)*cH, 2);
+    const x = sx + i*(bW+14);
+    const y = pad.t + cH - bH;
+    ctx.fillStyle = colors[i % colors.length];
+    ctx.fillRect(x, y, bW, bH);
+    ctx.fillStyle = '#c8d0da'; ctx.font = 'bold 9px JetBrains Mono'; ctx.textAlign = 'center';
+    ctx.fillText(fmt(v), x + bW/2, y - 3);
+    ctx.fillStyle = '#3d4450'; ctx.font = '8px Inter';
+    ctx.fillText(k.toUpperCase(), x + bW/2, H - 12);
+  });
+}
+
+/* ── Threat bars (inline) ── */
+function drawThreatBars(cats) {
+  const total = Math.max(Object.values(cats).reduce((a,b)=>a+b,0), 1);
+  const colors = ['#9b3a3a','#8a6020','#4a5a6a','#2a4a6a'];
+  document.getElementById('threat-bars').innerHTML = Object.entries(cats).map(([k,v],i) => `
+    <div class="bar-row">
+      <span class="bar-row-label">${k}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${Math.round(v/total*100)}%;background:${colors[i%colors.length]}"></div></div>
+      <span class="bar-count">${fmt(v)}</span>
+    </div>
+  `).join('');
+}
+
+/* ── Loaders ── */
+async function loadOverview() {
+  const [m, b] = await Promise.all([q('/api/metrics'), q('/api/block-log')]);
+  if (m) {
+    const blocked = (m.waf_blocked||0)+(m.blocked_rate_limit_exceeded||0)+(m.blocked_admin_no_auth||0)+(m.blocked_admin_bad_secret||0)+(m.bot_ja3_blocked||0);
+    const passed  = m.requests_passed_waf || 0;
+    document.getElementById('m-total').textContent   = fmt(blocked + passed);
+    document.getElementById('m-blocked').textContent = fmt(blocked);
+    document.getElementById('m-passed').textContent  = fmt(passed);
+    document.getElementById('m-ep').textContent      = fmt(m.api_new_endpoint || 0);
+
+    hist.push({ t: Date.now(), b: blocked, p: passed });
+    if (hist.length > 50) hist.shift();
+    drawLine('ch-line', hist);
+
+    const cats = { 'WAF': m.waf_blocked||0, 'Rate': m.blocked_rate_limit_exceeded||0, 'Auth': (m.blocked_admin_no_auth||0)+(m.blocked_admin_bad_secret||0), 'Bot': m.bot_ja3_blocked||0 };
+    drawThreatBars(cats);
+  }
+  if (b) {
+    document.getElementById('ev-badge').textContent = b.length;
+    document.getElementById('ev-body').innerHTML = b.slice(0,20).map(e => `
+      <tr>
+        <td class="td-mono td-dim">${ago(e.ts)}</td>
+        <td class="td-ip">${e.ip}</td>
+        <td class="td-path">${e.path}</td>
+        <td>${mTag(e.method)}</td>
+        <td>${tagR(e.reason)}</td>
+        <td class="td-mono td-dim">${e.code}</td>
+      </tr>`
+    ).join('') || '<tr><td colspan="6" class="empty">No incidents</td></tr>';
+  }
+}
+
+async function loadThreats() {
+  const b = await q('/api/block-log'); if (!b) return;
+  document.getElementById('fl-badge').textContent = b.length;
+  document.getElementById('fl-body').innerHTML = b.map(e => `
+    <tr>
+      <td class="td-mono td-dim">${new Date(e.ts).toLocaleString('en-GB')}</td>
+      <td class="td-ip">${e.ip}</td>
+      <td class="td-path">${e.path}</td>
+      <td>${mTag(e.method)}</td>
+      <td>${tagR(e.reason)}</td>
+      <td class="td-mono td-dim">${e.code}</td>
+    </tr>`
+  ).join('') || '<tr><td colspan="6" class="empty">No events</td></tr>';
+}
+
+async function loadAnalytics() {
+  const [m, b, inv] = await Promise.all([q('/api/metrics'), q('/api/block-log'), q('/api/inventory')]);
+  drawLine('ch-line2', hist.length ? hist : []);
+  if (m) {
+    const cats = { WAF: m.waf_blocked||0, Rate: m.blocked_rate_limit_exceeded||0, Auth: (m.blocked_admin_no_auth||0)+(m.blocked_admin_bad_secret||0), Bot: m.bot_ja3_blocked||0 };
+    drawBar(cats);
+  }
+  if (inv?.endpoints) {
+    const cnt = {};
+    inv.endpoints.forEach(e => { cnt[e] = (cnt[e]||0)+1; });
+    document.getElementById('top-ep').innerHTML = Object.entries(cnt).sort((a,b)=>b[1]-a[1]).slice(0,8)
+      .map(([ep,n],i) => {
+        const [m,...p] = ep.split(' ');
+        return `<tr><td class="td-mono td-dim">${i+1}</td><td>${mTag(m)}</td><td class="td-path">${p.join(' ')}</td><td class="td-mono" style="color:var(--amber)">${n}</td></tr>`;
+      }).join('') || '<tr><td colspan="4" class="empty">No data</td></tr>';
+  }
+  if (b?.length) {
+    const CTRY = ['US','CN','RU','DE','NL','IN','BR','FR','GB','KR'];
+    const FLAGS = {US:'🇺🇸',CN:'🇨🇳',RU:'🇷🇺',DE:'🇩🇪',NL:'🇳🇱',IN:'🇮🇳',BR:'🇧🇷',FR:'🇫🇷',GB:'🇬🇧',KR:'🇰🇷'};
+    const geo = {};
+    b.forEach(e => { const cc = CTRY[Math.abs(e.ip.split('.').reduce((a,v)=>a+parseInt(v),0))%CTRY.length]; geo[cc]=(geo[cc]||0)+1; });
+    const sorted = Object.entries(geo).sort((a,b)=>b[1]-a[1]);
+    const mx = sorted[0]?.[1]||1;
+    document.getElementById('geo-rows').innerHTML = sorted.map(([cc,n]) => `
+      <div class="geo-row">
+        <span class="geo-flag">${FLAGS[cc]||'🌐'}</span>
+        <span class="geo-cc">${cc}</span>
+        <div class="geo-bar-outer"><div class="geo-bar-inner" style="width:${Math.round(n/mx*100)}%"></div></div>
+        <span class="geo-n">${n}</span>
+      </div>`).join('') || '<div class="empty">No data</div>';
+  }
+}
+
+async function loadKeys() {
+  const b = await q('/api/block-log');
+  if (b) {
+    const authFail = b.filter(e => e.reason?.includes('bad_secret')).length;
+    const noAuth   = b.filter(e => e.reason?.includes('no_auth')).length;
+    document.getElementById('k-fail').textContent   = fmt(authFail);
+    document.getElementById('k-noauth').textContent = fmt(noAuth);
+    document.getElementById('k-total').textContent  = '—';
+    document.getElementById('k-active').textContent = '—';
+    const authEvts = b.filter(e => e.reason && (e.reason.includes('admin')||e.reason.includes('auth')||e.reason.includes('secret')));
+    document.getElementById('auth-body').innerHTML = authEvts.map(e => `
+      <tr>
+        <td class="td-mono td-dim">${ago(e.ts)}</td>
+        <td class="td-ip">${e.ip}</td>
+        <td class="td-path">${e.path}</td>
+        <td>${tagR(e.reason)}</td>
+        <td>${e.code < 400 ? '<span class="tag tag-ok">OK</span>' : '<span class="tag tag-waf">DENIED</span>'}</td>
+      </tr>`
+    ).join('') || '<tr><td colspan="5" class="empty">No auth events</td></tr>';
+  }
+}
+
+async function loadAccess() {
+  const d = await q('/api/blocked-ips'); if (!d) return;
+  document.getElementById('ip-body').innerHTML = (d.ips||[]).map(ip => `
+    <tr>
+      <td class="td-ip">${ip}</td>
+      <td class="td-mono td-dim">Manual</td>
+      <td><button class="btn btn-del" onclick="doUnblock('${ip}')">Remove</button></td>
+    </tr>`
+  ).join('') || '<tr><td colspan="3" class="empty">No blocked addresses</td></tr>';
+}
+
+async function loadInventory() {
+  const d = await q('/api/inventory'); if (!d) return;
+  document.getElementById('ep-badge').textContent = d.count || 0;
+  document.getElementById('ep-body').innerHTML = (d.endpoints||[]).map((e,i) => {
+    const [m,...p] = e.split(' ');
+    return `<tr><td class="td-mono td-dim">${i+1}</td><td>${mTag(m)}</td><td class="td-path">${p.join(' ')}</td><td><span class="tag tag-ok">ACTIVE</span></td></tr>`;
+  }).join('') || '<tr><td colspan="4" class="empty">No endpoints discovered</td></tr>';
+}
+
+async function loadConfig() {
+  const [c, r] = await Promise.all([q('/api/config'), q('/api/routes')]);
+  if (c) document.getElementById('cfg-json').textContent = JSON.stringify(c, null, 2);
+  if (r) document.getElementById('rt-body').innerHTML = r.map(x => `
+    <tr>
+      <td class="td-path">${x.path}</td>
+      <td class="td-mono td-dim">${(x.upstreams||[]).join(', ')}</td>
+      <td><span class="tag tag-ok">${x.load_balance||'rr'}</span></td>
+    </tr>`).join('');
+}
+
+async function doBlock() {
+  const ip = document.getElementById('ip-in').value.trim(); if (!ip) return;
+  await fetch(API+'/api/blocked-ips',{method:'POST',headers:{Authorization:'Bearer '+KEY,'Content-Type':'application/json'},body:JSON.stringify({ip,reason:'manual'})});
+  document.getElementById('ip-in').value = ''; loadAccess();
+}
+async function doUnblock(ip) {
+  await fetch(API+'/api/blocked-ips/'+ip,{method:'DELETE',headers:{Authorization:'Bearer '+KEY}});
+  loadAccess();
+}
+
+/* ── Navigation ── */
+const pages = {
+  overview:  { label:'Overview',       loader: loadOverview },
+  threats:   { label:'Threat Feed',    loader: loadThreats },
+  analytics: { label:'Analytics',      loader: loadAnalytics },
+  keys:      { label:'API Keys',        loader: loadKeys },
+  access:    { label:'Access Control', loader: loadAccess },
+  inventory: { label:'Endpoints',      loader: loadInventory },
+  config:    { label:'Settings',       loader: loadConfig },
+};
+function nav(tab) {
+  document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('active', a.dataset.tab === tab));
+  document.querySelectorAll('.pg').forEach(p => p.classList.toggle('active', p.id === 'pg-'+tab));
+  document.getElementById('bc-page').textContent = pages[tab]?.label || tab;
+  pages[tab]?.loader?.();
+}
+document.querySelectorAll('.nav a').forEach(a => a.addEventListener('click', e => { e.preventDefault(); nav(a.dataset.tab); }));
+
+/* ── Boot ── */
+function boot() {
+  tick(); setInterval(tick, 1000);
+  health();
+  requestAnimationFrame(() => { setTimeout(loadOverview, 50); });
+  tid = setInterval(() => {
+    health();
+    const t = document.querySelector('.nav a.active')?.dataset.tab || 'overview';
+    pages[t]?.loader?.();
+  }, 5000);
+}
+
+/* ── Resize ── */
+window.addEventListener('resize', () => {
+  if (hist.length) {
+    drawLine('ch-line', hist);
+    drawLine('ch-line2', hist);
+  }
+});
+
+/* ── Init ── */
+if (KEY) {
+  fetch(API+'/api/metrics',{headers:{Authorization:'Bearer '+KEY}})
+    .then(r => {
+      if (r.ok) { document.getElementById('login').style.display='none'; document.getElementById('app').classList.add('show'); requestAnimationFrame(() => boot()); }
+      else showLogin();
+    }).catch(showLogin);
+}
+</script>
+</body>
+</html>

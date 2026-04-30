@@ -1,0 +1,99 @@
+# AEGIS — API Security Gateway Configuration
+
+listen: ":8080"          # Gateway proxy port
+admin_listen: ":8081"    # Admin API port
+admin_auth: true
+admin_secret: "change-me-to-a-strong-secret-in-production"
+
+tls:
+  enabled: false
+  cert_file: ""
+  key_file: ""
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+logging:
+  level: "info"
+  format: "json"
+
+security:
+  rate_limit:
+    enabled: true
+    requests: 100
+    window: 60s
+    burst_limit: 20
+
+  auth:
+    enabled: false
+    secret: "your-jwt-secret-here"
+    issuer: ""
+    audience: ""
+    exclude:
+      - "/health"
+      - "/public"
+
+  waf:
+    enabled: true
+    ruleset_path: ""
+    block_mode: true
+
+  bot:
+    enabled: true
+    blocked_ja3: []
+    challenge_mode: false
+
+  behavior:
+    enabled: true
+    score_threshold: 70
+    window_seconds: 60
+
+  ip_guard:
+    enabled: true
+    whitelist: []
+    blacklist: []
+    geo_block: []
+
+  dlp:
+    enabled: true
+    patterns: []
+
+  cors:
+    enabled: true
+    allow_origins: ["*"]
+    allow_methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    allow_headers: ["Content-Type", "Authorization"]
+    max_age: 86400
+
+  challenge:
+    enabled: false
+    ttl: 5m
+    score_threshold: 50
+
+  api_inventory:
+    enabled: true
+    alert_on_new: false
+
+  threat_feed:
+    enabled: false
+    url: ""
+    interval: 1h
+
+registry:
+  enabled: false
+  dsn: ""
+  cache_ttl_secs: 30
+  rotation_days: 90
+
+# Protected routes (reverse proxy targets)
+routes:
+  - path: "/api/v1/"
+    methods: ["GET", "POST", "PUT", "DELETE"]
+    upstreams:
+      - "http://localhost:3000"
+    load_balance: "round_robin"
+    timeout: "30s"
+    retry_attempts: 2
+    strip_prefix: false

@@ -1,0 +1,131 @@
+# AEGIS Helm Values — Enterprise Defaults
+# Override these per-environment (staging, production).
+
+replicaCount: 2
+
+image:
+  repository: aegis/gateway
+  tag: "2.1.0"
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: LoadBalancer
+  gatewayPort: 8080
+  adminPort: 8081
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: gateway.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Gateway configuration (injected as ConfigMap)
+gateway:
+  listen: ":8080"
+  admin_listen: ":8081"
+  admin_auth: true
+  admin_secret: "CHANGE-ME-IN-PRODUCTION"
+  forensic_dsn: ""  # e.g., "postgres://user:pass@pg-host:5432/aegis?sslmode=require"
+
+  redis:
+    addr: "aegis-redis:6379"
+    password: ""
+    db: 0
+
+  security:
+    rate_limit:
+      enabled: true
+      requests: 100
+      window: 60s
+      burst_limit: 20
+    waf:
+      enabled: true
+      block_mode: true
+    bot:
+      enabled: true
+    behavior:
+      enabled: true
+      score_threshold: 70
+      window_seconds: 60
+    auth:
+      enabled: false
+      jwks_url: ""
+      issuer: ""
+      audience: ""
+      secret: ""
+    ip_guard:
+      enabled: true
+    dlp:
+      enabled: true
+    api_inventory:
+      enabled: true
+    cors:
+      enabled: true
+      allow_origins: ["*"]
+      allow_methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+      allow_headers: ["Content-Type", "Authorization"]
+
+  routes:
+    - path: "/api/v1/"
+      upstreams: ["http://backend-service:3000"]
+      load_balance: "round_robin"
+      timeout: "30s"
+      retry_attempts: 2
+
+# Redis sub-chart
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false
+  resources:
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# Pod disruption budget for HA
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Probes
+livenessProbe:
+  httpGet:
+    path: /health
+    port: admin
+  initialDelaySeconds: 5
+  periodSeconds: 15
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: admin
+  initialDelaySeconds: 3
+  periodSeconds: 5
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
