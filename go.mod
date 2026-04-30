@@ -1,6 +1,6 @@
 module api-gateway
 
-go 1.26.2
+go 1.22
 
 require (
 	github.com/corazawaf/coraza/v3 v3.7.0
