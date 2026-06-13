@@ -170,7 +170,8 @@ type LoggingConfig struct {
 
 // Load reads gateway configuration from a YAML file and applies env overrides.
 func Load(path string) (GatewayConfig, error) {
-	data, err := os.ReadFile(path)
+	// path is an operator-supplied config file path (CLI flag), not attacker input.
+	data, err := os.ReadFile(path) // #nosec G304 -- config path is operator-controlled
 	if err != nil {
 		return GatewayConfig{}, err
 	}

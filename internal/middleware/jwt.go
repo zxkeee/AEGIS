@@ -45,7 +45,7 @@ func NewJWTAuth(cfg config.AuthConfig, log Logger, st Store) *JWTAuth {
 // initJWKS fetches and caches JWKS keys from the configured URL.
 // Retries on failure with exponential backoff.
 func (ja *JWTAuth) initJWKS() {
-	var backoff time.Duration = 2 * time.Second
+	backoff := 2 * time.Second
 
 	for attempt := 1; attempt <= 5; attempt++ {
 		k, err := keyfunc.NewDefault([]string{ja.cfg.JWKSURL})

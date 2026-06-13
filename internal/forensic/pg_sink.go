@@ -61,13 +61,13 @@ func NewPGSink(dsn string, log Logger) (*PGSink, error) {
 	defer cancel()
 
 	if err := db.PingContext(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("forensic: pg ping: %w", err)
 	}
 
 	// Auto-create table and indices
 	if _, err := db.ExecContext(ctx, createTableSQL); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("forensic: pg migrate: %w", err)
 	}
 
@@ -103,7 +103,7 @@ func (s *PGSink) Close() {
 	// Final drain
 	s.flush(s.drain())
 
-	s.db.Close()
+	_ = s.db.Close()
 }
 
 // flushWorker batches events every 3 seconds or when 500 events accumulate.
@@ -212,7 +212,7 @@ func (s *PGSink) QueryLogs(ctx context.Context, limit int, ip, reason string) ([
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []store.ForensicEntry
 	for rows.Next() {

@@ -49,7 +49,7 @@ func Challenge(cfg config.ChallengeConfig, log Logger, st Store) Middleware {
 
 			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(http.StatusForbidden)
-			fmt.Fprintf(w, challengeHTML, challengeToken)
+			_, _ = fmt.Fprintf(w, challengeHTML, challengeToken)
 		})
 	}
 }

@@ -56,6 +56,7 @@ func main() {
 		"admin_listen": cfg.AdminListen,
 		"version":      version,
 		"commit":       commit,
+		"build_time":   buildTime,
 	})
 
 	// ── Redis Store ───────────────────────────────────────────────────────────
@@ -64,7 +65,7 @@ func main() {
 		log.Error("failed to connect to Redis", map[string]any{"error": err.Error()})
 		os.Exit(1)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	// ── Alert Engine ──────────────────────────────────────────────────────────
 	alerts := alert.New("", log) // Webhook URL from config if available
@@ -93,7 +94,7 @@ func main() {
 			log.Error("api catalog init failed (discovery disabled)", map[string]any{"error": err.Error()})
 			catalog = nil
 		} else {
-			defer catalog.Close()
+			defer func() { _ = catalog.Close() }()
 			log.Info("api discovery catalog enabled", map[string]any{"backend": "postgresql"})
 		}
 	} else {
@@ -278,7 +279,7 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 		pollConfigFile(absPath, reload)
 		return
 	}
-	defer watcher.Close()
+	defer func() { _ = watcher.Close() }()
 
 	// Watch the directory (handles atomic renames used by editors)
 	dir := filepath.Dir(absPath)

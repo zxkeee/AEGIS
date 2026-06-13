@@ -57,5 +57,5 @@ func (e *Engine) Fire(ctx context.Context, level, title, body string) {
 		e.log.Error("alert: webhook failed", map[string]any{"error": err.Error()})
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }

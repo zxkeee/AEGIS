@@ -82,7 +82,7 @@ func (tf *threatFeed) refresh() {
 		tf.log.Error("threat_feed: fetch error", map[string]any{"error": err.Error()})
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		tf.log.Error("threat_feed: unexpected status", map[string]any{

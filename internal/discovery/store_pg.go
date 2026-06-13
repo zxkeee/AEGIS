@@ -79,11 +79,11 @@ func newPGStore(dsn string, log Logger) (*pgStore, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("discovery: pg ping: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, catalogSchema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("discovery: pg migrate: %w", err)
 	}
 	return &pgStore{db: db, log: log}, nil
@@ -184,14 +184,16 @@ func (s *pgStore) listEndpoints(ctx context.Context, f EndpointFilter) ([]Endpoi
 	if limit <= 0 || limit > 1000 {
 		limit = 500
 	}
-	q += fmt.Sprintf(" LIMIT $%d", n)
+	// Only constant fragments and $N placeholders are concatenated; every
+	// user-supplied value is passed via args and parameterized by the driver.
+	q += fmt.Sprintf(" LIMIT $%d", n) // #nosec G202 -- parameterized query, no value concatenation
 	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := []Endpoint{}
 	for rows.Next() {
@@ -228,7 +230,7 @@ func (s *pgStore) getEndpoint(ctx context.Context, id string) (*Endpoint, []Endp
 				e.StatusDist[fmt.Sprintf("%d", st)] = cnt
 			}
 		}
-		srows.Close()
+		_ = srows.Close()
 	}
 
 	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.kind, c.label,
@@ -238,7 +240,7 @@ func (s *pgStore) getEndpoint(ctx context.Context, id string) (*Endpoint, []Endp
 	if err != nil {
 		return &e, nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	consumers := []EndpointConsumer{}
 	for rows.Next() {
 		var ec EndpointConsumer
@@ -261,7 +263,7 @@ func (s *pgStore) listConsumers(ctx context.Context, limit int) ([]Consumer, err
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []Consumer{}
 	for rows.Next() {
 		var c Consumer
@@ -281,7 +283,7 @@ func (s *pgStore) postureSummary(ctx context.Context) (PostureSummary, error) {
 	if err != nil {
 		return sum, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var p string
 		var n int

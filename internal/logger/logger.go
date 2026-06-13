@@ -43,7 +43,7 @@ func (l *Logger) log(level, msg string, fields map[string]any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	data, _ := json.Marshal(entry)
-	fmt.Fprintln(os.Stdout, string(data))
+	_, _ = fmt.Fprintln(os.Stdout, string(data))
 }
 
 // Info logs an informational message.
