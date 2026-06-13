@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="./docs/assets/aegis-logo.png" alt="AEGIS API Protection" width="420" />
+<img src="./docs/assets/logo.png" alt="AEGIS API Protection" width="420" />
 
 # AEGIS — API Protection Gateway
 
@@ -1524,7 +1524,7 @@ rejects it until the supplied TTL expires.
 
 <div align="center">
 
-<img src="./docs/assets/aegis-logo.png" alt="AEGIS API Protection" width="420" />
+<img src="./docs/assets/logo.png" alt="AEGIS API Protection" width="420" />
 
 # AEGIS — Шлюз захисту API
 
