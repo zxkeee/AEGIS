@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
@@ -54,6 +55,12 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 					"error":    err.Error(),
 					"path":     r.URL.Path,
 				})
+				// If we're buffering this attempt for possible retry, just flag the
+				// failure instead of committing a 502 to the client.
+				if aw, ok := w.(*attemptWriter); ok {
+					aw.failed = true
+					return
+				}
 				http.Error(w, "Bad Gateway", http.StatusBadGateway)
 			}
 
@@ -88,7 +95,9 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 		routeRetries := retries
 
 		gw.mux.HandleFunc(routePath, func(w http.ResponseWriter, r *http.Request) {
-			// Retry logic with circuit breaker awareness
+			retryable := isRetryable(r)
+
+			// Retry logic with circuit breaker awareness.
 			for attempt := 0; attempt < routeRetries; attempt++ {
 				up := routeLB.next()
 				if up == nil {
@@ -105,8 +114,29 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 					continue
 				}
 
-				// Set timeout
-				http.TimeoutHandler(up.proxy, routeTimeout, "Gateway Timeout").ServeHTTP(w, r)
+				lastAttempt := attempt == routeRetries-1
+
+				// For non-retryable requests (or the final attempt) stream the
+				// response straight to the client — no point buffering.
+				if !retryable || lastAttempt {
+					http.TimeoutHandler(up.proxy, routeTimeout, "Gateway Timeout").ServeHTTP(w, r)
+					return
+				}
+
+				// Buffer this attempt so a transport failure can fall through to
+				// the next upstream without a partial response reaching the client.
+				aw := &attemptWriter{header: make(http.Header), status: http.StatusOK}
+				http.TimeoutHandler(up.proxy, routeTimeout, "Gateway Timeout").ServeHTTP(aw, r)
+
+				if aw.failed {
+					log.Warn("proxy: upstream failed, retrying next", map[string]any{
+						"upstream": up.url.String(),
+						"attempt":  attempt + 1,
+					})
+					continue
+				}
+
+				aw.commit(w)
 				return
 			}
 
@@ -128,6 +158,57 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 // ServeHTTP implements http.Handler.
 func (gw *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	gw.mux.ServeHTTP(w, r)
+}
+
+// isRetryable reports whether a request can be safely re-sent to another
+// upstream after a transport failure. Only idempotent methods without a body
+// are retried — replaying a POST/PATCH could execute a side effect twice, and
+// the request body has already been consumed by the first attempt.
+func isRetryable(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return r.Body == nil || r.ContentLength == 0
+	default:
+		return false
+	}
+}
+
+// attemptWriter buffers a single proxy attempt so that, on transport failure,
+// the gateway can retry the next upstream without having sent partial bytes to
+// the client. On success the buffered response is committed verbatim.
+type attemptWriter struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+	failed bool // set by the proxy ErrorHandler on transport failure
+	wrote  bool
+}
+
+func (a *attemptWriter) Header() http.Header { return a.header }
+
+func (a *attemptWriter) WriteHeader(code int) {
+	if a.wrote {
+		return
+	}
+	a.wrote = true
+	a.status = code
+}
+
+func (a *attemptWriter) Write(b []byte) (int, error) {
+	if !a.wrote {
+		a.WriteHeader(http.StatusOK)
+	}
+	return a.body.Write(b)
+}
+
+// commit flushes the buffered headers, status, and body to the real writer.
+func (a *attemptWriter) commit(w http.ResponseWriter) {
+	dst := w.Header()
+	for k, vs := range a.header {
+		dst[k] = vs
+	}
+	w.WriteHeader(a.status)
+	w.Write(a.body.Bytes()) //nolint:errcheck
 }
 
 // ── Load Balancer ─────────────────────────────────────────────────────────────

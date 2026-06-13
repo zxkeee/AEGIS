@@ -3,9 +3,12 @@ package middleware
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -80,7 +83,15 @@ func (ja *JWTAuth) keyFunc(token *jwt.Token) (any, error) {
 	jwks := ja.jwks
 	ja.jwksMu.RUnlock()
 
-	if jwks != nil {
+	// When a JWKS URL is configured we must NEVER fall back to HMAC, even if the
+	// keys have not finished loading yet (async init) or all fetch attempts have
+	// failed. Falling back would let an attacker forge HMAC tokens — trivially so
+	// if the shared secret is empty (the common case when JWKS is used). Fail
+	// closed: reject every token until JWKS is available.
+	if ja.cfg.JWKSURL != "" {
+		if jwks == nil {
+			return nil, fmt.Errorf("jwks keys not loaded yet")
+		}
 		// Validate that the algorithm is an asymmetric type
 		switch token.Method.(type) {
 		case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA, *jwt.SigningMethodRSAPSS:
@@ -91,8 +102,12 @@ func (ja *JWTAuth) keyFunc(token *jwt.Token) (any, error) {
 		}
 	}
 
-	// Fallback: HMAC shared secret
+	// HMAC shared secret mode (only when no JWKS URL is configured).
 	if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+		return nil, jwt.ErrSignatureInvalid
+	}
+	if ja.cfg.Secret == "" {
+		// Never accept tokens signed with an empty HMAC key.
 		return nil, jwt.ErrSignatureInvalid
 	}
 	return []byte(ja.cfg.Secret), nil
@@ -156,14 +171,7 @@ func (ja *JWTAuth) Middleware() Middleware {
 			// Validate Audience
 			if ja.cfg.Audience != "" {
 				aud, _ := claims.GetAudience()
-				found := false
-				for _, audValue := range aud {
-					if audValue == ja.cfg.Audience {
-						found = true
-						break
-					}
-				}
-				if !found {
+				if !slices.Contains(aud, ja.cfg.Audience) {
 					http.Error(w, "Invalid Audience", http.StatusUnauthorized)
 					return
 				}
@@ -185,17 +193,20 @@ func (ja *JWTAuth) Middleware() Middleware {
 				}
 			}
 
-			// Zero-Trust Identity Propagation
-			// Use HMAC-signed header to prevent upstream spoofing
-			if sub, ok := claims["sub"].(string); ok {
+			// Zero-Trust Identity Propagation.
+			// Collect the identity we forward downstream first, then sign ALL of it
+			// (subject + roles + scopes) together with a timestamp and a per-request
+			// nonce. Signing only the subject (as before) left roles/scopes
+			// unauthenticated and the signature replayable. Upstream must verify:
+			//   1. HMAC over "sub:roles:scopes:ts:nonce" matches X-Gateway-Signature
+			//   2. abs(now - ts) < 30s   (freshness)
+			//   3. nonce has not been seen before within the freshness window (replay)
+			sub, _ := claims["sub"].(string)
+			if sub != "" {
 				r.Header.Set("X-Gateway-Subject", sub)
-				// Sign subject header so upstream can verify it came from gateway
-				if ja.cfg.Secret != "" {
-					mac := hmac.New(sha256.New, []byte(ja.cfg.Secret))
-					mac.Write([]byte(sub))
-					r.Header.Set("X-Gateway-Signature", hex.EncodeToString(mac.Sum(nil)))
-				}
 			}
+
+			var roleStr string
 			if roles, ok := claims["roles"].([]any); ok {
 				roleStrs := make([]string, 0, len(roles))
 				for _, role := range roles {
@@ -203,12 +214,37 @@ func (ja *JWTAuth) Middleware() Middleware {
 						roleStrs = append(roleStrs, s)
 					}
 				}
-				r.Header.Set("X-Gateway-Roles", strings.Join(roleStrs, ","))
+				roleStr = strings.Join(roleStrs, ",")
+				r.Header.Set("X-Gateway-Roles", roleStr)
 			}
 
-			// Propagate scopes for OAuth2 compatibility
-			if scope, ok := claims["scope"].(string); ok {
-				r.Header.Set("X-Gateway-Scopes", scope)
+			// Propagate scopes for OAuth2 compatibility.
+			scopeStr, _ := claims["scope"].(string)
+			if scopeStr != "" {
+				r.Header.Set("X-Gateway-Scopes", scopeStr)
+			}
+
+			if sub != "" && ja.cfg.Secret != "" {
+				ts := fmt.Sprintf("%d", time.Now().Unix())
+				nonceBytes := make([]byte, 16)
+				rand.Read(nonceBytes) //nolint:errcheck
+				nonce := hex.EncodeToString(nonceBytes)
+
+				// Canonical payload — upstream must reconstruct it identically.
+				payload := strings.Join([]string{sub, roleStr, scopeStr, ts, nonce}, ":")
+				mac := hmac.New(sha256.New, []byte(ja.cfg.Secret))
+				mac.Write([]byte(payload))
+
+				r.Header.Set("X-Gateway-Timestamp", ts)
+				r.Header.Set("X-Gateway-Nonce", nonce)
+				r.Header.Set("X-Gateway-Signature", hex.EncodeToString(mac.Sum(nil)))
+			}
+
+			// Enrich the discovery observation with the verified identity so the
+			// catalog can attribute this call to a consumer and mark it authenticated.
+			if obs := observationFrom(r.Context()); obs != nil {
+				obs.AuthPresent = true
+				obs.ConsumerSubject = sub
 			}
 
 			// Store authenticated subject in context

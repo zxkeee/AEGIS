@@ -312,6 +312,30 @@ tbody tr:hover td { background:var(--surf2); }
 .tag-auth { color:#6a9acc;        border-color:#2a4a6a;      background:rgba(60,90,140,.10); }
 .tag-ok   { color:var(--olive);   border-color:#2a4a20;      background:rgba(90,122,74,.10); }
 .tag-ip   { color:var(--ink2);    border-color:var(--line2); background:transparent; }
+/* posture badges */
+.tag-prot   { color:#5a9a6a; border-color:#2a4a20; background:rgba(90,154,106,.12); }
+.tag-part   { color:var(--amber); border-color:var(--amber2); background:rgba(201,168,76,.10); }
+.tag-unprot { color:var(--red2); border-color:var(--red); background:rgba(155,58,58,.14); }
+.tag-shadow { color:#9a7acc; border-color:#4a2a6a; background:rgba(140,90,200,.12); }
+.tag-pii    { color:#cc6a9a; border-color:#6a2a4a; background:rgba(200,90,140,.12); }
+/* risk pill */
+.risk { font-family:var(--mono); font-size:11px; font-weight:600; }
+.risk-lo { color:var(--olive); }
+.risk-md { color:var(--amber); }
+.risk-hi { color:var(--red2); }
+/* clickable catalog rows */
+tr.crow { cursor:pointer; }
+tr.crow:hover td { background:var(--surf); }
+/* control chips inside detail */
+.ctrl-grid { display:flex; flex-wrap:wrap; gap:6px; }
+.ctrl { font-family:var(--mono); font-size:10px; padding:3px 8px; border:1px solid var(--line2); border-radius:3px; }
+.ctrl.on  { color:#5a9a6a; border-color:#2a4a20; }
+.ctrl.off { color:var(--red2); border-color:var(--red); }
+/* coverage donut layout */
+.cov-wrap { display:flex; align-items:center; gap:20px; }
+.cov-legend { display:flex; flex-direction:column; gap:6px; font-size:11px; }
+.cov-legend .li { display:flex; align-items:center; gap:8px; color:var(--ink2); }
+.cov-legend .dot { width:9px; height:9px; border-radius:2px; display:inline-block; }
 
 .method {
   font-family:var(--mono); font-size:9px; font-weight:600;
@@ -474,6 +498,21 @@ canvas { background: var(--bg); display:block; }
         </a>
       </div>
       <div class="sb-section">
+        <div class="sb-section-label">API Security</div>
+        <a href="#" data-tab="catalog">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+          API Catalog
+        </a>
+        <a href="#" data-tab="posture">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          Posture
+        </a>
+        <a href="#" data-tab="consumers">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          Consumers
+        </a>
+      </div>
+      <div class="sb-section">
         <div class="sb-section-label">Manage</div>
         <a href="#" data-tab="keys">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
@@ -482,10 +521,6 @@ canvas { background: var(--bg); display:block; }
         <a href="#" data-tab="access">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
           Access Control
-        </a>
-        <a href="#" data-tab="inventory">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-          Endpoints
         </a>
         <a href="#" data-tab="config">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
@@ -666,17 +701,88 @@ canvas { background: var(--bg); display:block; }
       </div>
     </div>
 
-    <!-- Endpoints: table[grows] -->
-    <div class="pg" id="pg-inventory">
+    <!-- API Catalog: discovered endpoints with posture + risk -->
+    <div class="pg" id="pg-catalog">
+      <div class="metric-row">
+        <div class="metric"><div class="metric-label">Endpoints</div><div class="metric-value ink" id="cat-total">—</div><div class="metric-note">Discovered from traffic</div></div>
+        <div class="metric"><div class="metric-label">Protected</div><div class="metric-value olive" id="cat-prot">—</div><div class="metric-note">All core controls</div></div>
+        <div class="metric"><div class="metric-label">Unprotected</div><div class="metric-value red" id="cat-unprot">—</div><div class="metric-note">No core controls</div></div>
+        <div class="metric"><div class="metric-label">Shadow</div><div class="metric-value amber" id="cat-shadow">—</div><div class="metric-note">No matching route</div></div>
+      </div>
       <div class="block fill">
         <div class="block-head">
-          <div class="block-head-left"><span class="block-title">Discovered Endpoints</span></div>
-          <span class="badge" id="ep-badge">0</span>
+          <div class="block-head-left">
+            <span class="block-title">API Catalog</span>
+            <span class="block-sub">click a row for detail</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="cat-q" placeholder="filter path…" oninput="loadCatalog()" style="font-size:11px;padding:4px 8px;background:var(--surf);border:1px solid var(--line2);color:var(--ink);border-radius:3px">
+            <select id="cat-posture" onchange="loadCatalog()" style="font-size:11px;padding:4px 8px;background:var(--surf);border:1px solid var(--line2);color:var(--ink);border-radius:3px">
+              <option value="">all posture</option>
+              <option value="protected">protected</option>
+              <option value="partial">partial</option>
+              <option value="unprotected">unprotected</option>
+              <option value="shadow">shadow</option>
+            </select>
+            <a class="btn" href="#" onclick="downloadReport();return false" style="font-size:10px;padding:4px 10px">CSV</a>
+          </div>
         </div>
         <div class="t-scroll">
           <table>
-            <thead><tr><th>#</th><th>Method</th><th>Path</th><th>Status</th></tr></thead>
-            <tbody id="ep-body"></tbody>
+            <thead><tr><th>Method</th><th>Path Template</th><th>Posture</th><th>Risk</th><th>Reqs</th><th>Consumers</th><th>Auth</th><th>PII</th><th>Last Seen</th></tr></thead>
+            <tbody id="cat-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <!-- detail drawer -->
+      <div class="block" id="cat-detail" style="display:none">
+        <div class="block-head">
+          <div class="block-head-left"><span class="block-title" id="cd-title">Endpoint</span></div>
+          <button class="btn" onclick="document.getElementById('cat-detail').style.display='none'" style="font-size:10px;padding:4px 10px">Close</button>
+        </div>
+        <div class="block-body" id="cd-body"></div>
+      </div>
+    </div>
+
+    <!-- Posture / Coverage -->
+    <div class="pg" id="pg-posture">
+      <div class="row c2-1" style="flex-shrink:0">
+        <div class="block">
+          <div class="block-head"><span class="block-title">Coverage</span><span class="badge" id="cov-pct">—</span></div>
+          <div class="block-body">
+            <div class="cov-wrap">
+              <canvas id="cov-donut" width="160" height="160" style="width:120px;height:120px"></canvas>
+              <div class="cov-legend" id="cov-legend"></div>
+            </div>
+          </div>
+        </div>
+        <div class="block">
+          <div class="block-head"><span class="block-title">Effectiveness — Blocks by Control</span></div>
+          <div class="block-body"><div id="eff-bars"></div></div>
+        </div>
+      </div>
+      <div class="block fill">
+        <div class="block-head"><span class="block-title">Top Risk Endpoints</span><span class="badge red" id="risk-badge">0</span></div>
+        <div class="t-scroll">
+          <table>
+            <thead><tr><th>Method</th><th>Path Template</th><th>Posture</th><th>Risk</th><th>PII</th><th>Reqs</th></tr></thead>
+            <tbody id="risk-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Consumers: who calls the APIs -->
+    <div class="pg" id="pg-consumers">
+      <div class="block fill">
+        <div class="block-head">
+          <div class="block-head-left"><span class="block-title">API Consumers</span><span class="block-sub">who calls your APIs</span></div>
+          <span class="badge" id="con-badge">0</span>
+        </div>
+        <div class="t-scroll">
+          <table>
+            <thead><tr><th>Consumer</th><th>Type</th><th>Endpoints</th><th>Requests</th><th>Errors</th><th>Last Seen</th></tr></thead>
+            <tbody id="con-body"></tbody>
           </table>
         </div>
       </div>
@@ -706,7 +812,7 @@ canvas { background: var(--bg); display:block; }
 
 <script>
 const API = location.origin;
-let KEY = localStorage.getItem('ak') || '';
+let KEY = sessionStorage.getItem('ak') || '';
 let tid = null;
 const hist = [];
 
@@ -729,7 +835,7 @@ async function login() {
   if (!k) return;
   const r = await fetch(API + '/api/metrics', { headers: { Authorization: 'Bearer ' + k } });
   if (r.ok) {
-    KEY = k; localStorage.setItem('ak', KEY);
+    KEY = k; sessionStorage.setItem('ak', KEY);
     document.getElementById('ak').value = '';
     document.getElementById('lerr').style.display = 'none';
     document.getElementById('login').style.display = 'none';
@@ -740,7 +846,7 @@ async function login() {
   }
 }
 function logout() {
-  localStorage.removeItem('ak'); KEY = '';
+  sessionStorage.removeItem('ak'); KEY = '';
   document.getElementById('app').classList.remove('show');
   document.getElementById('login').style.display = 'flex';
   if (tid) clearInterval(tid);
@@ -798,6 +904,22 @@ function mTag(m) {
   const map = {GET:'m-get',POST:'m-post',PUT:'m-put',DELETE:'m-del',PATCH:'m-pat'};
   return `<span class="method ${map[m]||''}">${m}</span>`;
 }
+function postureTag(p) {
+  const map = {
+    protected:   ['tag-prot','PROTECTED'],
+    partial:     ['tag-part','PARTIAL'],
+    unprotected: ['tag-unprot','UNPROTECTED'],
+    shadow:      ['tag-shadow','SHADOW'],
+  };
+  const [cls,lbl] = map[p] || ['tag-ip',(p||'?').toUpperCase()];
+  return `<span class="tag ${cls}">${lbl}</span>`;
+}
+function riskCell(n) {
+  const c = n >= 60 ? 'risk-hi' : n >= 30 ? 'risk-md' : 'risk-lo';
+  return `<span class="risk ${c}">${n}</span>`;
+}
+function piiTag(n) { return n > 0 ? '<span class="tag tag-pii">PII</span>' : '<span class="td-dim">—</span>'; }
+function esc(s) { return String(s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 /* ── Line Chart ── */
 const LINE_H = 126;
@@ -903,14 +1025,14 @@ function drawThreatBars(cats) {
 
 /* ── Loaders ── */
 async function loadOverview() {
-  const [m, b] = await Promise.all([q('/api/metrics'), q('/api/block-log')]);
+  const [m, b, sum] = await Promise.all([q('/api/metrics'), q('/api/block-log'), q('/api/posture/summary')]);
   if (m) {
     const blocked = (m.waf_blocked||0)+(m.blocked_rate_limit_exceeded||0)+(m.blocked_admin_no_auth||0)+(m.blocked_admin_bad_secret||0)+(m.bot_ja3_blocked||0);
     const passed  = m.requests_passed_waf || 0;
     document.getElementById('m-total').textContent   = fmt(blocked + passed);
     document.getElementById('m-blocked').textContent = fmt(blocked);
     document.getElementById('m-passed').textContent  = fmt(passed);
-    document.getElementById('m-ep').textContent      = fmt(m.api_new_endpoint || 0);
+    document.getElementById('m-ep').textContent      = fmt((sum && sum.total) || 0);
 
     hist.push({ t: Date.now(), b: blocked, p: passed });
     if (hist.length > 50) hist.shift();
@@ -950,20 +1072,17 @@ async function loadThreats() {
 }
 
 async function loadAnalytics() {
-  const [m, b, inv] = await Promise.all([q('/api/metrics'), q('/api/block-log'), q('/api/inventory')]);
+  const [m, b, cat] = await Promise.all([q('/api/metrics'), q('/api/block-log'), q('/api/catalog?limit=500')]);
   drawLine('ch-line2', hist.length ? hist : []);
   if (m) {
     const cats = { WAF: m.waf_blocked||0, Rate: m.blocked_rate_limit_exceeded||0, Auth: (m.blocked_admin_no_auth||0)+(m.blocked_admin_bad_secret||0), Bot: m.bot_ja3_blocked||0 };
     drawBar(cats);
   }
-  if (inv?.endpoints) {
-    const cnt = {};
-    inv.endpoints.forEach(e => { cnt[e] = (cnt[e]||0)+1; });
-    document.getElementById('top-ep').innerHTML = Object.entries(cnt).sort((a,b)=>b[1]-a[1]).slice(0,8)
-      .map(([ep,n],i) => {
-        const [m,...p] = ep.split(' ');
-        return `<tr><td class="td-mono td-dim">${i+1}</td><td>${mTag(m)}</td><td class="td-path">${p.join(' ')}</td><td class="td-mono" style="color:var(--amber)">${n}</td></tr>`;
-      }).join('') || '<tr><td colspan="4" class="empty">No data</td></tr>';
+  if (cat?.endpoints) {
+    const top = [...cat.endpoints].sort((a,b)=>b.request_count-a.request_count).slice(0,8);
+    document.getElementById('top-ep').innerHTML = top
+      .map((e,i) => `<tr><td class="td-mono td-dim">${i+1}</td><td>${mTag(e.method)}</td><td class="td-path">${esc(e.path_template)}</td><td class="td-mono" style="color:var(--amber)">${fmt(e.request_count)}</td></tr>`)
+      .join('') || '<tr><td colspan="4" class="empty">No data</td></tr>';
   }
   if (b?.length) {
     const CTRY = ['US','CN','RU','DE','NL','IN','BR','FR','GB','KR'];
@@ -1015,15 +1134,6 @@ async function loadAccess() {
   ).join('') || '<tr><td colspan="3" class="empty">No blocked addresses</td></tr>';
 }
 
-async function loadInventory() {
-  const d = await q('/api/inventory'); if (!d) return;
-  document.getElementById('ep-badge').textContent = d.count || 0;
-  document.getElementById('ep-body').innerHTML = (d.endpoints||[]).map((e,i) => {
-    const [m,...p] = e.split(' ');
-    return `<tr><td class="td-mono td-dim">${i+1}</td><td>${mTag(m)}</td><td class="td-path">${p.join(' ')}</td><td><span class="tag tag-ok">ACTIVE</span></td></tr>`;
-  }).join('') || '<tr><td colspan="4" class="empty">No endpoints discovered</td></tr>';
-}
-
 async function loadConfig() {
   const [c, r] = await Promise.all([q('/api/config'), q('/api/routes')]);
   if (c) document.getElementById('cfg-json').textContent = JSON.stringify(c, null, 2);
@@ -1033,6 +1143,156 @@ async function loadConfig() {
       <td class="td-mono td-dim">${(x.upstreams||[]).join(', ')}</td>
       <td><span class="tag tag-ok">${x.load_balance||'rr'}</span></td>
     </tr>`).join('');
+}
+
+/* ── API Catalog ── */
+let CATALOG = [];
+async function loadCatalog() {
+  const qy = encodeURIComponent(document.getElementById('cat-q')?.value || '');
+  const pf = document.getElementById('cat-posture')?.value || '';
+  const [d, sum] = await Promise.all([
+    q('/api/catalog?limit=500&q='+qy+(pf?'&posture='+pf:'')),
+    q('/api/posture/summary'),
+  ]);
+  if (sum) {
+    document.getElementById('cat-total').textContent  = fmt(sum.total||0);
+    document.getElementById('cat-prot').textContent   = fmt(sum.protected||0);
+    document.getElementById('cat-unprot').textContent = fmt(sum.unprotected||0);
+    document.getElementById('cat-shadow').textContent = fmt(sum.shadow||0);
+  }
+  if (!d) { document.getElementById('cat-body').innerHTML = '<tr><td colspan="9" class="empty">Discovery disabled (set forensic_dsn) or no data yet</td></tr>'; return; }
+  CATALOG = d.endpoints || [];
+  document.getElementById('cat-body').innerHTML = CATALOG.map(e => `
+    <tr class="crow" onclick="openEndpoint('${esc(e.id)}')">
+      <td>${mTag(e.method)}</td>
+      <td class="td-path">${esc(e.path_template)}</td>
+      <td>${postureTag(e.posture)}</td>
+      <td>${riskCell(e.risk_score)}</td>
+      <td class="td-mono td-dim">${fmt(e.request_count)}</td>
+      <td class="td-mono td-dim">—</td>
+      <td class="td-mono td-dim">${e.auth_present_count>0?'<span class="tag tag-ok">'+fmt(e.auth_present_count)+'</span>':'<span class="td-dim">0</span>'}</td>
+      <td>${piiTag(e.pii_count)}</td>
+      <td class="td-mono td-dim">${ago(e.last_seen)}</td>
+    </tr>`).join('') || '<tr><td colspan="9" class="empty">No endpoints discovered yet</td></tr>';
+}
+
+async function openEndpoint(id) {
+  const d = await q('/api/catalog/'+encodeURIComponent(id)); if (!d || !d.endpoint) return;
+  const e = d.endpoint, c = e.controls || {};
+  const chip = (on,label) => `<span class="ctrl ${on?'on':'off'}">${on?'✓':'✗'} ${label}</span>`;
+  const consumers = (d.consumers||[]).map(x => `
+    <tr><td class="td-ip">${esc(x.label)}</td><td><span class="tag tag-ip">${x.kind}</span></td>
+    <td class="td-mono td-dim">${fmt(x.request_count)}</td><td class="td-mono td-dim">${ago(x.last_seen)}</td></tr>`).join('')
+    || '<tr><td colspan="4" class="empty">No consumers recorded</td></tr>';
+  const statusRows = Object.entries(e.status_dist||{}).sort((a,b)=>a[0]-b[0])
+    .map(([s,n]) => `<span class="ctrl ${s<'400'?'on':'off'}">${s}: ${fmt(n)}</span>`).join(' ') || '<span class="td-dim">—</span>';
+  document.getElementById('cd-title').textContent = e.method + ' ' + e.path_template;
+  document.getElementById('cd-body').innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <div style="font-size:10px;color:var(--ink3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Security Controls</div>
+        <div class="ctrl-grid">
+          ${chip(c.auth_required,'AUTH')}${chip(c.waf,'WAF')}${chip(c.rate_limit,'RATE-LIMIT')}
+          ${chip(c.dlp,'DLP')}${chip(c.bot_protection,'BOT')}${chip(c.ip_guard,'IP-GUARD')}
+        </div>
+        <div style="margin-top:14px;font-size:11px;color:var(--ink2);line-height:1.8">
+          Posture: ${postureTag(e.posture)} &nbsp; Risk: ${riskCell(e.risk_score)}<br>
+          Requests: <b>${fmt(e.request_count)}</b> &nbsp; Errors: <b>${fmt(e.error_count)}</b><br>
+          Authenticated: <b>${fmt(e.auth_present_count)}</b> &nbsp; Anonymous: <b>${fmt(e.anon_count)}</b><br>
+          PII responses: <b>${fmt(e.pii_count)}</b> &nbsp; Avg latency: <b>${e.avg_latency_ms}ms</b><br>
+          Route: <span class="td-path">${esc(e.route_path||'(none — shadow)')}</span>
+        </div>
+        <div style="margin-top:12px;font-size:10px;color:var(--ink3);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Status Distribution</div>
+        <div class="ctrl-grid">${statusRows}</div>
+      </div>
+      <div>
+        <div style="font-size:10px;color:var(--ink3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Consumers</div>
+        <div class="t-scroll" style="max-height:260px"><table>
+          <thead><tr><th>Consumer</th><th>Type</th><th>Reqs</th><th>Last</th></tr></thead>
+          <tbody>${consumers}</tbody></table></div>
+      </div>
+    </div>`;
+  const dd = document.getElementById('cat-detail'); dd.style.display = 'flex'; dd.scrollIntoView({behavior:'smooth'});
+}
+
+function downloadReport() {
+  const url = API + '/api/report?format=csv';
+  fetch(url, { headers: { Authorization: 'Bearer ' + KEY } })
+    .then(r => r.blob()).then(b => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(b); a.download = 'aegis-api-report.csv'; a.click();
+      URL.revokeObjectURL(a.href);
+    });
+}
+
+/* ── Posture / Coverage ── */
+function drawDonut(sum) {
+  const c = document.getElementById('cov-donut'); if (!c) return;
+  const ctx = c.getContext('2d'); const W=160,H=160; ctx.clearRect(0,0,W,H);
+  const segs = [
+    ['Protected',   sum.protected||0,  '#5a9a6a'],
+    ['Partial',     sum.partial||0,    '#c9a84c'],
+    ['Unprotected', sum.unprotected||0,'#c94040'],
+    ['Shadow',      sum.shadow||0,     '#9a7acc'],
+  ];
+  const total = segs.reduce((a,s)=>a+s[1],0) || 1;
+  let start = -Math.PI/2; const cx=W/2, cy=H/2, rO=70, rI=42;
+  segs.forEach(s => {
+    if (s[1] === 0) return;
+    const ang = (s[1]/total)*Math.PI*2;
+    ctx.beginPath(); ctx.moveTo(cx,cy);
+    ctx.arc(cx,cy,rO,start,start+ang); ctx.closePath();
+    ctx.fillStyle = s[2]; ctx.fill();
+    start += ang;
+  });
+  ctx.beginPath(); ctx.arc(cx,cy,rI,0,Math.PI*2); ctx.fillStyle = '#0e1116'; ctx.fill();
+  ctx.fillStyle = '#c8d0da'; ctx.font = 'bold 22px JetBrains Mono'; ctx.textAlign='center';
+  ctx.fillText((sum.coverage_pct||0)+'%', cx, cy+2);
+  ctx.fillStyle = '#7a8594'; ctx.font = '8px Inter'; ctx.fillText('COVERAGE', cx, cy+16);
+  document.getElementById('cov-legend').innerHTML = segs.map(s =>
+    `<div class="li"><span class="dot" style="background:${s[2]}"></span>${s[0]} <b style="color:var(--ink)">${fmt(s[1])}</b></div>`).join('');
+}
+async function loadPosture() {
+  const [sum, eff] = await Promise.all([q('/api/posture/summary'), q('/api/effectiveness')]);
+  if (sum) {
+    document.getElementById('cov-pct').textContent = (sum.coverage_pct||0)+'%';
+    drawDonut(sum);
+    const top = sum.top_risky || [];
+    document.getElementById('risk-badge').textContent = top.length;
+    document.getElementById('risk-body').innerHTML = top.map(e => `
+      <tr><td>${mTag(e.method)}</td><td class="td-path">${esc(e.path_template)}</td>
+      <td>${postureTag(e.posture)}</td><td>${riskCell(e.risk_score)}</td>
+      <td>${piiTag(e.pii_count)}</td><td class="td-mono td-dim">${fmt(e.request_count)}</td></tr>`).join('')
+      || '<tr><td colspan="6" class="empty">No data</td></tr>';
+  }
+  if (eff && eff.blocks_by_control) {
+    const cats = eff.blocks_by_control;
+    const total = Math.max(Object.values(cats).reduce((a,b)=>a+b,0),1);
+    const colors = {waf:'#c94040',rate_limit:'#c9a040',ip_guard:'#6a9acc',behavior:'#9a7acc',threatfeed:'#cc6a9a',bot:'#7a8a9a',dlp:'#5a9a6a'};
+    document.getElementById('eff-bars').innerHTML = Object.entries(cats).map(([k,v]) => `
+      <div class="bar-row">
+        <span class="bar-row-label">${k.replace(/_/g,' ')}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${Math.round(v/total*100)}%;background:${colors[k]||'#7a8594'}"></div></div>
+        <span class="bar-count">${fmt(v)}</span>
+      </div>`).join('');
+  }
+}
+
+/* ── Consumers ── */
+async function loadConsumers() {
+  const d = await q('/api/consumers?limit=200');
+  if (!d) { document.getElementById('con-body').innerHTML = '<tr><td colspan="6" class="empty">Discovery disabled or no data</td></tr>'; return; }
+  const cs = d.consumers || [];
+  document.getElementById('con-badge').textContent = cs.length;
+  document.getElementById('con-body').innerHTML = cs.map(c => `
+    <tr>
+      <td class="td-ip">${esc(c.label)}</td>
+      <td><span class="tag tag-ip">${c.kind}</span></td>
+      <td class="td-mono td-dim">${fmt(c.endpoints_touched)}</td>
+      <td class="td-mono" style="color:var(--amber)">${fmt(c.request_count)}</td>
+      <td class="td-mono td-dim">${fmt(c.error_count)}</td>
+      <td class="td-mono td-dim">${ago(c.last_seen)}</td>
+    </tr>`).join('') || '<tr><td colspan="6" class="empty">No consumers recorded yet</td></tr>';
 }
 
 async function doBlock() {
@@ -1050,9 +1310,11 @@ const pages = {
   overview:  { label:'Overview',       loader: loadOverview },
   threats:   { label:'Threat Feed',    loader: loadThreats },
   analytics: { label:'Analytics',      loader: loadAnalytics },
+  catalog:   { label:'API Catalog',    loader: loadCatalog },
+  posture:   { label:'Posture',        loader: loadPosture },
+  consumers: { label:'Consumers',      loader: loadConsumers },
   keys:      { label:'API Keys',        loader: loadKeys },
   access:    { label:'Access Control', loader: loadAccess },
-  inventory: { label:'Endpoints',      loader: loadInventory },
   config:    { label:'Settings',       loader: loadConfig },
 };
 function nav(tab) {

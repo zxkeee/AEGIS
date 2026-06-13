@@ -2,6 +2,8 @@ version: "3.9"
 
 services:
   # ── API Security Gateway ─────────────────────────────────────────────────────
+  # Required env vars (copy .env.example → .env and fill in values):
+  #   AEGIS_ADMIN_SECRET, AEGIS_REDIS_PASSWORD, AEGIS_JWT_SECRET (if auth.enabled)
   gateway:
     build: .
     ports:
@@ -13,7 +15,10 @@ services:
       redis:
         condition: service_healthy
     environment:
-      - REDIS_ADDR=redis:6379
+      - AEGIS_ADMIN_SECRET=${AEGIS_ADMIN_SECRET}
+      - AEGIS_REDIS_PASSWORD=${AEGIS_REDIS_PASSWORD}
+      - AEGIS_JWT_SECRET=${AEGIS_JWT_SECRET:-}
+      - AEGIS_FORENSIC_DSN=${AEGIS_FORENSIC_DSN:-}
     restart: unless-stopped
     networks:
       - aegis
@@ -21,13 +26,17 @@ services:
   # ── Redis (State Store) ──────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # Redis port is NOT exposed to the host — only reachable inside the aegis network.
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${AEGIS_REDIS_PASSWORD}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${AEGIS_REDIS_PASSWORD}", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -36,10 +45,9 @@ services:
       - aegis
 
   # ── Prometheus (Metrics Collection) ──────────────────────────────────────────
+  # Prometheus is NOT exposed to the host — access via Grafana or kubectl port-forward.
   prometheus:
     image: prom/prometheus:v2.52.0
-    ports:
-      - "9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -51,11 +59,11 @@ services:
   grafana:
     image: grafana/grafana:10.4.3
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"   # localhost only — do not expose publicly
     volumes:
       - grafana_data:/var/lib/grafana
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
       - GF_USERS_ALLOW_SIGN_UP=false
     restart: unless-stopped
     networks:

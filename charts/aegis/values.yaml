@@ -42,12 +42,34 @@ autoscaling:
   targetCPUUtilizationPercentage: 70
   targetMemoryUtilizationPercentage: 80
 
-# Gateway configuration (injected as ConfigMap)
+# Secret management.
+# Option 1 (recommended): reference a pre-created K8s Secret.
+#   kubectl create secret generic aegis-secrets \
+#     --from-literal=admin-secret=$(openssl rand -hex 32)
+# Option 2: let the chart create a secret (value must be set at deploy time).
+#   helm install aegis . --set secrets.adminSecret=<value>
+secrets:
+  # Name of an existing K8s Secret containing all required keys:
+  #   admin-secret, redis-password, jwt-secret (optional)
+  # When set, the values below are ignored.
+  existingSecret: ""
+  # Direct values — only used if existingSecret is empty.
+  # NEVER commit real values here; pass via --set or CI secret injection.
+  # Example:
+  #   helm install aegis . \
+  #     --set secrets.adminSecret=$(openssl rand -hex 32) \
+  #     --set secrets.redisPassword=$(openssl rand -hex 24) \
+  #     --set secrets.jwtSecret=$(openssl rand -hex 32)
+  adminSecret: ""
+  redisPassword: ""
+  jwtSecret: ""
+
+# Gateway configuration (injected as ConfigMap — no secrets here)
 gateway:
   listen: ":8080"
   admin_listen: ":8081"
   admin_auth: true
-  admin_secret: "CHANGE-ME-IN-PRODUCTION"
+  admin_secret: ""   # populated at runtime via AEGIS_ADMIN_SECRET env var
   forensic_dsn: ""  # e.g., "postgres://user:pass@pg-host:5432/aegis?sslmode=require"
 
   redis:
@@ -84,7 +106,9 @@ gateway:
       enabled: true
     cors:
       enabled: true
-      allow_origins: ["*"]
+      # List explicit origins — never use ["*"] in production with JWT auth enabled.
+      # Example: ["https://app.example.com"]
+      allow_origins: []
       allow_methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
       allow_headers: ["Content-Type", "Authorization"]
 
@@ -100,7 +124,11 @@ redis:
   enabled: true
   architecture: standalone
   auth:
-    enabled: false
+    enabled: true
+    # existingSecret must contain key "redis-password".
+    # Points to the same secret created by this chart.
+    existingSecret: ""        # filled in by deployment.yaml template logic
+    existingSecretPasswordKey: redis-password
   resources:
     limits:
       cpu: 200m

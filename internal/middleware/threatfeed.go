@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bufio"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -9,6 +10,13 @@ import (
 	"time"
 
 	"api-gateway/internal/config"
+)
+
+const (
+	// threatFeedMaxBytes caps the response body to prevent OOM via a malicious feed.
+	threatFeedMaxBytes = 10 * 1024 * 1024 // 10 MB
+	// threatFeedMaxIPs caps the in-memory blocklist to prevent memory exhaustion.
+	threatFeedMaxIPs = 500_000
 )
 
 // ThreatFeed blocks IPs from known threat intelligence feeds.
@@ -76,9 +84,27 @@ func (tf *threatFeed) refresh() {
 	}
 	defer resp.Body.Close()
 
-	newThreats := make(map[string]bool)
-	scanner := bufio.NewScanner(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		tf.log.Error("threat_feed: unexpected status", map[string]any{
+			"status": resp.StatusCode,
+			"url":    tf.url,
+		})
+		return
+	}
+
+	// Cap body size to prevent OOM from a malicious or misconfigured feed.
+	limited := io.LimitReader(resp.Body, threatFeedMaxBytes)
+
+	newThreats := make(map[string]bool, 1024)
+	scanner := bufio.NewScanner(limited)
 	for scanner.Scan() {
+		if len(newThreats) >= threatFeedMaxIPs {
+			tf.log.Error("threat_feed: IP limit reached, truncating", map[string]any{
+				"limit": threatFeedMaxIPs,
+				"url":   tf.url,
+			})
+			break
+		}
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -87,6 +113,11 @@ func (tf *threatFeed) refresh() {
 		if net.ParseIP(ip) != nil {
 			newThreats[ip] = true
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		tf.log.Error("threat_feed: scan error", map[string]any{"error": err.Error(), "url": tf.url})
+		// Keep the previous blocklist rather than replacing with partial data.
+		return
 	}
 
 	tf.mu.Lock()

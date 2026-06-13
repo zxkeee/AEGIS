@@ -1,14 +1,17 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"api-gateway/internal/alert"
 	"api-gateway/internal/config"
+	"api-gateway/internal/discovery"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/proxy"
 	"api-gateway/internal/store"
@@ -20,6 +23,27 @@ type handlers struct {
 	cfg     config.GatewayConfig
 	gateway *proxy.Gateway
 	alerts  *alert.Engine
+	catalog *discovery.Catalog
+}
+
+// requireAuth is a defence-in-depth check called directly inside mutating
+// handlers. It ensures state-changing operations are always authenticated,
+// even if a future middleware refactor accidentally removes the outer check.
+func (h *handlers) requireAuth(w http.ResponseWriter, r *http.Request) bool {
+	if !h.cfg.AdminAuth {
+		return true // auth disabled (dev mode), already warned at startup
+	}
+	auth := r.Header.Get("Authorization")
+	if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return false
+	}
+	token := strings.TrimPrefix(auth, "Bearer ")
+	if subtle.ConstantTimeCompare([]byte(token), []byte(h.cfg.AdminSecret)) != 1 {
+		writeError(w, http.StatusForbidden, "invalid credentials")
+		return false
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, code int, data any) {
@@ -153,6 +177,9 @@ func (h *handlers) getBlockedIPs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) blockIPHandler(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAuth(w, r) {
+		return
+	}
 	var req struct {
 		IP     string `json:"ip"`
 		Reason string `json:"reason"`
@@ -179,6 +206,9 @@ func (h *handlers) blockIPHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) unblockIPHandler(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAuth(w, r) {
+		return
+	}
 	ip := r.PathValue("ip")
 	if ip == "" || net.ParseIP(ip) == nil {
 		writeError(w, http.StatusBadRequest, "valid IP address is required")
@@ -198,6 +228,9 @@ func (h *handlers) unblockIPHandler(w http.ResponseWriter, r *http.Request) {
 // ── JWT Revocation ────────────────────────────────────────────────────────────
 
 func (h *handlers) revokeJWT(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAuth(w, r) {
+		return
+	}
 	var req struct {
 		JTI        string `json:"jti"`
 		TTLSeconds int    `json:"ttl_seconds"`

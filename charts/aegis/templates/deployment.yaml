@@ -30,6 +30,26 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["--config", "/etc/aegis/gateway.yaml"]
+          env:
+            {{- $secretName := .Values.secrets.existingSecret | default (printf "%s-secrets" (include "aegis.fullname" .)) }}
+            - name: AEGIS_ADMIN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: admin-secret
+            - name: AEGIS_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: redis-password
+            {{- if or .Values.secrets.jwtSecret .Values.secrets.existingSecret }}
+            - name: AEGIS_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: jwt-secret
+                  optional: true
+            {{- end }}
           ports:
             - name: gateway
               containerPort: 8080

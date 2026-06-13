@@ -30,3 +30,13 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# OS junk
+.DS_Store
+
+# Build output
+/bin/
+
+# Redis dump (local dev)
+*.rdb
+dump.rdb

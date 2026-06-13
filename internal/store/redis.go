@@ -2,8 +2,8 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -69,17 +69,28 @@ func (s *Store) Ping(ctx context.Context) error {
 
 const keyRatePrefix = "gw:rate:"
 
+// rateLimitScript atomically increments the counter and sets the window TTL
+// ONLY on the first increment (when the key is created). Refreshing the TTL on
+// every request — as a naive INCR+EXPIRE pipeline does — keeps the key alive
+// forever under sustained traffic, so the counter never resets and the client
+// is locked out permanently. Setting EXPIRE only when no TTL exists (-1) gives
+// a true fixed window that resets after `window` seconds.
+var rateLimitScript = redis.NewScript(`
+	local count = redis.call("INCR", KEYS[1])
+	if count == 1 or redis.call("TTL", KEYS[1]) == -1 then
+		redis.call("EXPIRE", KEYS[1], ARGV[1])
+	end
+	return count
+`)
+
 // IncrRate increments the rate counter for a key and returns the current count.
 func (s *Store) IncrRate(ctx context.Context, key string, window time.Duration) (int64, error) {
 	rk := keyRatePrefix + key
-	pipe := s.client.Pipeline()
-	incr := pipe.Incr(ctx, rk)
-	pipe.Expire(ctx, rk, window)
-	_, err := pipe.Exec(ctx)
-	if err != nil {
-		return 0, err
+	secs := int(window.Seconds())
+	if secs < 1 {
+		secs = 1
 	}
-	return incr.Val(), nil
+	return rateLimitScript.Run(ctx, s.client, []string{rk}, secs).Int64()
 }
 
 // ── IP Blocking ───────────────────────────────────────────────────────────────
@@ -149,10 +160,15 @@ func (s *Store) RecordRequest(ctx context.Context, ip, path string, statusCode i
 	pipe.PFAdd(ctx, base+":paths", path)
 	pipe.Expire(ctx, base+":paths", 60*time.Second)
 
-	pipe.Exec(ctx) //nolint:errcheck
+	if _, err := pipe.Exec(ctx); err != nil {
+		s.client.Incr(ctx, "gw:metrics:behavior_record_redis_error") //nolint:errcheck
+	}
 }
 
 // CalcBehaviorScore calculates a risk score (0-100) for an IP.
+// On Redis failure it returns 0 and increments a metric so operators can alert.
+// We do NOT fail-closed (return threshold) because a Redis disruption would
+// then block all traffic — a worse outcome than a temporary scoring gap.
 func (s *Store) CalcBehaviorScore(ctx context.Context, ip string, threshold int) int {
 	base := "gw:behavior:" + ip
 
@@ -162,7 +178,12 @@ func (s *Store) CalcBehaviorScore(ctx context.Context, ip string, threshold int)
 	hllCmd := pipe.PFCount(ctx, base+":paths")
 	burstCmd := pipe.Get(ctx, base+":burst")
 	penaltyCmd := pipe.Get(ctx, base+":penalty")
-	pipe.Exec(ctx) //nolint:errcheck
+
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		// Pipeline error: increment observable metric and bail out.
+		s.client.Incr(ctx, "gw:metrics:behavior_score_redis_error") //nolint:errcheck
+		return 0
+	}
 
 	reqs, _ := reqCmd.Int64()
 	errs, _ := errCmd.Int64()
@@ -259,9 +280,22 @@ func (s *Store) IsChallengeSolved(ctx context.Context, ip string) (bool, error) 
 
 const keyInventory = "gw:api_inventory"
 
+// inventoryMaxEndpoints caps the inventory set so a flood of unique paths cannot
+// exhaust Redis memory. Real APIs have far fewer than this many endpoints.
+const inventoryMaxEndpoints = 10_000
+
+// inventoryMaxParamsPerEndpoint caps tracked query parameters per endpoint.
+const inventoryMaxParamsPerEndpoint = 200
+
 // RecordEndpoint adds an endpoint to the inventory set.
 // Returns (true, nil) when the endpoint is seen for the first time.
 func (s *Store) RecordEndpoint(ctx context.Context, endpoint string) (bool, error) {
+	// Defence-in-depth cardinality cap: stop growing the set once the limit is
+	// reached so a path-flooding attacker cannot exhaust memory.
+	if card, err := s.client.SCard(ctx, keyInventory).Result(); err == nil && card >= inventoryMaxEndpoints {
+		// At capacity: stop adding new entries (treat as "not new").
+		return false, nil
+	}
 	n, err := s.client.SAdd(ctx, keyInventory, endpoint).Result()
 	return n > 0, err
 }
@@ -269,6 +303,9 @@ func (s *Store) RecordEndpoint(ctx context.Context, endpoint string) (bool, erro
 // RecordParameters tracks query parameters per endpoint and returns newly discovered ones.
 func (s *Store) RecordParameters(ctx context.Context, endpoint string, params []string) ([]string, error) {
 	key := "gw:api_params:" + endpoint
+	if card, err := s.client.SCard(ctx, key).Result(); err == nil && card >= inventoryMaxParamsPerEndpoint {
+		return nil, nil
+	}
 	var newParams []string
 	for _, p := range params {
 		n, err := s.client.SAdd(ctx, key, p).Result()
@@ -313,16 +350,17 @@ func (s *Store) RevokeJTI(ctx context.Context, jti string, ttl time.Duration) er
 const keyForensic = "gw:forensic_log"
 
 // PushForensic adds a security event to the forensic log.
-// Events are always stored in Redis (fast, recent). If a persistent sink
-// (e.g., PostgreSQL) is configured, events are also sent there for long-term storage.
+// Events are stored as JSON so field values containing special characters
+// (pipes, spaces, etc.) cannot corrupt the log structure.
 func (s *Store) PushForensic(ctx context.Context, e ForensicEntry) {
-	data := fmt.Sprintf("%s|%s|%s|%s|%s|%d",
-		e.Timestamp.Format(time.RFC3339),
-		e.IP, e.Path, e.Method, e.Reason, e.Code)
-	s.client.LPush(ctx, keyForensic, data)   //nolint:errcheck
-	s.client.LTrim(ctx, keyForensic, 0, 999) //nolint:errcheck
+	data, err := json.Marshal(e)
+	if err != nil {
+		s.client.Incr(ctx, "gw:metrics:forensic_marshal_error") //nolint:errcheck
+		return
+	}
+	s.client.LPush(ctx, keyForensic, string(data)) //nolint:errcheck
+	s.client.LTrim(ctx, keyForensic, 0, 999)       //nolint:errcheck
 
-	// Also persist to PostgreSQL if configured
 	if s.forensicSink != nil {
 		s.forensicSink.Push(e)
 	}
@@ -336,20 +374,12 @@ func (s *Store) GetForensicLog(ctx context.Context, limit int64) ([]ForensicEntr
 	}
 	entries := make([]ForensicEntry, 0, len(vals))
 	for _, v := range vals {
-		parts := strings.SplitN(v, "|", 6)
-		if len(parts) < 6 {
+		var e ForensicEntry
+		if err := json.Unmarshal([]byte(v), &e); err != nil {
+			// Skip legacy pipe-delimited entries (migration period) without failing.
 			continue
 		}
-		ts, _ := time.Parse(time.RFC3339, parts[0])
-		code, _ := strconv.Atoi(parts[5])
-		entries = append(entries, ForensicEntry{
-			Timestamp: ts,
-			IP:        parts[1],
-			Path:      parts[2],
-			Method:    parts[3],
-			Reason:    parts[4],
-			Code:      code,
-		})
+		entries = append(entries, e)
 	}
 	return entries, nil
 }

@@ -5,6 +5,7 @@ import (
 
 	"api-gateway/internal/alert"
 	"api-gateway/internal/config"
+	"api-gateway/internal/discovery"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/proxy"
 	"api-gateway/internal/store"
@@ -18,10 +19,11 @@ type Server struct {
 	cfg     config.GatewayConfig
 	gateway *proxy.Gateway
 	alerts  *alert.Engine
+	catalog *discovery.Catalog
 }
 
 // NewServer creates a new admin API server.
-func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw *proxy.Gateway, alerts *alert.Engine) *Server {
+func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw *proxy.Gateway, alerts *alert.Engine, catalog *discovery.Catalog) *Server {
 	s := &Server{
 		mux:     http.NewServeMux(),
 		store:   st,
@@ -29,13 +31,14 @@ func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw
 		cfg:     cfg,
 		gateway: gw,
 		alerts:  alerts,
+		catalog: catalog,
 	}
 	s.registerRoutes()
 	return s
 }
 
 func (s *Server) registerRoutes() {
-	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts}
+	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog}
 
 	// Dashboard (unauthenticated — auth handled via JS prompt)
 	s.mux.HandleFunc("GET /", h.serveDashboard)
@@ -50,6 +53,14 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/routes", h.getRoutes)
 	s.mux.HandleFunc("GET /api/block-log", h.getBlockLog)
 	s.mux.HandleFunc("GET /api/inventory", h.getInventory)
+
+	// API Security: discovery catalog, consumers, posture, effectiveness, report
+	s.mux.HandleFunc("GET /api/catalog", h.getCatalog)
+	s.mux.HandleFunc("GET /api/catalog/{id}", h.getCatalogEndpoint)
+	s.mux.HandleFunc("GET /api/consumers", h.getConsumers)
+	s.mux.HandleFunc("GET /api/posture/summary", h.getPostureSummary)
+	s.mux.HandleFunc("GET /api/effectiveness", h.getEffectiveness)
+	s.mux.HandleFunc("GET /api/report", h.getReport)
 
 	// IP management
 	s.mux.HandleFunc("GET /api/blocked-ips", h.getBlockedIPs)

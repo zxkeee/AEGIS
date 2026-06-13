@@ -3,7 +3,18 @@
 listen: ":8080"          # Gateway proxy port
 admin_listen: ":8081"    # Admin API port
 admin_auth: true
-admin_secret: "change-me-to-a-strong-secret-in-production"
+# admin_secret is intentionally blank here — set via environment variable:
+#   export AEGIS_ADMIN_SECRET=$(openssl rand -hex 32)
+# Never put a real secret in this file.
+admin_secret: ""
+
+# Trusted reverse-proxy IPs or CIDRs.
+# Only connections from these addresses will have X-Forwarded-For trusted.
+# List the EXACT IPs of your load balancers / ingress nodes — broad private
+# ranges (10.0.0.0/8) allow anyone on the same network to spoof the client IP.
+# Leave empty to always use the TCP RemoteAddr (safest default).
+# Example: ["10.10.1.5/32", "10.10.1.6/32"]
+trusted_proxies: []
 
 tls:
   enabled: false
@@ -12,6 +23,8 @@ tls:
 
 redis:
   addr: "localhost:6379"
+  # password is intentionally blank here — set via environment variable:
+  #   export AEGIS_REDIS_PASSWORD=$(openssl rand -hex 24)
   password: ""
   db: 0
 
@@ -28,7 +41,10 @@ security:
 
   auth:
     enabled: false
-    secret: "your-jwt-secret-here"
+    # secret is intentionally blank here — set via environment variable:
+    #   export AEGIS_JWT_SECRET=$(openssl rand -hex 32)
+    # Prefer jwks_url (RSA/ECDSA) over a shared secret for production.
+    secret: ""
     issuer: ""
     audience: ""
     exclude:
@@ -62,7 +78,9 @@ security:
 
   cors:
     enabled: true
-    allow_origins: ["*"]
+    # List explicit origins — wildcard "*" is blocked when JWT auth is enabled.
+    # Example: ["https://app.example.com", "https://admin.example.com"]
+    allow_origins: []
     allow_methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     allow_headers: ["Content-Type", "Authorization"]
     max_age: 86400
@@ -88,6 +106,11 @@ registry:
   rotation_days: 90
 
 # Protected routes (reverse proxy targets)
+#
+# Per-route security overrides (require_auth / waf / dlp / rate_limit) are
+# OPTIONAL. When omitted the global security.* settings apply. They feed the
+# API Posture engine that classifies each endpoint as protected / partial /
+# unprotected / shadow in the dashboard.
 routes:
   - path: "/api/v1/"
     methods: ["GET", "POST", "PUT", "DELETE"]
@@ -97,3 +120,29 @@ routes:
     timeout: "30s"
     retry_attempts: 2
     strip_prefix: false
+
+  # Example: a fully protected sensitive route (overrides global settings).
+  # - path: "/payments/"
+  #   upstreams: ["http://payments:8080"]
+  #   require_auth: true
+  #   waf: true
+  #   dlp: true
+  #   rate_limit:
+  #     enabled: true
+  #     requests: 50
+  #     window: 60s
+
+  # Example: an internal, deliberately open route — shows up as "unprotected"
+  # in the posture dashboard so the gap is visible.
+  # - path: "/internal/"
+  #   upstreams: ["http://internal:8080"]
+  #   require_auth: false
+  #   waf: false
+  #   rate_limit:
+  #     enabled: false
+
+# ── API Discovery & Posture ──────────────────────────────────────────────────
+# The passive API discovery catalog (endpoint inventory, posture, consumers,
+# reporting) persists to PostgreSQL. Enable it by setting the forensic DSN:
+#   export AEGIS_FORENSIC_DSN="postgres://user:pass@localhost:5432/aegis?sslmode=disable"
+# When unset the catalog is disabled and the Discovery middleware is a no-op.

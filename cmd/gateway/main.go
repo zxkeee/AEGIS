@@ -14,6 +14,7 @@ import (
 	"api-gateway/internal/alert"
 	"api-gateway/internal/api"
 	"api-gateway/internal/config"
+	"api-gateway/internal/discovery"
 	"api-gateway/internal/forensic"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/middleware"
@@ -38,6 +39,14 @@ func main() {
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		panic("failed to load config: " + err.Error())
+	}
+	if err := config.Validate(cfg); err != nil {
+		panic("unsafe configuration: " + err.Error())
+	}
+
+	// Pre-parse trusted proxy CIDRs once so RealIP() never does it per-request.
+	if err := middleware.InitTrustedProxies(cfg.TrustedProxies); err != nil {
+		panic("invalid trusted_proxies config: " + err.Error())
 	}
 
 	// ── Logger ────────────────────────────────────────────────────────────────
@@ -73,9 +82,27 @@ func main() {
 		}
 	}
 
+	// ── API Discovery Catalog (passive posture management) ──────────────────
+	// Reuses the forensic PostgreSQL instance. When no DSN is configured the
+	// catalog is nil and the Discovery middleware degrades to a passthrough.
+	postureEng := discovery.NewPostureEngine(cfg)
+	var catalog *discovery.Catalog
+	if cfg.ForensicDSN != "" {
+		catalog, err = discovery.NewCatalog(cfg.ForensicDSN, postureEng, log)
+		if err != nil {
+			log.Error("api catalog init failed (discovery disabled)", map[string]any{"error": err.Error()})
+			catalog = nil
+		} else {
+			defer catalog.Close()
+			log.Info("api discovery catalog enabled", map[string]any{"backend": "postgresql"})
+		}
+	} else {
+		log.Warn("forensic_dsn not set — API discovery catalog disabled")
+	}
+
 	// ── Build Handler Chain ───────────────────────────────────────────────────
 	var activeHandler atomic.Value
-	handler, gw, err := buildHandlerChain(cfg, log, st, alerts)
+	handler, gw, err := buildHandlerChain(cfg, log, st, alerts, catalog)
 	if err != nil {
 		log.Error("failed to build handler chain", map[string]any{"error": err.Error()})
 		os.Exit(1)
@@ -96,7 +123,7 @@ func main() {
 	}
 
 	// ── Admin API Server ──────────────────────────────────────────────────────
-	adminSrv := api.NewServer(st, log, cfg, gw, alerts)
+	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog)
 
 	// FIX SEC: Protect admin API against brute force and DDoS
 	adminRateLimit := config.RateLimitConfig{
@@ -106,12 +133,18 @@ func main() {
 		BurstLimit: 10,
 	}
 
+	if !cfg.AdminAuth {
+		log.Warn("SECURITY WARNING: admin_auth is disabled — admin API is open to anyone", map[string]any{
+			"admin_listen": cfg.AdminListen,
+		})
+	}
+
 	adminHandler := middleware.Chain(adminSrv,
-		middleware.CORS(cfg.Security.CORS),
-		middleware.RateLimit(adminRateLimit, log, st), // Strict limit for admin API
+		middleware.RequestID(),       // innermost: stamp every request before anything else
+		middleware.SecurityHeaders(), // must wrap AdminAuth so 401/403 responses carry CSP/HSTS
 		middleware.AdminAuth(cfg, log, st),
-		middleware.SecurityHeaders(),
-		middleware.RequestID(),
+		middleware.RateLimit(adminRateLimit, log, st),
+		middleware.CORS(cfg.Security.CORS),
 	)
 	adminServer := &http.Server{
 		Addr:              cfg.AdminListen,
@@ -123,7 +156,7 @@ func main() {
 	}
 
 	// ── Hot Reload Watcher ────────────────────────────────────────────────────
-	go watchConfigFile(*cfgPath, &activeHandler, log, st, alerts)
+	go watchConfigFile(*cfgPath, &activeHandler, log, st, alerts, catalog)
 
 	// ── Start Servers ─────────────────────────────────────────────────────────
 	go func() {
@@ -163,7 +196,7 @@ func main() {
 }
 
 // buildHandlerChain constructs the full middleware chain for the gateway.
-func buildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st *store.Store, alerts *alert.Engine) (http.Handler, *proxy.Gateway, error) {
+func buildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st *store.Store, alerts *alert.Engine, catalog *discovery.Catalog) (http.Handler, *proxy.Gateway, error) {
 	// Build proxy
 	gw, err := proxy.New(cfg.Routes, log)
 	if err != nil {
@@ -173,7 +206,17 @@ func buildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st *store.S
 	// Build JWT auth
 	jwtAuth := middleware.NewJWTAuth(cfg.Security.Auth, log, st)
 
-	// Assemble middleware chain (order matters: outermost first)
+	// A nil *discovery.Catalog must be passed as a nil interface so the Discovery
+	// middleware's nil-check works (a typed-nil pointer in an interface is non-nil).
+	var cat middleware.Catalog
+	if catalog != nil {
+		cat = catalog
+	}
+
+	// Assemble middleware chain (order matters: outermost first).
+	// Discovery sits just inside the security perimeter (after WAF/rate-limit/bot
+	// so attacks stay out of the catalog) and outside auth/DLP so it can enrich
+	// the observation with identity and PII signals and capture the final status.
 	handler := middleware.Chain(gw,
 		middleware.CleanHeaders(),    // SEC: Strip spoofed X-Gateway-* headers
 		middleware.SecurityHeaders(), // ARCH-6: Security headers on every response
@@ -185,8 +228,8 @@ func buildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st *store.S
 		middleware.BotProtection(cfg.Security.Bot, log, st),
 		middleware.Challenge(cfg.Security.Challenge, log, st),
 		middleware.WAF(cfg.Security.WAF, log, st),
+		middleware.Discovery(cfg.Security.Inventory, cat, log), // passive API discovery
 		jwtAuth.Middleware(),
-		middleware.APIInventory(cfg.Security.Inventory, st, log, alerts),
 		middleware.DLP(cfg.Security.DLP, log, st),
 		middleware.BehaviorAnalysis(cfg.Security.Behavior, log, st),
 	)
@@ -196,7 +239,7 @@ func buildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st *store.S
 
 // watchConfigFile uses fsnotify for instant config hot-reload (zero-downtime).
 // Falls back to 5s polling if fsnotify setup fails.
-func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logger, st *store.Store, alerts *alert.Engine) {
+func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logger, st *store.Store, alerts *alert.Engine, catalog *discovery.Catalog) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		absPath = path
@@ -211,10 +254,15 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 			return
 		}
 
-		newHandler, _, err := buildHandlerChain(newCfg, log, st, alerts)
+		newHandler, _, err := buildHandlerChain(newCfg, log, st, alerts, catalog)
 		if err != nil {
 			log.Error("hot-reload: chain build error", map[string]any{"error": err.Error()})
 			return
+		}
+
+		// Re-classify future traffic against the new configuration.
+		if catalog != nil {
+			catalog.SetPostureEngine(discovery.NewPostureEngine(newCfg))
 		}
 
 		activeHandler.Store(newHandler)

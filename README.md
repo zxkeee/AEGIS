@@ -57,11 +57,23 @@ Ensures uninterrupted backend operation and meets banking and enterprise sector 
 - **JTI Blacklist** for instant token revocation
 - Timing attack protection via Constant-Time comparison
 
-### 🗺️ API Discovery (Inventory)
-- Automatic mapping of real API endpoints
-- Shadow API detection (forgotten, unofficial endpoints)
-- Real-time traffic analytics
-- Configuration update recommendations
+### 🗺️ API Discovery & Posture Management
+Passive API Security platform (Akamai/Neosec-style), built from live traffic:
+- **Automatic API catalog** — real endpoints discovered from traffic, with path
+  templating (`/users/42` → `/users/{id}`) so the inventory stays bounded
+- **Security posture** — every endpoint classified as **protected / partial /
+  unprotected / shadow** from the effective controls (global + per-route)
+- **Risk scoring** — unauthenticated access, missing WAF/rate-limit, and observed
+  PII raise an endpoint's 0–100 risk score
+- **Consumer analytics** — *who* calls each API (JWT subject, API key, or IP),
+  request volumes and error rates
+- **Effectiveness & coverage** — blocks per control, coverage %, top-risk endpoints
+- **Reporting** — full posture report via `/api/report` (JSON or CSV)
+- Persists to PostgreSQL (set `AEGIS_FORENSIC_DSN`); real-time console on `:8081`
+  with **API Catalog**, **Posture**, and **Consumers** dashboards
+
+Admin endpoints: `GET /api/catalog`, `/api/catalog/{id}`, `/api/consumers`,
+`/api/posture/summary`, `/api/effectiveness`, `/api/report?format=csv`.
 
 ### 🕵️ Data Loss Prevention (DLP)
 - Intercepts outbound traffic before client delivery

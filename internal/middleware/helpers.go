@@ -3,6 +3,7 @@ package middleware
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -22,51 +23,82 @@ func (sw *statusWriter) WriteHeader(code int) {
 	sw.ResponseWriter.WriteHeader(code)
 }
 
-// TrustedProxies defines a list of trusted proxy CIDRs.
-// Only IPs from these ranges will have their X-Forwarded-For headers trusted.
-var TrustedProxies = []string{
-	"10.0.0.0/8",
-	"172.16.0.0/12",
-	"192.168.0.0/16",
-	"127.0.0.0/8",
-	"::1/128",
+// trustedProxyNets holds pre-parsed CIDRs set once at startup via InitTrustedProxies.
+// Reads happen on every request (hot path) so we avoid locks by making it immutable
+// after init — a new slice is swapped in atomically via package-level replace at startup.
+var trustedProxyNets []*net.IPNet
+
+// InitTrustedProxies parses CIDR strings (or bare IPs) from config and caches them.
+// Must be called once from main() before starting servers. Bare IPs are normalised
+// to /32 (IPv4) or /128 (IPv6) host routes.
+func InitTrustedProxies(cidrs []string) error {
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, s := range cidrs {
+		// Accept bare IPs as well as CIDRs.
+		if ip := net.ParseIP(s); ip != nil {
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+			s = fmt.Sprintf("%s/%d", ip.String(), bits)
+		}
+		_, ipNet, err := net.ParseCIDR(s)
+		if err != nil {
+			return fmt.Errorf("trusted_proxies: invalid CIDR %q: %w", s, err)
+		}
+		nets = append(nets, ipNet)
+	}
+	trustedProxyNets = nets
+	return nil
 }
 
-// RealIP extracts the client IP with trusted proxy validation.
-// FIX SEC-1: Only trust X-Forwarded-For from known proxy IPs to prevent spoofing.
+// RealIP returns the originating client IP using a right-to-left walk of the
+// X-Forwarded-For chain.  Only IPs that are explicitly listed in trusted_proxies
+// are skipped; the first non-trusted IP encountered is returned as the real client.
+//
+// Why right-to-left?  Each hop appends its view of the sender to XFF.  Our
+// trusted load balancer appends the real client IP; everything to its left is
+// attacker-controlled.  Walking right-to-left and stopping at the first
+// untrusted entry is immune to prefix-spoofing.
+//
+// If no trusted proxies are configured, RemoteAddr is always used directly.
 func RealIP(r *http.Request) string {
 	remoteHost, _, _ := net.SplitHostPort(r.RemoteAddr)
 
-	// Only trust forwarded headers if the direct connection is from a trusted proxy
-	if isTrustedProxy(remoteHost) {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			parts := strings.SplitN(xff, ",", 2)
-			ip := strings.TrimSpace(parts[0])
-			if net.ParseIP(ip) != nil {
-				return ip
-			}
-		}
-		if xri := r.Header.Get("X-Real-IP"); xri != "" {
-			if net.ParseIP(xri) != nil {
-				return xri
+	if len(trustedProxyNets) == 0 {
+		return remoteHost
+	}
+
+	// Build the full candidate chain: XFF entries + RemoteAddr at the end.
+	var chain []string
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		for _, part := range strings.Split(xff, ",") {
+			if ip := strings.TrimSpace(part); ip != "" {
+				chain = append(chain, ip)
 			}
 		}
 	}
+	chain = append(chain, remoteHost)
 
+	// Walk right-to-left.  Skip trusted hops; return the first untrusted one.
+	for i := len(chain) - 1; i >= 0; i-- {
+		ip := net.ParseIP(chain[i])
+		if ip == nil {
+			continue
+		}
+		if isTrustedProxyIP(ip) {
+			continue
+		}
+		return chain[i]
+	}
+
+	// All hops were trusted (unusual but possible in all-internal topologies).
 	return remoteHost
 }
 
-func isTrustedProxy(ip string) bool {
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
-		return false
-	}
-	for _, cidr := range TrustedProxies {
-		_, network, err := net.ParseCIDR(cidr)
-		if err != nil {
-			continue
-		}
-		if network.Contains(parsed) {
+func isTrustedProxyIP(ip net.IP) bool {
+	for _, n := range trustedProxyNets {
+		if n.Contains(ip) {
 			return true
 		}
 	}
