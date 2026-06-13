@@ -18,7 +18,18 @@ func RateLimit(cfg config.RateLimitConfig, log Logger, st Store) Middleware {
 			ip := RealIP(r)
 			count, err := st.IncrRate(r.Context(), ip, cfg.Window)
 			if err != nil {
-				log.Error("rate_limit: redis error", map[string]any{"error": err.Error()})
+				log.Error("rate_limit: redis error", map[string]any{
+					"error":       err.Error(),
+					"fail_closed": cfg.FailClosed,
+				})
+				if cfg.FailClosed {
+					// High-assurance mode: a backing-store outage must not silently
+					// disable enforcement, so deny rather than pass through.
+					SecurityDeny(w, r, log, st, "rate_limit_store_unavailable", ip,
+						http.StatusServiceUnavailable, nil)
+					return
+				}
+				// Default: fail open to preserve availability.
 				next.ServeHTTP(w, r)
 				return
 			}

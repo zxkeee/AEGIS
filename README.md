@@ -877,7 +877,7 @@ go build -o bin/gateway ./cmd/gateway
 
 export AEGIS_ADMIN_SECRET=$(openssl rand -hex 32)
 export AEGIS_REDIS_PASSWORD=...            # if Redis requires auth
-export AEGIS_FORENSIC_DSN="postgres://user:pass@localhost:5432/aegis?sslmode=disable"
+export AEGIS_FORENSIC_DSN="postgres://user:pass@db-host:5432/aegis?sslmode=require"
 
 ./bin/gateway --config config/gateway.yaml
 ```

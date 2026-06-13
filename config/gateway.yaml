@@ -38,6 +38,9 @@ security:
     requests: 100
     window: 60s
     burst_limit: 20
+    # When true, deny requests if Redis is unavailable instead of failing open.
+    # Default false favours availability; set true for high-assurance deployments.
+    fail_closed: false
 
   auth:
     enabled: false
@@ -144,5 +147,6 @@ routes:
 # ── API Discovery & Posture ──────────────────────────────────────────────────
 # The passive API discovery catalog (endpoint inventory, posture, consumers,
 # reporting) persists to PostgreSQL. Enable it by setting the forensic DSN:
-#   export AEGIS_FORENSIC_DSN="postgres://user:pass@localhost:5432/aegis?sslmode=disable"
+#   export AEGIS_FORENSIC_DSN="postgres://user:pass@db-host:5432/aegis?sslmode=require"
+# Use sslmode=require (or verify-full) in production; sslmode=disable is for local dev only.
 # When unset the catalog is disabled and the Discovery middleware is a no-op.

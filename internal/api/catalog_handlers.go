@@ -164,11 +164,26 @@ func writeCatalogCSV(w http.ResponseWriter, eps []discovery.Endpoint) {
 		"requests", "errors", "auth_present", "anonymous", "pii", "avg_latency_ms", "last_seen"})
 	for _, e := range eps {
 		_ = cw.Write([]string{
-			e.Method, e.PathTemplate, e.Posture, strconv.Itoa(e.RiskScore),
+			csvSafe(e.Method), csvSafe(e.PathTemplate), csvSafe(e.Posture), strconv.Itoa(e.RiskScore),
 			strconv.FormatInt(e.RequestCount, 10), strconv.FormatInt(e.ErrorCount, 10),
 			strconv.FormatInt(e.AuthPresentCount, 10), strconv.FormatInt(e.AnonCount, 10),
 			strconv.FormatInt(e.PIICount, 10), strconv.FormatInt(e.AvgLatencyMs, 10),
 			e.LastSeen.Format("2006-01-02T15:04:05Z07:00"),
 		})
 	}
+}
+
+// csvSafe neutralises CSV/formula injection. A spreadsheet treats a cell
+// beginning with =, +, -, @ (or certain control characters) as a formula; since
+// path templates are derived from untrusted request paths, such values are
+// prefixed with a single quote so they are rendered as literal text.
+func csvSafe(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
 }

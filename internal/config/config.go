@@ -63,6 +63,10 @@ type RateLimitConfig struct {
 	Requests   int           `yaml:"requests"`
 	Window     time.Duration `yaml:"window"`
 	BurstLimit int           `yaml:"burst_limit"`
+	// FailClosed denies requests when the rate-limit backing store (Redis) is
+	// unavailable. Default false preserves availability (fail open); set true for
+	// high-assurance deployments where a Redis outage must not drop enforcement.
+	FailClosed bool `yaml:"fail_closed"`
 }
 
 type AuthConfig struct {

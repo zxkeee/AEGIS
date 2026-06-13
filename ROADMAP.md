@@ -46,7 +46,7 @@ API Security (Akamai / Salt / Noname). Оценка основана на фак
 | P0-2 | **Нет реальной аутентификации консоли** | Логин/сессии, RBAC, MFA, SSO (OIDC/SAML). Сейчас статический bearer в sessionStorage. | Вход через OIDC; роли admin/viewer; сессии с истечением |
 | P0-3 | **Нет мультитенантности** | Организации, пользователи, изоляция данных по tenant. | Данные каталога/forensic скоупятся по tenant_id |
 | P0-4 | **JA3 фиктивный** | Реальный JA3/JA4 через TLS-терминацию (или убрать из обещаний). | Фингерпринт извлекается из TLS ClientHello, не из заголовка |
-| P0-5 | **Fail-open при падении Redis** | Конфигурируемый fail-closed; HA Redis (Sentinel/Cluster) в docs. | Режим `redis_unavailable: block` + проверено тестом |
+| P0-5 | **Fail-open при падении Redis** | Частково зроблено: rate limiter має opt-in `fail_closed` (deny при недоступності Redis). Залишилось: поширити на інші контролі + HA Redis (Sentinel/Cluster) у docs. | `fail_closed` для всіх контролів + перевірено тестом |
 
 ### 🟠 P1 — нужно для реальных сделок
 

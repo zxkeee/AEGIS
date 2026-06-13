@@ -897,12 +897,12 @@ function tagR(r) {
   if (s.includes('rate')) return `<span class="tag tag-rate">RATE-LIMIT</span>`;
   if (s.includes('bot'))  return `<span class="tag tag-bot">BOT/JA3</span>`;
   if (s.includes('admin')||s.includes('auth')||s.includes('secret')) return `<span class="tag tag-auth">AUTH</span>`;
-  return `<span class="tag tag-ip">${r.replace(/_/g,' ').toUpperCase()}</span>`;
+  return `<span class="tag tag-ip">${esc(r.replace(/_/g,' ').toUpperCase())}</span>`;
 }
 function mTag(m) {
   if (!m) return '';
   const map = {GET:'m-get',POST:'m-post',PUT:'m-put',DELETE:'m-del',PATCH:'m-pat'};
-  return `<span class="method ${map[m]||''}">${m}</span>`;
+  return `<span class="method ${map[m]||''}">${esc(m)}</span>`;
 }
 function postureTag(p) {
   const map = {
@@ -911,7 +911,7 @@ function postureTag(p) {
     unprotected: ['tag-unprot','UNPROTECTED'],
     shadow:      ['tag-shadow','SHADOW'],
   };
-  const [cls,lbl] = map[p] || ['tag-ip',(p||'?').toUpperCase()];
+  const [cls,lbl] = map[p] || ['tag-ip',esc((p||'?').toUpperCase())];
   return `<span class="tag ${cls}">${lbl}</span>`;
 }
 function riskCell(n) {
@@ -919,7 +919,7 @@ function riskCell(n) {
   return `<span class="risk ${c}">${n}</span>`;
 }
 function piiTag(n) { return n > 0 ? '<span class="tag tag-pii">PII</span>' : '<span class="td-dim">—</span>'; }
-function esc(s) { return String(s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function esc(s) { return String(s==null?'':s).replace(/[&<>"'`]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c])); }
 
 /* ── Line Chart ── */
 const LINE_H = 126;
@@ -1046,11 +1046,11 @@ async function loadOverview() {
     document.getElementById('ev-body').innerHTML = b.slice(0,20).map(e => `
       <tr>
         <td class="td-mono td-dim">${ago(e.ts)}</td>
-        <td class="td-ip">${e.ip}</td>
-        <td class="td-path">${e.path}</td>
+        <td class="td-ip">${esc(e.ip)}</td>
+        <td class="td-path">${esc(e.path)}</td>
         <td>${mTag(e.method)}</td>
         <td>${tagR(e.reason)}</td>
-        <td class="td-mono td-dim">${e.code}</td>
+        <td class="td-mono td-dim">${esc(e.code)}</td>
       </tr>`
     ).join('') || '<tr><td colspan="6" class="empty">No incidents</td></tr>';
   }
@@ -1062,11 +1062,11 @@ async function loadThreats() {
   document.getElementById('fl-body').innerHTML = b.map(e => `
     <tr>
       <td class="td-mono td-dim">${new Date(e.ts).toLocaleString('en-GB')}</td>
-      <td class="td-ip">${e.ip}</td>
-      <td class="td-path">${e.path}</td>
+      <td class="td-ip">${esc(e.ip)}</td>
+      <td class="td-path">${esc(e.path)}</td>
       <td>${mTag(e.method)}</td>
       <td>${tagR(e.reason)}</td>
-      <td class="td-mono td-dim">${e.code}</td>
+      <td class="td-mono td-dim">${esc(e.code)}</td>
     </tr>`
   ).join('') || '<tr><td colspan="6" class="empty">No events</td></tr>';
 }
@@ -1114,8 +1114,8 @@ async function loadKeys() {
     document.getElementById('auth-body').innerHTML = authEvts.map(e => `
       <tr>
         <td class="td-mono td-dim">${ago(e.ts)}</td>
-        <td class="td-ip">${e.ip}</td>
-        <td class="td-path">${e.path}</td>
+        <td class="td-ip">${esc(e.ip)}</td>
+        <td class="td-path">${esc(e.path)}</td>
         <td>${tagR(e.reason)}</td>
         <td>${e.code < 400 ? '<span class="tag tag-ok">OK</span>' : '<span class="tag tag-waf">DENIED</span>'}</td>
       </tr>`
@@ -1127,9 +1127,9 @@ async function loadAccess() {
   const d = await q('/api/blocked-ips'); if (!d) return;
   document.getElementById('ip-body').innerHTML = (d.ips||[]).map(ip => `
     <tr>
-      <td class="td-ip">${ip}</td>
+      <td class="td-ip">${esc(ip)}</td>
       <td class="td-mono td-dim">Manual</td>
-      <td><button class="btn btn-del" onclick="doUnblock('${ip}')">Remove</button></td>
+      <td><button class="btn btn-del" data-unblock="${esc(ip)}">Remove</button></td>
     </tr>`
   ).join('') || '<tr><td colspan="3" class="empty">No blocked addresses</td></tr>';
 }
@@ -1139,9 +1139,9 @@ async function loadConfig() {
   if (c) document.getElementById('cfg-json').textContent = JSON.stringify(c, null, 2);
   if (r) document.getElementById('rt-body').innerHTML = r.map(x => `
     <tr>
-      <td class="td-path">${x.path}</td>
-      <td class="td-mono td-dim">${(x.upstreams||[]).join(', ')}</td>
-      <td><span class="tag tag-ok">${x.load_balance||'rr'}</span></td>
+      <td class="td-path">${esc(x.path)}</td>
+      <td class="td-mono td-dim">${esc((x.upstreams||[]).join(', '))}</td>
+      <td><span class="tag tag-ok">${esc(x.load_balance||'rr')}</span></td>
     </tr>`).join('');
 }
 
@@ -1163,7 +1163,7 @@ async function loadCatalog() {
   if (!d) { document.getElementById('cat-body').innerHTML = '<tr><td colspan="9" class="empty">Discovery disabled (set forensic_dsn) or no data yet</td></tr>'; return; }
   CATALOG = d.endpoints || [];
   document.getElementById('cat-body').innerHTML = CATALOG.map(e => `
-    <tr class="crow" onclick="openEndpoint('${esc(e.id)}')">
+    <tr class="crow" data-id="${esc(e.id)}">
       <td>${mTag(e.method)}</td>
       <td class="td-path">${esc(e.path_template)}</td>
       <td>${postureTag(e.posture)}</td>
@@ -1181,7 +1181,7 @@ async function openEndpoint(id) {
   const e = d.endpoint, c = e.controls || {};
   const chip = (on,label) => `<span class="ctrl ${on?'on':'off'}">${on?'✓':'✗'} ${label}</span>`;
   const consumers = (d.consumers||[]).map(x => `
-    <tr><td class="td-ip">${esc(x.label)}</td><td><span class="tag tag-ip">${x.kind}</span></td>
+    <tr><td class="td-ip">${esc(x.label)}</td><td><span class="tag tag-ip">${esc(x.kind)}</span></td>
     <td class="td-mono td-dim">${fmt(x.request_count)}</td><td class="td-mono td-dim">${ago(x.last_seen)}</td></tr>`).join('')
     || '<tr><td colspan="4" class="empty">No consumers recorded</td></tr>';
   const statusRows = Object.entries(e.status_dist||{}).sort((a,b)=>a[0]-b[0])
@@ -1287,7 +1287,7 @@ async function loadConsumers() {
   document.getElementById('con-body').innerHTML = cs.map(c => `
     <tr>
       <td class="td-ip">${esc(c.label)}</td>
-      <td><span class="tag tag-ip">${c.kind}</span></td>
+      <td><span class="tag tag-ip">${esc(c.kind)}</span></td>
       <td class="td-mono td-dim">${fmt(c.endpoints_touched)}</td>
       <td class="td-mono" style="color:var(--amber)">${fmt(c.request_count)}</td>
       <td class="td-mono td-dim">${fmt(c.error_count)}</td>
@@ -1324,6 +1324,18 @@ function nav(tab) {
   pages[tab]?.loader?.();
 }
 document.querySelectorAll('.nav a').forEach(a => a.addEventListener('click', e => { e.preventDefault(); nav(a.dataset.tab); }));
+
+/* Catalog rows: event delegation by data-id (avoids inline JS injection). */
+document.getElementById('cat-body').addEventListener('click', e => {
+  const row = e.target.closest('tr.crow');
+  if (row && row.dataset.id) openEndpoint(row.dataset.id);
+});
+
+/* Blocklist remove buttons: delegation by data-unblock (no inline JS). */
+document.getElementById('ip-body').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-unblock]');
+  if (btn) doUnblock(btn.dataset.unblock);
+});
 
 /* ── Boot ── */
 function boot() {
