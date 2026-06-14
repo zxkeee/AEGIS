@@ -25,14 +25,18 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
 - [x] `gosec` and `golangci-lint` run in CI on every commit
 
 ### P0 — release blockers
-- [ ] **Real console authentication.** Replace the static bearer token in
-      `sessionStorage` with proper sessions (expiry + rotation), and ideally
-      OIDC/SAML SSO with `admin`/`viewer` roles and MFA.
-- [ ] **Dependency CVE scanning.** Add `govulncheck` to CI and resolve findings.
+- [x] **Real console authentication.** Static bearer in `sessionStorage` replaced
+      with server-side sessions in Redis: HttpOnly session cookie (unreadable by
+      JS/XSS) + CSRF double-submit token on mutations, with TTL. Bearer kept for
+      API/CLI. (Full OIDC/SAML SSO + `admin`/`viewer` roles + MFA remain P1.)
+- [x] **Dependency CVE scanning.** `govulncheck` runs in CI; x/net bumped and
+      toolchain pinned (go1.26.4) so the module and stdlib are CVE-clean.
 - [ ] **Independent security testing.** Manual pentest plus an automated dynamic
       scan (OWASP ZAP / nuclei) against a running instance; triage and fix.
-- [ ] **TLS mandatory in production.** Enforce or strongly document TLS
-      termination; refuse insecure production configurations.
+      (External step — cannot be self-certified.)
+- [~] **TLS mandatory in production.** `require_tls` makes startup fail without
+      gateway TLS; a loud startup warning fires when TLS is off; documented that
+      production must terminate TLS at the gateway or a trusted upstream.
 - [ ] **Backend signature verification reference.** Provide a reference
       implementation/SDK so backends correctly verify `X-Gateway-Signature`,
       timestamp freshness and nonce uniqueness.

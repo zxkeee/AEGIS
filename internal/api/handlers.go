@@ -13,6 +13,7 @@ import (
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
 	"api-gateway/internal/logger"
+	"api-gateway/internal/middleware"
 	"api-gateway/internal/proxy"
 	"api-gateway/internal/store"
 )
@@ -33,17 +34,23 @@ func (h *handlers) requireAuth(w http.ResponseWriter, r *http.Request) bool {
 	if !h.cfg.AdminAuth {
 		return true // auth disabled (dev mode), already warned at startup
 	}
-	auth := r.Header.Get("Authorization")
-	if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
-		writeError(w, http.StatusUnauthorized, "authentication required")
-		return false
-	}
-	token := strings.TrimPrefix(auth, "Bearer ")
-	if subtle.ConstantTimeCompare([]byte(token), []byte(h.cfg.AdminSecret)) != 1 {
+	// Method 1: bearer token (API/CLI).
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if subtle.ConstantTimeCompare([]byte(token), []byte(h.cfg.AdminSecret)) == 1 {
+			return true
+		}
 		writeError(w, http.StatusForbidden, "invalid credentials")
 		return false
 	}
-	return true
+	// Method 2: console session cookie (CSRF already enforced by AdminAuth).
+	if c, err := r.Cookie(middleware.SessionCookie); err == nil && c.Value != "" {
+		if _, ok, _ := h.store.ValidateSession(r.Context(), c.Value); ok {
+			return true
+		}
+	}
+	writeError(w, http.StatusUnauthorized, "authentication required")
+	return false
 }
 
 func writeJSON(w http.ResponseWriter, code int, data any) {

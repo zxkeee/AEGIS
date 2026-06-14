@@ -8,6 +8,18 @@ admin_auth: true
 # Never put a real secret in this file.
 admin_secret: ""
 
+# Console session settings. The browser console authenticates with the admin
+# secret once, then uses an HttpOnly session cookie (not readable by JS) plus a
+# CSRF token. The raw secret is never stored in the browser.
+admin_session_ttl: 8h
+# admin_cookie_insecure drops the Secure flag so the console works over plain
+# HTTP locally. NEVER enable in production.
+admin_cookie_insecure: false
+
+# require_tls makes startup fail unless TLS is terminated at the gateway. Set it
+# in production; leave false only when a trusted upstream terminates TLS.
+require_tls: false
+
 # Trusted reverse-proxy IPs or CIDRs.
 # Only connections from these addresses will have X-Forwarded-For trusted.
 # List the EXACT IPs of your load balancers / ingress nodes — broad private

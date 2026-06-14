@@ -47,6 +47,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /health", h.health)
 	s.mux.HandleFunc("GET /readyz", h.readyz)
 
+	// Console session auth
+	s.mux.HandleFunc("POST /api/login", h.login)
+	s.mux.HandleFunc("POST /api/logout", h.logout)
+
 	// Admin endpoints (protected by AdminAuth middleware)
 	s.mux.HandleFunc("GET /api/metrics", h.getMetrics)
 	s.mux.HandleFunc("GET /api/config", h.getConfig)

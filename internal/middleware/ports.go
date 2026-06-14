@@ -59,6 +59,9 @@ type Store interface {
 	// Abuse detection (BOLA enumeration)
 	TrackObjectAccess(ctx context.Context, consumer, endpoint, objectID string, window time.Duration) (int64, error)
 
+	// Admin sessions (console authentication)
+	ValidateSession(ctx context.Context, token string) (csrf string, ok bool, err error)
+
 	// Forensics
 	PushForensic(ctx context.Context, e store.ForensicEntry)
 	GetForensicLog(ctx context.Context, limit int64) ([]store.ForensicEntry, error)

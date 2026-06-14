@@ -140,6 +140,10 @@ func main() {
 		})
 	}
 
+	if !cfg.TLS.Enabled {
+		log.Warn("SECURITY WARNING: TLS is not terminated at the gateway — ensure a trusted upstream terminates TLS, or set tls.enabled (and require_tls) in production", nil)
+	}
+
 	adminHandler := middleware.Chain(adminSrv,
 		middleware.RequestID(),       // innermost: stamp every request before anything else
 		middleware.SecurityHeaders(), // must wrap AdminAuth so 401/403 responses carry CSP/HSTS

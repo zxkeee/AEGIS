@@ -812,16 +812,27 @@ canvas { background: var(--bg); display:block; }
 
 <script>
 const API = location.origin;
-let KEY = sessionStorage.getItem('ak') || '';
 let tid = null;
 const hist = [];
 
-/* ── Fetch ── */
+/* Authentication is cookie-based: an HttpOnly session cookie (unreadable by JS,
+   so it cannot be stolen via XSS) plus a readable CSRF cookie echoed in a header
+   on state-changing requests (double-submit). No credential is stored in JS. */
+function csrfToken() {
+  const m = document.cookie.match(/(?:^|;\s*)aegis_csrf=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : '';
+}
+function mutateHeaders() {
+  return { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() };
+}
+
+/* ── Fetch (GET, cookie-authenticated) ── */
 async function q(path, opts = {}) {
   try {
     const r = await fetch(API + path, {
+      credentials: 'same-origin',
       ...opts,
-      headers: { Authorization: 'Bearer ' + KEY, 'Content-Type': 'application/json', ...(opts.headers||{}) }
+      headers: { 'Content-Type': 'application/json', ...(opts.headers||{}) }
     });
     if (r.status === 401 || r.status === 403) { showLogin(); return null; }
     if (!r.ok) return null;
@@ -833,9 +844,12 @@ async function q(path, opts = {}) {
 async function login() {
   const k = document.getElementById('ak').value.trim();
   if (!k) return;
-  const r = await fetch(API + '/api/metrics', { headers: { Authorization: 'Bearer ' + k } });
+  const r = await fetch(API + '/api/login', {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ secret: k })
+  });
   if (r.ok) {
-    KEY = k; sessionStorage.setItem('ak', KEY);
     document.getElementById('ak').value = '';
     document.getElementById('lerr').style.display = 'none';
     document.getElementById('login').style.display = 'none';
@@ -845,13 +859,19 @@ async function login() {
     document.getElementById('lerr').style.display = 'block';
   }
 }
-function logout() {
-  sessionStorage.removeItem('ak'); KEY = '';
+async function logout() {
+  try {
+    await fetch(API + '/api/logout', { method: 'POST', credentials: 'same-origin', headers: mutateHeaders() });
+  } catch {}
   document.getElementById('app').classList.remove('show');
   document.getElementById('login').style.display = 'flex';
   if (tid) clearInterval(tid);
 }
-function showLogin() { logout(); }
+function showLogin() {
+  document.getElementById('app').classList.remove('show');
+  document.getElementById('login').style.display = 'flex';
+  if (tid) clearInterval(tid);
+}
 
 /* ── Clock ── */
 function tick() {
@@ -1217,7 +1237,7 @@ async function openEndpoint(id) {
 
 function downloadReport() {
   const url = API + '/api/report?format=csv';
-  fetch(url, { headers: { Authorization: 'Bearer ' + KEY } })
+  fetch(url, { credentials: 'same-origin' })
     .then(r => r.blob()).then(b => {
       const a = document.createElement('a');
       a.href = URL.createObjectURL(b); a.download = 'aegis-api-report.csv'; a.click();
@@ -1297,11 +1317,11 @@ async function loadConsumers() {
 
 async function doBlock() {
   const ip = document.getElementById('ip-in').value.trim(); if (!ip) return;
-  await fetch(API+'/api/blocked-ips',{method:'POST',headers:{Authorization:'Bearer '+KEY,'Content-Type':'application/json'},body:JSON.stringify({ip,reason:'manual'})});
+  await fetch(API+'/api/blocked-ips',{method:'POST',credentials:'same-origin',headers:mutateHeaders(),body:JSON.stringify({ip,reason:'manual'})});
   document.getElementById('ip-in').value = ''; loadAccess();
 }
 async function doUnblock(ip) {
-  await fetch(API+'/api/blocked-ips/'+ip,{method:'DELETE',headers:{Authorization:'Bearer '+KEY}});
+  await fetch(API+'/api/blocked-ips/'+ip,{method:'DELETE',credentials:'same-origin',headers:mutateHeaders()});
   loadAccess();
 }
 
@@ -1358,13 +1378,12 @@ window.addEventListener('resize', () => {
 });
 
 /* ── Init ── */
-if (KEY) {
-  fetch(API+'/api/metrics',{headers:{Authorization:'Bearer '+KEY}})
-    .then(r => {
-      if (r.ok) { document.getElementById('login').style.display='none'; document.getElementById('app').classList.add('show'); requestAnimationFrame(() => boot()); }
-      else showLogin();
-    }).catch(showLogin);
-}
+/* Probe the session cookie: if still valid, skip the login screen. */
+fetch(API+'/api/metrics',{credentials:'same-origin'})
+  .then(r => {
+    if (r.ok) { document.getElementById('login').style.display='none'; document.getElementById('app').classList.add('show'); requestAnimationFrame(() => boot()); }
+    else showLogin();
+  }).catch(showLogin);
 </script>
 </body>
 </html>

@@ -24,10 +24,20 @@ var insecurePlaceholders = []string{
 
 // GatewayConfig is the root configuration.
 type GatewayConfig struct {
-	Listen         string         `yaml:"listen"`
-	AdminListen    string         `yaml:"admin_listen"`
-	AdminAuth      bool           `yaml:"admin_auth"`
-	AdminSecret    string         `yaml:"admin_secret"`
+	Listen      string `yaml:"listen"`
+	AdminListen string `yaml:"admin_listen"`
+	AdminAuth   bool   `yaml:"admin_auth"`
+	AdminSecret string `yaml:"admin_secret"`
+	// AdminSessionTTL is how long a console login session stays valid. Default 8h.
+	AdminSessionTTL time.Duration `yaml:"admin_session_ttl"`
+	// AdminCookieInsecure drops the Secure flag on the session cookie so the
+	// console works over plain HTTP in local development. Never enable in
+	// production: the session cookie would be sent over unencrypted connections.
+	AdminCookieInsecure bool `yaml:"admin_cookie_insecure"`
+	// RequireTLS makes startup fail unless TLS is terminated at the gateway
+	// (tls.enabled). Set it in production. Leave false only when TLS is terminated
+	// by a trusted upstream (ingress / load balancer) in front of AEGIS.
+	RequireTLS     bool           `yaml:"require_tls"`
 	ForensicDSN    string         `yaml:"forensic_dsn"` // PostgreSQL DSN for persistent forensic logs
 	TrustedProxies []string       `yaml:"trusted_proxies"`
 	TLS            TLSConfig      `yaml:"tls"`
@@ -240,6 +250,9 @@ func Load(path string) (GatewayConfig, error) {
 	if cfg.Security.Abuse.Window == 0 {
 		cfg.Security.Abuse.Window = time.Minute
 	}
+	if cfg.AdminSessionTTL == 0 {
+		cfg.AdminSessionTTL = 8 * time.Hour
+	}
 
 	return cfg, nil
 }
@@ -280,6 +293,9 @@ func Validate(cfg GatewayConfig) error {
 		return err
 	}
 	if err := validateThreatFeed(cfg); err != nil {
+		return err
+	}
+	if err := validateTLS(cfg); err != nil {
 		return err
 	}
 	return nil
@@ -352,6 +368,18 @@ func validateThreatFeed(cfg GatewayConfig) error {
 	if !strings.HasPrefix(cfg.Security.ThreatFeed.URL, "https://") {
 		return fmt.Errorf("threat_feed.url must use HTTPS to prevent MITM injection (got %q)",
 			cfg.Security.ThreatFeed.URL)
+	}
+	return nil
+}
+
+func validateTLS(cfg GatewayConfig) error {
+	if cfg.RequireTLS && !cfg.TLS.Enabled {
+		return errors.New("require_tls is set but tls.enabled is false; " +
+			"terminate TLS at the gateway (tls.enabled + cert_file/key_file) or, " +
+			"if TLS terminates at a trusted upstream, set require_tls: false")
+	}
+	if cfg.TLS.Enabled && (cfg.TLS.CertFile == "" || cfg.TLS.KeyFile == "") {
+		return errors.New("tls.enabled is true but cert_file/key_file are not both set")
 	}
 	return nil
 }

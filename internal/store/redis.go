@@ -324,6 +324,35 @@ func (s *Store) GetInventory(ctx context.Context) ([]string, error) {
 	return s.client.SMembers(ctx, keyInventory).Result()
 }
 
+// ── Admin Sessions ──────────────────────────────────────────────────────────────
+
+const prefixSession = "gw:session:"
+
+// CreateSession stores a server-side admin session and its bound CSRF token.
+// The session token is the opaque cookie value; the CSRF token is returned to
+// the client and must accompany state-changing requests.
+func (s *Store) CreateSession(ctx context.Context, token, csrf string, ttl time.Duration) error {
+	return s.client.Set(ctx, prefixSession+token, csrf, ttl).Err()
+}
+
+// ValidateSession returns the session's bound CSRF token and whether the session
+// is valid (exists and not expired).
+func (s *Store) ValidateSession(ctx context.Context, token string) (string, bool, error) {
+	csrf, err := s.client.Get(ctx, prefixSession+token).Result()
+	if err == redis.Nil {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return csrf, true, nil
+}
+
+// DeleteSession invalidates an admin session (logout).
+func (s *Store) DeleteSession(ctx context.Context, token string) error {
+	return s.client.Del(ctx, prefixSession+token).Err()
+}
+
 // ── Abuse Detection (BOLA enumeration) ──────────────────────────────────────────
 
 // TrackObjectAccess records that a consumer accessed a specific object ID on an

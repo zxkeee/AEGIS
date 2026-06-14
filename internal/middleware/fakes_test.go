@@ -24,6 +24,7 @@ type fakeStore struct {
 	trackObject func() (int64, error)
 	jtiRevoked  map[string]bool
 	blockedIPs  map[string]bool
+	sessions    map[string]string // token -> csrf
 	behavior    int
 }
 
@@ -78,6 +79,11 @@ func (f *fakeStore) TrackObjectAccess(_ context.Context, _, _, _ string, _ time.
 		return f.trackObject()
 	}
 	return 1, nil
+}
+
+func (f *fakeStore) ValidateSession(_ context.Context, token string) (string, bool, error) {
+	csrf, ok := f.sessions[token]
+	return csrf, ok, nil
 }
 
 func (f *fakeStore) PushForensic(context.Context, store.ForensicEntry) {}
