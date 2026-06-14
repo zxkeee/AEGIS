@@ -324,6 +324,25 @@ func (s *Store) GetInventory(ctx context.Context) ([]string, error) {
 	return s.client.SMembers(ctx, keyInventory).Result()
 }
 
+// ── Abuse Detection (BOLA enumeration) ──────────────────────────────────────────
+
+// TrackObjectAccess records that a consumer accessed a specific object ID on an
+// endpoint and returns the number of distinct object IDs that consumer has
+// touched on that endpoint within the window. A high count is an enumeration /
+// IDOR (BOLA) signal. Distinct counting uses a HyperLogLog so memory stays
+// bounded regardless of how many IDs are swept.
+func (s *Store) TrackObjectAccess(ctx context.Context, consumer, endpoint, objectID string, window time.Duration) (int64, error) {
+	key := "gw:bola:" + consumer + ":" + endpoint
+	pipe := s.client.Pipeline()
+	pipe.PFAdd(ctx, key, objectID)
+	pipe.Expire(ctx, key, window)
+	cnt := pipe.PFCount(ctx, key)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return 0, err
+	}
+	return cnt.Val(), nil
+}
+
 // ── JWT Revocation ────────────────────────────────────────────────────────────
 
 const prefixJTI = "gw:jwt:revoked:"

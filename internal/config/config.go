@@ -56,6 +56,7 @@ type SecurityConfig struct {
 	Challenge  ChallengeConfig    `yaml:"challenge"`
 	Inventory  APIInventoryConfig `yaml:"api_inventory"`
 	ThreatFeed ThreatFeedConfig   `yaml:"threat_feed"`
+	Abuse      AbuseConfig        `yaml:"abuse"`
 }
 
 type RateLimitConfig struct {
@@ -134,6 +135,30 @@ type ThreatFeedConfig struct {
 	Interval time.Duration `yaml:"interval"`
 }
 
+// AbuseConfig configures object-level (BOLA) and function-level (BFLA)
+// authorization-abuse detection. Detection is heuristic and passive: it runs on
+// the live request using the verified identity propagated by JWT auth.
+type AbuseConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// EnumThreshold is the number of distinct object IDs a single consumer may
+	// access on one endpoint within Window before it is flagged as enumeration
+	// (a BOLA / IDOR signal). Default 50.
+	EnumThreshold int           `yaml:"enum_threshold"`
+	Window        time.Duration `yaml:"window"`
+	// BlockMode denies flagged requests; when false (default) the gateway only
+	// records the event, keeping false positives non-disruptive.
+	BlockMode bool `yaml:"block_mode"`
+	// Privileged lists path prefixes that require one of the given roles; a
+	// consumer lacking all of them is a BFLA violation.
+	Privileged []PrivilegedRule `yaml:"privileged"`
+}
+
+// PrivilegedRule binds a path prefix to the roles allowed to call it.
+type PrivilegedRule struct {
+	Path          string   `yaml:"path"`
+	RequiredRoles []string `yaml:"required_roles"`
+}
+
 type RouteConfig struct {
 	Path          string   `yaml:"path"`
 	Methods       []string `yaml:"methods"`
@@ -208,6 +233,12 @@ func Load(path string) (GatewayConfig, error) {
 	}
 	if cfg.Security.Behavior.WindowSeconds == 0 {
 		cfg.Security.Behavior.WindowSeconds = 60
+	}
+	if cfg.Security.Abuse.EnumThreshold == 0 {
+		cfg.Security.Abuse.EnumThreshold = 50
+	}
+	if cfg.Security.Abuse.Window == 0 {
+		cfg.Security.Abuse.Window = time.Minute
 	}
 
 	return cfg, nil

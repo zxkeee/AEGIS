@@ -20,10 +20,11 @@ func (fakeLogger) BlockEvent(string, string, string, string, map[string]any) {}
 // the methods under test can be overridden via the func fields; everything else
 // returns zero values.
 type fakeStore struct {
-	incrRate   func(ctx context.Context, key string, window time.Duration) (int64, error)
-	jtiRevoked map[string]bool
-	blockedIPs map[string]bool
-	behavior   int
+	incrRate    func(ctx context.Context, key string, window time.Duration) (int64, error)
+	trackObject func() (int64, error)
+	jtiRevoked  map[string]bool
+	blockedIPs  map[string]bool
+	behavior    int
 }
 
 func (f *fakeStore) IncrRate(ctx context.Context, key string, window time.Duration) (int64, error) {
@@ -71,6 +72,13 @@ func (f *fakeStore) IsJTIRevoked(_ context.Context, jti string) (bool, error) {
 	return f.jtiRevoked[jti], nil
 }
 func (f *fakeStore) RevokeJTI(context.Context, string, time.Duration) error { return nil }
+
+func (f *fakeStore) TrackObjectAccess(_ context.Context, _, _, _ string, _ time.Duration) (int64, error) {
+	if f.trackObject != nil {
+		return f.trackObject()
+	}
+	return 1, nil
+}
 
 func (f *fakeStore) PushForensic(context.Context, store.ForensicEntry) {}
 func (f *fakeStore) GetForensicLog(context.Context, int64) ([]store.ForensicEntry, error) {

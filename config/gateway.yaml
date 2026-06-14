@@ -102,6 +102,17 @@ security:
     url: ""
     interval: 1h
 
+  # Authorization-abuse detection (BOLA/BFLA). Runs after JWT auth using verified
+  # identity/roles. Detect-only by default (records events without blocking).
+  abuse:
+    enabled: false
+    enum_threshold: 50   # distinct object IDs per consumer/endpoint in window -> BOLA
+    window: 60s
+    block_mode: false    # true = deny flagged requests
+    privileged: []       # BFLA rules, e.g.:
+      # - path: "/admin/"
+      #   required_roles: ["admin"]
+
 registry:
   enabled: false
   dsn: ""

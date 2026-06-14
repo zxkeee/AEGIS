@@ -704,6 +704,27 @@ to establish that the request genuinely came from AEGIS, check the timestamp for
 freshness, and use the nonce to reject replays. See
 [Section 10.6](#106-backend-trust-and-signature-verification).
 
+### 6.10 Authorization-Abuse Detection (BOLA / BFLA)
+
+Beyond signature-based input filtering, AEGIS detects authorization abuse — the
+class of attack that ordinary WAFs miss because the request itself is well-formed.
+This runs after authentication, using the verified subject and roles:
+
+- **BFLA (Broken Function Level Authorization).** Configured privileged path
+  prefixes require one of a set of roles; a consumer that calls such a path
+  without holding an allowed role is flagged. This catches, for example, a
+  non-admin user reaching `/admin/*`.
+- **BOLA / IDOR (Broken Object Level Authorization).** AEGIS tracks, per consumer
+  and per endpoint, the number of distinct object identifiers accessed within a
+  window (using a HyperLogLog to bound memory). A consumer that sweeps an
+  unusually large set of object IDs on an endpoint such as `/users/{id}` is
+  flagged as enumeration — the canonical IDOR/scraping pattern.
+
+Detection runs in detect-only mode by default (events are recorded and surfaced
+in the console and forensic log without disrupting traffic) and can be switched to
+block mode per the `security.abuse` configuration. The object-level signal is
+built directly on the consumer graph produced by passive discovery.
+
 ---
 
 ## 7. Configuration Reference

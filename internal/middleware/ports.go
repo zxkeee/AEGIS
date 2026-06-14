@@ -56,6 +56,9 @@ type Store interface {
 	IsJTIRevoked(ctx context.Context, jti string) (bool, error)
 	RevokeJTI(ctx context.Context, jti string, ttl time.Duration) error
 
+	// Abuse detection (BOLA enumeration)
+	TrackObjectAccess(ctx context.Context, consumer, endpoint, objectID string, window time.Duration) (int64, error)
+
 	// Forensics
 	PushForensic(ctx context.Context, e store.ForensicEntry)
 	GetForensicLog(ctx context.Context, limit int64) ([]store.ForensicEntry, error)

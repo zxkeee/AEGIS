@@ -231,6 +231,7 @@ func buildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st *store.S
 		middleware.WAF(cfg.Security.WAF, log, st),
 		middleware.Discovery(cfg.Security.Inventory, cat, log), // passive API discovery
 		jwtAuth.Middleware(),
+		middleware.AbuseDetection(cfg.Security.Abuse, log, st), // BOLA/BFLA (needs verified roles)
 		middleware.DLP(cfg.Security.DLP, log, st),
 		middleware.BehaviorAnalysis(cfg.Security.Behavior, log, st),
 	)

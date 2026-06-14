@@ -116,7 +116,7 @@ auth/без, с PII/без). Это готовый фундамент для:
 
 | Ставка | Что построить | Опора на текущее | Усилие |
 |---|---|---|---|
-| A1. **BOLA/BFLA** | Детект доступа к чужим объектам и привилегиям: модель «consumer → объекты/ID, к которым он обращается»; аномалия = доступ к ID/ресурсам вне его обычного множества; BFLA = доступ к admin-маршрутам без роли. | consumer-граф + catalog | 2–3 нед |
+| A1. **BOLA/BFLA** ✅ v1 | Сделано: middleware `AbuseDetection` — BOLA через детект перебора object-ID одним потребителем (HLL distinct-count в окне), BFLA через privileged-path + required-roles на проверенных JWT-ролях. Detect-only/block режимы. Дальше: per-consumer baseline вместо фикс-порога (A2). | consumer-граф + catalog | сделано |
 | A2. **Behavioral baseline на потребителя** | Per-consumer статистический профиль (объём, набор endpoint'ов, время, гео, error-rate); отклонение = риск. Peer-group сравнение. Без тяжёлого ML — онлайн-статистика (EWMA, percentile). | observations | 3–4 нед |
 | A3. **Account Takeover / credential stuffing** | Velocity логинов, impossible travel, смена устройства/JA3, всплеск 401→200. Отдельный высокоценный сценарий. | forensic + consumer | 2–3 нед |
 | A4. **Business-logic abuse** | Enumeration, scraping, inventory-hoarding: детект перебора ID, аномальной полноты обхода ресурса. | normalize + catalog | 2 нед |
