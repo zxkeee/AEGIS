@@ -6,6 +6,7 @@ import (
 	"api-gateway/internal/alert"
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
+	"api-gateway/internal/iam"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/proxy"
 	"api-gateway/internal/store"
@@ -20,10 +21,12 @@ type Server struct {
 	gateway *proxy.Gateway
 	alerts  *alert.Engine
 	catalog *discovery.Catalog
+	users   *iam.Store
 }
 
-// NewServer creates a new admin API server.
-func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw *proxy.Gateway, alerts *alert.Engine, catalog *discovery.Catalog) *Server {
+// NewServer creates a new admin API server. users may be nil if forensic_dsn is
+// unset — in that case only the legacy bearer/secret login is available.
+func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw *proxy.Gateway, alerts *alert.Engine, catalog *discovery.Catalog, users *iam.Store) *Server {
 	s := &Server{
 		mux:     http.NewServeMux(),
 		store:   st,
@@ -32,13 +35,14 @@ func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw
 		gateway: gw,
 		alerts:  alerts,
 		catalog: catalog,
+		users:   users,
 	}
 	s.registerRoutes()
 	return s
 }
 
 func (s *Server) registerRoutes() {
-	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog}
+	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog, users: s.users}
 
 	// Dashboard (unauthenticated — auth handled via JS prompt)
 	s.mux.HandleFunc("GET /", h.serveDashboard)
@@ -53,6 +57,7 @@ func (s *Server) registerRoutes() {
 
 	// Admin endpoints (protected by AdminAuth middleware)
 	s.mux.HandleFunc("GET /api/metrics", h.getMetrics)
+	s.mux.HandleFunc("GET /metrics", h.prometheus) // Prometheus-native exposition
 	s.mux.HandleFunc("GET /api/config", h.getConfig)
 	s.mux.HandleFunc("GET /api/routes", h.getRoutes)
 	s.mux.HandleFunc("GET /api/block-log", h.getBlockLog)
@@ -64,6 +69,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/consumers", h.getConsumers)
 	s.mux.HandleFunc("GET /api/posture/summary", h.getPostureSummary)
 	s.mux.HandleFunc("GET /api/effectiveness", h.getEffectiveness)
+	s.mux.HandleFunc("GET /api/findings", h.getFindings)
 	s.mux.HandleFunc("GET /api/report", h.getReport)
 
 	// IP management
@@ -73,6 +79,14 @@ func (s *Server) registerRoutes() {
 
 	// JWT management
 	s.mux.HandleFunc("POST /api/jwt/revoke", h.revokeJWT)
+
+	// Multi-tenancy management (P0-3 / MT phase 5).
+	s.mux.HandleFunc("GET /api/tenants", h.listTenants)
+	s.mux.HandleFunc("POST /api/tenants", h.createTenant)
+	s.mux.HandleFunc("DELETE /api/tenants/{id}", h.deleteTenant)
+	s.mux.HandleFunc("GET /api/users", h.listUsers)
+	s.mux.HandleFunc("POST /api/users", h.createUser)
+	s.mux.HandleFunc("DELETE /api/users/{id}", h.deleteUser)
 }
 
 // ServeHTTP implements http.Handler.

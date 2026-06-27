@@ -5,9 +5,23 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
+	"api-gateway/internal/iam"
 	"api-gateway/internal/middleware"
+	"api-gateway/internal/tenant"
+)
+
+// loginBruteforceLimit is the per-IP cap of /api/login failures within
+// loginBruteforceWindow. Eight tries in five minutes is generous for an
+// operator who fat-fingered their password but well below the rate a credential
+// stuffer would need. The counter only increments on FAILURE; a successful
+// login does not consume budget.
+const (
+	loginBruteforceLimit  = 8
+	loginBruteforceWindow = 5 * time.Minute
 )
 
 // randToken returns a cryptographically random hex token.
@@ -19,29 +33,102 @@ func randToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// login authenticates the console with the admin secret and establishes a
-// server-side session. The session token is delivered as an HttpOnly cookie (so
-// JavaScript — and therefore any XSS — cannot read it); the bound CSRF token is
-// returned in the body for the client to echo on state-changing requests.
+// login authenticates the console and establishes a server-side session. Two
+// credential forms are accepted, both via the same endpoint:
 //
-// POST /api/login  {"secret": "..."}  ->  {"csrf": "..."}
+//   - {"secret": "..."} — legacy/bootstrap: matches AEGIS_ADMIN_SECRET; produces
+//     a super-admin session bound to the default tenant. Kept for CLI/CI and
+//     first-boot bootstrap when no users exist yet.
+//   - {"email": "...", "password": "...", "tenant": "..."} — real per-tenant
+//     operator login. Looked up in the iam user store; the session carries the
+//     user's tenant + role and AdminAuth threads them into request context so
+//     every admin endpoint is automatically scoped.
+//
+// The session token is delivered as an HttpOnly cookie (so JS — and therefore
+// any XSS — cannot read it); the bound CSRF token is returned in the body for
+// the client to echo on state-changing requests.
+//
+// POST /api/login
 func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 	if !h.cfg.AdminAuth {
 		writeJSON(w, http.StatusOK, map[string]any{"csrf": "", "auth": false})
 		return
 	}
+	// Per-IP brute-force gate. We check the failure counter BEFORE doing any
+	// crypto work, so flooders are turned away cheaply. The counter is only
+	// bumped on an actual failure below — successful operators never spend
+	// budget.
+	ip := middleware.RealIP(r)
+	if n, err := h.store.GetRate(r.Context(), "loginfail:"+ip); err == nil && n >= int64(loginBruteforceLimit) {
+		h.store.IncrMetric(r.Context(), "blocked_admin_login_throttled")
+		w.Header().Set("Retry-After", strconv.Itoa(int(loginBruteforceWindow.Seconds())))
+		writeError(w, http.StatusTooManyRequests, "too many failed login attempts; try again later")
+		return
+	}
 	var req struct {
-		Secret string `json:"secret"`
+		Secret   string `json:"secret"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
+		Tenant   string `json:"tenant"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(req.Secret), []byte(h.cfg.AdminSecret)) != 1 {
-		// Record the failed attempt for visibility/brute-force monitoring.
+
+	fail := func(method, tnt string) {
+		_, _ = h.store.IncrRate(r.Context(), "loginfail:"+ip, loginBruteforceWindow)
 		h.store.IncrMetric(r.Context(), "blocked_admin_login_failed")
-		h.log.Warn("admin_login_failed", map[string]any{"ip": middleware.RealIP(r)})
+		fields := map[string]any{"ip": ip, "method": method}
+		if tnt != "" {
+			fields["tenant"] = tnt
+		}
+		h.log.Warn("admin_login_failed", fields)
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
+	}
+
+	var sess iam.Session
+	switch {
+	case req.Secret != "":
+		if subtle.ConstantTimeCompare([]byte(req.Secret), []byte(h.cfg.AdminSecret)) != 1 {
+			fail("secret", "")
+			return
+		}
+		// Bearer secret is the bootstrap super-admin: pinned to the default
+		// tenant, granted SuperAdmin so it can manage tenants/users when no
+		// real users exist yet.
+		sess = iam.Session{TenantID: tenant.Default, Role: iam.RoleAdmin, SuperAdmin: true}
+
+	case req.Email != "" && req.Password != "":
+		if h.users == nil {
+			// No user store wired (forensic_dsn not configured); only secret
+			// login is available.
+			writeError(w, http.StatusServiceUnavailable, "user login is not configured")
+			return
+		}
+		tid := strings.TrimSpace(req.Tenant)
+		if tid == "" {
+			tid = tenant.Default
+		}
+		u, err := h.users.VerifyPassword(r.Context(), tid, req.Email, req.Password)
+		if err != nil || u.ID == "" {
+			// Same error string regardless of cause: do not reveal whether the
+			// tenant/email exists. (iam.ErrUserNotFound is the typical err;
+			// any other DB error is also treated as a credential failure so
+			// callers cannot distinguish.)
+			fail("password", tid)
+			return
+		}
+		sess = iam.Session{
+			TenantID:   u.TenantID,
+			Role:       u.Role,
+			UserID:     u.ID,
+			Email:      u.Email,
+			SuperAdmin: u.SuperAdmin,
+		}
+
+	default:
+		writeError(w, http.StatusBadRequest, "supply either {secret} or {email,password}")
 		return
 	}
 
@@ -55,7 +142,8 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
-	if err := h.store.CreateSession(r.Context(), sessionTok, csrf, h.cfg.AdminSessionTTL); err != nil {
+	sess.CSRF = csrf
+	if err := h.store.CreateSession(r.Context(), sessionTok, sess, h.cfg.AdminSessionTTL); err != nil {
 		h.log.Error("admin: create session failed", map[string]any{"error": err.Error()})
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
@@ -86,8 +174,18 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   maxAge,
 	})
-	h.log.Info("admin_login", map[string]any{"ip": middleware.RealIP(r)})
-	writeJSON(w, http.StatusOK, map[string]any{"csrf": csrf, "auth": true})
+	h.log.Info("admin_login", map[string]any{
+		"ip":     middleware.RealIP(r),
+		"tenant": sess.TenantID,
+		"role":   string(sess.Role),
+		"user":   sess.UserID,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"csrf":   csrf,
+		"auth":   true,
+		"tenant": sess.TenantID,
+		"role":   string(sess.Role),
+	})
 }
 
 // logout invalidates the current session and clears the cookie.

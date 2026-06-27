@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/csv"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -153,6 +154,67 @@ func (h *handlers) getReport(w http.ResponseWriter, r *http.Request) {
 		"endpoints": eps,
 		"count":     len(eps),
 	})
+}
+
+// GET /api/findings — the security-issues view. Flattens every endpoint's
+// derived findings (e.g. "PII exposed to unauthenticated callers") into one
+// list, critical first, so an operator sees actionable exposures rather than a
+// raw catalog. This is the data-centric, buyer-facing money view.
+func (h *handlers) getFindings(w http.ResponseWriter, r *http.Request) {
+	if !h.catalogReady(w) {
+		return
+	}
+	eps, err := h.catalog.ListEndpoints(r.Context(), discovery.EndpointFilter{Limit: 1000})
+	if err != nil {
+		h.log.Error("admin: findings list failed", map[string]any{"error": err.Error()})
+		writeError(w, http.StatusInternalServerError, "failed to build findings")
+		return
+	}
+
+	rows, counts := flattenFindings(eps)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"findings": rows,
+		"count":    len(rows),
+		"by_severity": map[string]int{
+			"critical": counts["critical"], "warning": counts["warning"], "info": counts["info"],
+		},
+	})
+}
+
+// findingRow is one endpoint↔finding pair in the findings view.
+type findingRow struct {
+	Method       string            `json:"method"`
+	PathTemplate string            `json:"path_template"`
+	RiskScore    int               `json:"risk_score"`
+	Finding      discovery.Finding `json:"finding"`
+}
+
+// flattenFindings explodes endpoints into a severity-sorted (critical first)
+// list of findings plus per-severity counts. Pure, so it is unit-tested without
+// a catalog/database.
+func flattenFindings(eps []discovery.Endpoint) ([]findingRow, map[string]int) {
+	rows := []findingRow{}
+	counts := map[string]int{"critical": 0, "warning": 0, "info": 0}
+	for _, e := range eps {
+		for _, f := range e.Findings {
+			rows = append(rows, findingRow{Method: e.Method, PathTemplate: e.PathTemplate, RiskScore: e.RiskScore, Finding: f})
+			counts[f.Severity]++
+		}
+	}
+	rank := func(s string) int {
+		switch s {
+		case "critical":
+			return 0
+		case "warning":
+			return 1
+		default:
+			return 2
+		}
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		return rank(rows[i].Finding.Severity) < rank(rows[j].Finding.Severity)
+	})
+	return rows, counts
 }
 
 func writeCatalogCSV(w http.ResponseWriter, eps []discovery.Endpoint) {

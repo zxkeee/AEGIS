@@ -12,6 +12,7 @@ import (
 	"api-gateway/internal/alert"
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
+	"api-gateway/internal/iam"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/middleware"
 	"api-gateway/internal/proxy"
@@ -25,6 +26,7 @@ type handlers struct {
 	gateway *proxy.Gateway
 	alerts  *alert.Engine
 	catalog *discovery.Catalog
+	users   *iam.Store // optional: nil when forensic_dsn is unset
 }
 
 // requireAuth is a defence-in-depth check called directly inside mutating
@@ -51,6 +53,20 @@ func (h *handlers) requireAuth(w http.ResponseWriter, r *http.Request) bool {
 	}
 	writeError(w, http.StatusUnauthorized, "authentication required")
 	return false
+}
+
+// requireMutator additionally enforces the RBAC rule: viewer sessions cannot
+// invoke state-changing handlers (the outer AdminAuth also enforces this, this
+// is a belt-and-braces check inside the handler).
+func (h *handlers) requireMutator(w http.ResponseWriter, r *http.Request) bool {
+	if !h.requireAuth(w, r) {
+		return false
+	}
+	if !iam.FromContext(r.Context()).CanMutate() {
+		writeError(w, http.StatusForbidden, "viewer role cannot perform this action")
+		return false
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, code int, data any) {
@@ -184,7 +200,7 @@ func (h *handlers) getBlockedIPs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) blockIPHandler(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAuth(w, r) {
+	if !h.requireMutator(w, r) {
 		return
 	}
 	var req struct {
@@ -213,7 +229,7 @@ func (h *handlers) blockIPHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) unblockIPHandler(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAuth(w, r) {
+	if !h.requireMutator(w, r) {
 		return
 	}
 	ip := r.PathValue("ip")
@@ -235,7 +251,7 @@ func (h *handlers) unblockIPHandler(w http.ResponseWriter, r *http.Request) {
 // ── JWT Revocation ────────────────────────────────────────────────────────────
 
 func (h *handlers) revokeJWT(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAuth(w, r) {
+	if !h.requireMutator(w, r) {
 		return
 	}
 	var req struct {
