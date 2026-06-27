@@ -5,5 +5,9 @@ scrape_configs:
   - job_name: 'aegis-gateway'
     static_configs:
       - targets: ['gateway:8081']
-    metrics_path: '/api/metrics'
+    metrics_path: '/metrics'
     scrape_interval: 10s
+    # AEGIS admin plane requires auth; supply the admin secret as a bearer token.
+    # authorization:
+    #   type: Bearer
+    #   credentials: '<AEGIS_ADMIN_SECRET>'

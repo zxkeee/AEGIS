@@ -6,11 +6,13 @@ toolchain go1.26.4
 
 require (
 	github.com/MicahParks/keyfunc/v3 v3.8.0
+	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/corazawaf/coraza/v3 v3.7.0
 	github.com/fsnotify/fsnotify v1.10.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/lib/pq v1.12.3
 	github.com/redis/go-redis/v9 v9.19.0
+	golang.org/x/crypto v0.53.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -30,6 +32,7 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/valllabh/ocsf-schema-golang v1.0.3 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect

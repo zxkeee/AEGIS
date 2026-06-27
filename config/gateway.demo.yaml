@@ -1,0 +1,97 @@
+# AEGIS — DEMO config (home-server demo stand, not production).
+# Gateway in front of an httpbin backend so the security controls are visible.
+# Secrets come from the environment: AEGIS_ADMIN_SECRET, AEGIS_REDIS_PASSWORD,
+# AEGIS_FORENSIC_DSN.
+
+listen: ":8080"
+admin_listen: ":8081"
+admin_auth: true
+admin_secret: ""            # via AEGIS_ADMIN_SECRET
+admin_session_ttl: 8h
+admin_cookie_insecure: true # demo is served over plain HTTP on the LAN
+require_tls: false
+trusted_proxies: []
+
+tls:
+  enabled: false
+
+redis:
+  addr: "aegis-demo-redis:6379"
+  password: ""              # via AEGIS_REDIS_PASSWORD
+  db: 0
+
+logging:
+  level: "info"
+  format: "json"
+
+alerting:
+  webhook_url: ""
+  format: "generic"
+  min_severity: "warning"
+
+multitenancy:
+  enabled: false
+
+security:
+  rate_limit:
+    enabled: true
+    requests: 30            # low so rate-limiting is easy to demo
+    window: 60s
+    burst_limit: 10
+    fail_closed: false
+
+  auth:
+    enabled: false
+
+  waf:
+    enabled: true
+    block_mode: true        # block SQLi/XSS etc. so the demo shows real denials
+
+  bot:
+    enabled: true
+    blocked_ja3: []
+    challenge_mode: false
+
+  behavior:
+    enabled: true
+    score_threshold: 70
+    window_seconds: 60
+
+  ip_guard:
+    enabled: true
+    whitelist: []
+    blacklist: []
+
+  dlp:
+    enabled: true
+    patterns: []
+
+  cors:
+    enabled: false
+
+  challenge:
+    enabled: false
+
+  api_inventory:
+    enabled: true           # passive discovery → catalog in PostgreSQL
+    alert_on_new: false
+
+  threat_feed:
+    enabled: false
+
+  abuse:
+    enabled: false
+
+registry:
+  enabled: false
+
+# Everything proxies to the httpbin demo backend.
+routes:
+  - path: "/"
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    upstreams:
+      - "http://aegis-demo-backend:80"
+    load_balance: "round_robin"
+    timeout: "30s"
+    retry_attempts: 2
+    strip_prefix: false

@@ -39,10 +39,42 @@ redis:
   #   export AEGIS_REDIS_PASSWORD=$(openssl rand -hex 24)
   password: ""
   db: 0
+  # Sentinel HA mode: when master_name is set, `addr` above is ignored and the
+  # gateway connects through the listed sentinels instead. See
+  # docs/runbooks/ha.md.
+  sentinel:
+    master_name: ""        # e.g. "mymaster"
+    addrs: []              # e.g. ["sentinel-1:26379","sentinel-2:26379","sentinel-3:26379"]
+    sentinel_password: ""  # only when sentinels themselves require auth
 
 logging:
   level: "info"
   format: "json"
+
+# Outbound alerting for security events (BOLA/BFLA, IP blocks, etc.).
+# webhook_url empty = alerts logged locally only. Set AEGIS_ALERT_WEBHOOK_URL
+# to override the URL from the environment (keeps the secret out of the file).
+alerting:
+  webhook_url: ""          # https endpoint (Slack incoming webhook, PagerDuty, SIEM)
+  format: "generic"        # "generic" (AEGIS envelope) or "slack" ({"text": ...})
+  min_severity: "warning"  # deliver "warning"+ ; one of info|warning|critical
+
+# Multi-tenancy (ADR-001, docs/design/multitenancy.md). Disabled = single
+# "default" tenant (legacy). When enabled, every route needs a tenant_id and the
+# tenant is resolved per request from the route (authoritative) and/or Host.
+multitenancy:
+  enabled: false
+  # tenants:
+  #   - id: acme
+  #     name: "ACME Corp"
+  #     hosts: ["acme.api.example"]
+  #   - id: globex
+  #     name: "Globex"
+  #     hosts: ["globex.api.example"]
+# routes (when multitenancy.enabled) must carry tenant_id, e.g.:
+#   - path: /orders
+#     tenant_id: acme
+#     upstreams: ["http://orders.acme:8080"]
 
 security:
   rate_limit:
@@ -62,6 +94,12 @@ security:
     secret: ""
     issuer: ""
     audience: ""
+    # Deny requests when the JTI-revocation lookup fails (e.g. Redis outage).
+    # false (default) fails open to preserve availability; true is the
+    # high-assurance choice where a revoked token must never slip through.
+    revocation_fail_closed: false
+    # exclude matches on path-segment boundaries: "/public" excludes "/public"
+    # and "/public/x" but NOT "/publicXYZ".
     exclude:
       - "/health"
       - "/public"
@@ -75,6 +113,11 @@ security:
     enabled: true
     blocked_ja3: []
     challenge_mode: false
+    # Behind a TLS-terminating upstream (e.g. Cloudflare) the gateway can't see
+    # the TLS ClientHello, so set these to consume the upstream's JA3 hash. Only
+    # trusted from a peer in trusted_proxies. See docs/deploy/cloudflare.md.
+    trust_upstream_ja3: false
+    upstream_ja3_header: "Cf-Ja3-Hash"
 
   behavior:
     enabled: true

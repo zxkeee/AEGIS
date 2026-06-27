@@ -1,0 +1,297 @@
+{
+  "state": {
+    "isStdOutTTY": false,
+    "isStdErrTTY": false,
+    "testRunDurationMs": 30001.682
+  },
+  "metrics": {
+    "aegis_mt_latency_initech_ms": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "p(95)": 48.102,
+        "avg": 23.266204848523248,
+        "min": 2.898,
+        "med": 15.225,
+        "max": 271.558,
+        "p(90)": 32.083
+      }
+    },
+    "vus_max": {
+      "type": "gauge",
+      "contains": "default",
+      "values": {
+        "value": 100,
+        "min": 100,
+        "max": 100
+      }
+    },
+    "http_req_connecting": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "med": 0,
+        "max": 102.239,
+        "p(90)": 0,
+        "p(95)": 0,
+        "avg": 0.013243261978417638,
+        "min": 0
+      }
+    },
+    "data_received": {
+      "type": "counter",
+      "contains": "data",
+      "values": {
+        "count": 47075391,
+        "rate": 1569091.7262572146
+      }
+    },
+    "iterations": {
+      "type": "counter",
+      "contains": "default",
+      "values": {
+        "rate": 3221.5860430758516,
+        "count": 96653
+      }
+    },
+    "aegis_mt_latency_globex_ms": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "p(95)": 46.99534999999997,
+        "avg": 22.992489773149714,
+        "min": 3.291,
+        "med": 15.099,
+        "max": 269.525,
+        "p(90)": 31.763900000000003
+      }
+    },
+    "http_req_waiting": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "max": 271.504,
+        "p(90)": 31.872,
+        "p(95)": 47.70419999999999,
+        "avg": 23.1169141568291,
+        "min": 2.777,
+        "med": 15.089
+      }
+    },
+    "http_reqs": {
+      "values": {
+        "rate": 3221.5860430758516,
+        "count": 96653
+      },
+      "type": "counter",
+      "contains": "default"
+    },
+    "data_sent": {
+      "contains": "data",
+      "values": {
+        "count": 7979844,
+        "rate": 265979.8873943134
+      },
+      "type": "counter"
+    },
+    "aegis_mt_legit_errors": {
+      "values": {
+        "passes": 77599,
+        "fails": 15,
+        "rate": 0.9998067358981627
+      },
+      "thresholds": {
+        "rate<0.01": {
+          "ok": false
+        }
+      },
+      "type": "rate",
+      "contains": "default"
+    },
+    "http_req_receiving": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "p(90)": 0.044,
+        "p(95)": 0.07,
+        "avg": 0.03486900561803172,
+        "min": 0.005,
+        "med": 0.019,
+        "max": 14.021
+      }
+    },
+    "aegis_mt_latency_acme_ms": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "avg": 23.221467578986164,
+        "min": 2.924,
+        "med": 15.067499999999999,
+        "max": 269.254,
+        "p(90)": 31.965100000000003,
+        "p(95)": 48.41499999999994
+      }
+    },
+    "vus": {
+      "type": "gauge",
+      "contains": "default",
+      "values": {
+        "value": 1,
+        "min": 1,
+        "max": 100
+      }
+    },
+    "aegis_mt_request_latency_ms": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "avg": 23.159704934145747,
+        "min": 2.898,
+        "med": 15.127,
+        "max": 271.558,
+        "p(90)": 31.928400000000003,
+        "p(95)": 47.748799999999925
+      }
+    },
+    "http_req_duration{expected_response:true}": {
+      "contains": "time",
+      "values": {
+        "max": 88.505,
+        "p(90)": 15.046000000000001,
+        "p(95)": 38.31429999999995,
+        "avg": 14.988466666666664,
+        "min": 7.146,
+        "med": 8.958
+      },
+      "type": "trend"
+    },
+    "http_req_blocked": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "med": 0.002,
+        "max": 102.289,
+        "p(90)": 0.003,
+        "p(95)": 0.004,
+        "avg": 0.01563309985201762,
+        "min": 0
+      }
+    },
+    "http_req_failed": {
+      "type": "rate",
+      "contains": "default",
+      "values": {
+        "passes": 96638,
+        "fails": 15,
+        "rate": 0.999844805644936
+      }
+    },
+    "checks": {
+      "type": "rate",
+      "contains": "default",
+      "values": {
+        "rate": 0.19713821609262,
+        "passes": 19054,
+        "fails": 77599
+      }
+    },
+    "iteration_duration": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "avg": 23.267757321697474,
+        "min": 3.025667,
+        "med": 15.226167,
+        "max": 271.6465,
+        "p(90)": 32.062917000000006,
+        "p(95)": 48.087900199999986
+      }
+    },
+    "http_req_sending": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "med": 0.005,
+        "max": 11.631,
+        "p(90)": 0.01,
+        "p(95)": 0.013,
+        "avg": 0.007921771698751601,
+        "min": 0.001
+      }
+    },
+    "http_req_duration": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "max": 271.558,
+        "p(90)": 31.928400000000003,
+        "p(95)": 47.748799999999925,
+        "avg": 23.159704934145747,
+        "min": 2.898,
+        "med": 15.127
+      },
+      "thresholds": {
+        "p(95)<60": {
+          "ok": true
+        },
+        "p(99)<200": {
+          "ok": false
+        }
+      }
+    },
+    "aegis_mt_waf_blocked": {
+      "type": "counter",
+      "contains": "default",
+      "values": {
+        "count": 19039,
+        "rate": 634.5977535526175
+      }
+    },
+    "http_req_tls_handshaking": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "avg": 0,
+        "min": 0,
+        "med": 0,
+        "max": 0,
+        "p(90)": 0,
+        "p(95)": 0
+      }
+    }
+  },
+  "root_group": {
+    "path": "",
+    "id": "d41d8cd98f00b204e9800998ecf8427e",
+    "groups": [],
+    "checks": [
+        {
+          "fails": 77599,
+          "name": "legit: status is 2xx/3xx",
+          "path": "::legit: status is 2xx/3xx",
+          "id": "6d272e4610033cab3aae4ea212f4c104",
+          "passes": 15
+        },
+        {
+          "name": "attack: blocked",
+          "path": "::attack: blocked",
+          "id": "80e8e81276ccc7024c731551f24a118e",
+          "passes": 19039,
+          "fails": 0
+        }
+      ],
+    "name": ""
+  },
+  "options": {
+    "summaryTrendStats": [
+      "avg",
+      "min",
+      "med",
+      "max",
+      "p(90)",
+      "p(95)"
+    ],
+    "summaryTimeUnit": "",
+    "noColor": false
+  }
+}

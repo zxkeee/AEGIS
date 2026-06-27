@@ -40,3 +40,4 @@ go.work.sum
 # Redis dump (local dev)
 *.rdb
 dump.rdb
+gosec_results.json

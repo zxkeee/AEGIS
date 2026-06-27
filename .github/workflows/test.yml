@@ -54,6 +54,11 @@ jobs:
           REDIS_ADDR: localhost:6379
           POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/aegis?sslmode=disable
 
+      # Coverage gate: fail if a critical package regresses below its floor.
+      # Floors ratchet toward the >=70% release target (see the script).
+      - name: Coverage gate
+        run: ./scripts/coverage-gate.sh
+
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:
