@@ -12,6 +12,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// PathHasPrefix reports whether path is covered by the prefix on a path-segment
+// boundary. Unlike a raw strings.HasPrefix, "/public" matches "/public" and
+// "/public/x" but NOT "/publicXYZ" — preventing an exclude/override rule from
+// silently leaking onto a longer, unrelated path.
+func PathHasPrefix(path, prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	if path == prefix {
+		return true
+	}
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	// Boundary check: either the prefix already ends with '/', or the next
+	// character in path is the segment separator.
+	return strings.HasSuffix(prefix, "/") || path[len(prefix)] == '/'
+}
+
 // known insecure placeholder secrets — startup is rejected if any are in use
 var insecurePlaceholders = []string{
 	"change-me-to-a-strong-secret-in-production",
@@ -37,15 +56,51 @@ type GatewayConfig struct {
 	// RequireTLS makes startup fail unless TLS is terminated at the gateway
 	// (tls.enabled). Set it in production. Leave false only when TLS is terminated
 	// by a trusted upstream (ingress / load balancer) in front of AEGIS.
-	RequireTLS     bool           `yaml:"require_tls"`
-	ForensicDSN    string         `yaml:"forensic_dsn"` // PostgreSQL DSN for persistent forensic logs
-	TrustedProxies []string       `yaml:"trusted_proxies"`
-	TLS            TLSConfig      `yaml:"tls"`
-	Security       SecurityConfig `yaml:"security"`
-	Routes         []RouteConfig  `yaml:"routes"`
-	Registry       RegistryConfig `yaml:"registry"`
-	Redis          RedisConfig    `yaml:"redis"`
-	Logging        LoggingConfig  `yaml:"logging"`
+	RequireTLS     bool               `yaml:"require_tls"`
+	ForensicDSN    string             `yaml:"forensic_dsn"` // PostgreSQL DSN for persistent forensic logs
+	TrustedProxies []string           `yaml:"trusted_proxies"`
+	TLS            TLSConfig          `yaml:"tls"`
+	Security       SecurityConfig     `yaml:"security"`
+	Routes         []RouteConfig      `yaml:"routes"`
+	Registry       RegistryConfig     `yaml:"registry"`
+	Redis          RedisConfig        `yaml:"redis"`
+	Logging        LoggingConfig      `yaml:"logging"`
+	Alerting       AlertingConfig     `yaml:"alerting"`
+	Multitenancy   MultitenancyConfig `yaml:"multitenancy"`
+}
+
+// MultitenancyConfig enables hard data isolation between organisations. See
+// docs/design/multitenancy.md (ADR-001). When disabled, AEGIS runs as a single
+// "default" tenant (legacy behaviour).
+type MultitenancyConfig struct {
+	Enabled bool           `yaml:"enabled"`
+	Tenants []TenantConfig `yaml:"tenants"`
+}
+
+// TenantConfig declares one organisation and the hosts that resolve to it.
+type TenantConfig struct {
+	ID    string   `yaml:"id"`
+	Name  string   `yaml:"name"`
+	Hosts []string `yaml:"hosts"` // Host/SNI values that map to this tenant (model A)
+}
+
+// DefaultTenant is the implicit tenant used when multi-tenancy is disabled, and
+// for backfilling pre-existing single-tenant data.
+const DefaultTenant = "default"
+
+// AlertingConfig controls outbound delivery of security alerts (BOLA/BFLA,
+// IP blocks, etc.) to an external destination such as Slack, PagerDuty or a
+// generic SIEM webhook.
+type AlertingConfig struct {
+	// WebhookURL is the HTTPS endpoint alerts are POSTed to. Empty disables
+	// outbound delivery (alerts are still logged locally).
+	WebhookURL string `yaml:"webhook_url"`
+	// Format shapes the JSON payload: "generic" (default) emits a flat AEGIS
+	// envelope; "slack" emits a Slack-compatible {"text": ...} message.
+	Format string `yaml:"format"`
+	// MinSeverity gates delivery: only alerts at or above this level are sent.
+	// One of "info", "warning", "critical". Default "warning".
+	MinSeverity string `yaml:"min_severity"`
 }
 
 type TLSConfig struct {
@@ -87,6 +142,19 @@ type AuthConfig struct {
 	Audience string   `yaml:"audience"`
 	Secret   string   `yaml:"secret"`
 	Exclude  []string `yaml:"exclude"`
+	// PropagationSecret is the HMAC key used to sign the identity headers
+	// forwarded to upstream backends (X-Gateway-Signature). It is independent
+	// of `Secret` so JWKS deployments (RSA/ECDSA token verification) can still
+	// emit a signature backends can verify with the gatewayverify SDK. When
+	// empty, falls back to Secret for backward compatibility with HMAC-only
+	// installs. Set via env AEGIS_PROPAGATION_SECRET.
+	PropagationSecret string `yaml:"propagation_secret"`
+	// RevocationFailClosed denies a request when the JTI-revocation lookup fails
+	// (e.g. Redis outage). Default false fails open (the request proceeds and the
+	// failure is logged) to preserve availability; set true for high-assurance
+	// deployments where a backing-store outage must not let a revoked token slip
+	// through. Mirrors the per-control fail_closed convention used elsewhere.
+	RevocationFailClosed bool `yaml:"revocation_fail_closed"`
 }
 
 type WAFConfig struct {
@@ -100,6 +168,17 @@ type BotConfig struct {
 	Enabled       bool     `yaml:"enabled"`
 	BlockedJA3    []string `yaml:"blocked_ja3"`
 	ChallengeMode bool     `yaml:"challenge_mode"`
+	// TrustUpstreamJA3 lets a trusted upstream (e.g. Cloudflare, which terminates
+	// TLS) supply the JA3 fingerprint via a header, since the gateway does not see
+	// the TLS ClientHello in that topology. The value is only believed when the
+	// immediate peer is a trusted proxy (see trusted_proxies); otherwise it is a
+	// spoofable client header and is ignored.
+	TrustUpstreamJA3 bool `yaml:"trust_upstream_ja3"`
+	// UpstreamJA3Header is the header the upstream puts the JA3 hash in. Default
+	// "Cf-Ja3-Hash" (set via a Cloudflare Transform Rule from
+	// cf.bot_management.ja3_hash). Must NOT be X-JA3-Fingerprint (that is the
+	// gateway's internal header and is always stripped from inbound requests).
+	UpstreamJA3Header string `yaml:"upstream_ja3_header"`
 }
 
 type BehaviorConfig struct {
@@ -113,6 +192,10 @@ type IPGuardConfig struct {
 	Whitelist []string `yaml:"whitelist"`
 	Blacklist []string `yaml:"blacklist"`
 	GeoBlock  []string `yaml:"geo_block"`
+	// FailClosed denies a request when the dynamic block list (Redis) cannot be
+	// consulted, instead of allowing it through. Set true in high-assurance
+	// deployments where a Redis outage must not silently disable IP blocking.
+	FailClosed bool `yaml:"fail_closed"`
 }
 
 type DLPConfig struct {
@@ -161,6 +244,27 @@ type AbuseConfig struct {
 	// Privileged lists path prefixes that require one of the given roles; a
 	// consumer lacking all of them is a BFLA violation.
 	Privileged []PrivilegedRule `yaml:"privileged"`
+	// Allowlist names consumers that are exempt from abuse detection entirely.
+	// Use it to silence known-benign high-cardinality callers (batch jobs,
+	// search indexers, internal admins) that would otherwise trip BOLA
+	// enumeration. Entries match the resolved consumer identity: a JWT subject
+	// (e.g. "svc-indexer") or, for anonymous callers, the "ip:<addr>" form.
+	// This is the primary false-positive control (RELEASE-CHECKLIST A6).
+	Allowlist []string `yaml:"allowlist"`
+	// Adaptive enables the per-consumer behavioural baseline (A2): instead of a
+	// single global EnumThreshold, each consumer is compared against its own
+	// learned norm (an EWMA of its distinct-object count per window). This catches
+	// a consumer that normally touches 3 objects suddenly sweeping 40 — invisible
+	// to a fixed threshold of 50 — while not flagging a consumer whose normal IS
+	// 60. EnumThreshold still applies as an absolute hard ceiling.
+	Adaptive bool `yaml:"adaptive"`
+	// Sensitivity is the multiple of a consumer's baseline above which the current
+	// window is anomalous (default 3.0). Higher = fewer, higher-confidence flags.
+	Sensitivity float64 `yaml:"sensitivity"`
+	// AdaptiveMinObjects is the absolute floor below which adaptive detection never
+	// fires, so a tiny baseline (e.g. 0.5) cannot flag a benign handful of objects
+	// (default 8).
+	AdaptiveMinObjects int `yaml:"adaptive_min_objects"`
 }
 
 // PrivilegedRule binds a path prefix to the roles allowed to call it.
@@ -171,6 +275,7 @@ type PrivilegedRule struct {
 
 type RouteConfig struct {
 	Path          string   `yaml:"path"`
+	TenantID      string   `yaml:"tenant_id"` // owning tenant (model B); required when multitenancy.enabled
 	Methods       []string `yaml:"methods"`
 	Upstreams     []string `yaml:"upstreams"`
 	LoadBalance   string   `yaml:"load_balance"`
@@ -197,9 +302,22 @@ type RegistryConfig struct {
 }
 
 type RedisConfig struct {
+	// Addr is the single-instance address. Ignored when Sentinel.Addrs is set.
 	Addr     string `yaml:"addr"`
 	Password string `yaml:"password"`
 	DB       int    `yaml:"db"`
+	// Sentinel enables HA mode. When MasterName is non-empty, the gateway
+	// connects via the listed Sentinel addresses instead of `addr`. See
+	// docs/runbooks/ha.md for the topology.
+	Sentinel SentinelConfig `yaml:"sentinel"`
+}
+
+// SentinelConfig wires the Redis Sentinel HA client. Leave MasterName empty to
+// keep the legacy single-address client.
+type SentinelConfig struct {
+	MasterName       string   `yaml:"master_name"`
+	Addrs            []string `yaml:"addrs"`
+	SentinelPassword string   `yaml:"sentinel_password"`
 }
 
 type LoggingConfig struct {
@@ -253,6 +371,12 @@ func Load(path string) (GatewayConfig, error) {
 	if cfg.AdminSessionTTL == 0 {
 		cfg.AdminSessionTTL = 8 * time.Hour
 	}
+	if cfg.Alerting.Format == "" {
+		cfg.Alerting.Format = "generic"
+	}
+	if cfg.Alerting.MinSeverity == "" {
+		cfg.Alerting.MinSeverity = "warning"
+	}
 
 	return cfg, nil
 }
@@ -263,6 +387,9 @@ func applyEnvOverrides(cfg *GatewayConfig) {
 	if v := os.Getenv("AEGIS_ADMIN_SECRET"); v != "" {
 		cfg.AdminSecret = v
 	}
+	if v := os.Getenv("AEGIS_PROPAGATION_SECRET"); v != "" {
+		cfg.Security.Auth.PropagationSecret = v
+	}
 	if v := os.Getenv("AEGIS_REDIS_PASSWORD"); v != "" {
 		cfg.Redis.Password = v
 	}
@@ -271,6 +398,9 @@ func applyEnvOverrides(cfg *GatewayConfig) {
 	}
 	if v := os.Getenv("AEGIS_FORENSIC_DSN"); v != "" {
 		cfg.ForensicDSN = v
+	}
+	if v := os.Getenv("AEGIS_ALERT_WEBHOOK_URL"); v != "" {
+		cfg.Alerting.WebhookURL = v
 	}
 }
 
@@ -298,6 +428,71 @@ func Validate(cfg GatewayConfig) error {
 	if err := validateTLS(cfg); err != nil {
 		return err
 	}
+	if err := validateAlerting(cfg); err != nil {
+		return err
+	}
+	if err := validateMultitenancy(cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateMultitenancy(cfg GatewayConfig) error {
+	mt := cfg.Multitenancy
+	if !mt.Enabled {
+		return nil // single-tenant: routes need no tenant_id
+	}
+	if len(mt.Tenants) == 0 {
+		return errors.New("multitenancy.enabled is true but no tenants are declared")
+	}
+
+	ids := make(map[string]bool, len(mt.Tenants))
+	hosts := make(map[string]string) // host -> tenant id (detect collisions)
+	for _, t := range mt.Tenants {
+		if t.ID == "" {
+			return errors.New("multitenancy: a tenant has an empty id")
+		}
+		if t.ID == DefaultTenant {
+			return fmt.Errorf("multitenancy: tenant id %q is reserved", DefaultTenant)
+		}
+		if ids[t.ID] {
+			return fmt.Errorf("multitenancy: duplicate tenant id %q", t.ID)
+		}
+		ids[t.ID] = true
+		for _, h := range t.Hosts {
+			if other, ok := hosts[h]; ok && other != t.ID {
+				return fmt.Errorf("multitenancy: host %q is mapped to both %q and %q", h, other, t.ID)
+			}
+			hosts[h] = t.ID
+		}
+	}
+
+	for _, r := range cfg.Routes {
+		if r.TenantID == "" {
+			return fmt.Errorf("multitenancy: route %q has no tenant_id", r.Path)
+		}
+		if !ids[r.TenantID] {
+			return fmt.Errorf("multitenancy: route %q references unknown tenant %q", r.Path, r.TenantID)
+		}
+	}
+	return nil
+}
+
+func validateAlerting(cfg GatewayConfig) error {
+	// Empty values are accepted: Load() fills them with defaults afterwards.
+	switch cfg.Alerting.Format {
+	case "", "generic", "slack":
+	default:
+		return fmt.Errorf("alerting.format must be 'generic' or 'slack', got %q", cfg.Alerting.Format)
+	}
+	switch cfg.Alerting.MinSeverity {
+	case "", "info", "warning", "critical":
+	default:
+		return fmt.Errorf("alerting.min_severity must be 'info', 'warning' or 'critical', got %q", cfg.Alerting.MinSeverity)
+	}
+	if u := cfg.Alerting.WebhookURL; u != "" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		return fmt.Errorf("alerting.webhook_url must be an http(s) URL")
+	}
 	return nil
 }
 
@@ -320,6 +515,14 @@ func validateAdminSecret(cfg GatewayConfig) error {
 }
 
 func validateRedis(cfg GatewayConfig) error {
+	// Sentinel mode: both master name and at least one sentinel address must be set.
+	s := cfg.Redis.Sentinel
+	if s.MasterName != "" && len(s.Addrs) == 0 {
+		return errors.New("redis.sentinel.master_name is set but redis.sentinel.addrs is empty")
+	}
+	if s.MasterName == "" && len(s.Addrs) > 0 {
+		return errors.New("redis.sentinel.addrs is set but redis.sentinel.master_name is empty")
+	}
 	if cfg.Redis.Password == "" {
 		// Not a hard error: Redis may be in an isolated private network.
 		// But if the admin API is exposed externally this is critical — flag it.
