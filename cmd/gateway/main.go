@@ -16,10 +16,12 @@ import (
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
 	"api-gateway/internal/forensic"
+	"api-gateway/internal/iam"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/middleware"
 	"api-gateway/internal/proxy"
 	"api-gateway/internal/store"
+	"api-gateway/internal/tlsfp"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -60,7 +62,14 @@ func main() {
 	})
 
 	// ── Redis Store ───────────────────────────────────────────────────────────
-	st, err := store.New(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
+	st, err := store.NewWithConfig(store.SentinelOptions{
+		Addr:             cfg.Redis.Addr,
+		Password:         cfg.Redis.Password,
+		DB:               cfg.Redis.DB,
+		MasterName:       cfg.Redis.Sentinel.MasterName,
+		SentinelAddrs:    cfg.Redis.Sentinel.Addrs,
+		SentinelPassword: cfg.Redis.Sentinel.SentinelPassword,
+	})
 	if err != nil {
 		log.Error("failed to connect to Redis", map[string]any{"error": err.Error()})
 		os.Exit(1)
@@ -68,7 +77,13 @@ func main() {
 	defer func() { _ = st.Close() }()
 
 	// ── Alert Engine ──────────────────────────────────────────────────────────
-	alerts := alert.New("", log) // Webhook URL from config if available
+	alerts := alert.NewWithConfig(cfg.Alerting.WebhookURL, cfg.Alerting.Format, cfg.Alerting.MinSeverity, log)
+	if cfg.Alerting.WebhookURL != "" {
+		log.Info("outbound alerting enabled", map[string]any{
+			"format":       cfg.Alerting.Format,
+			"min_severity": cfg.Alerting.MinSeverity,
+		})
+	}
 
 	// ── Forensic Log Sink (PostgreSQL persistence) ──────────────────────────
 	var fSink *forensic.PGSink
@@ -101,9 +116,36 @@ func main() {
 		log.Warn("forensic_dsn not set — API discovery catalog disabled")
 	}
 
+	// ── IAM (tenants + admin users) ──────────────────────────────────────────
+	// Shares the forensic PostgreSQL instance. Without it, the console can only
+	// log in with the legacy bearer secret (no per-tenant operators).
+	var iamStore *iam.Store
+	if cfg.ForensicDSN != "" {
+		iamStore, err = iam.NewStore(cfg.ForensicDSN, log)
+		if err != nil {
+			log.Error("iam store init failed (password login disabled)", map[string]any{"error": err.Error()})
+			iamStore = nil
+		} else {
+			defer func() { _ = iamStore.Close() }()
+			// First-boot bootstrap: if no users exist and AEGIS_ROOT_EMAIL +
+			// AEGIS_ROOT_PASSWORD are set, create a super-admin so the operator
+			// has a real account on day one without ever using the bearer secret.
+			if email := os.Getenv("AEGIS_ROOT_EMAIL"); email != "" {
+				if pw := os.Getenv("AEGIS_ROOT_PASSWORD"); pw != "" {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					if err := iamStore.BootstrapRoot(ctx, "default", email, pw); err != nil {
+						log.Error("iam root bootstrap failed", map[string]any{"error": err.Error()})
+					}
+					cancel()
+				}
+			}
+			log.Info("iam store enabled", map[string]any{"backend": "postgresql"})
+		}
+	}
+
 	// ── Build Handler Chain ───────────────────────────────────────────────────
 	var activeHandler atomic.Value
-	handler, gw, err := buildHandlerChain(cfg, log, st, alerts, catalog)
+	handler, gw, err := buildHandlerChain(cfg, log, st, alerts, catalog, postureEng)
 	if err != nil {
 		log.Error("failed to build handler chain", map[string]any{"error": err.Error()})
 		os.Exit(1)
@@ -111,6 +153,9 @@ func main() {
 	activeHandler.Store(handler)
 
 	// ── Gateway Server (Hot Reload via atomic swap) ───────────────────────────
+	// fpRegistry captures a real TLS fingerprint from each ClientHello when the
+	// gateway terminates TLS, replacing the spoofable X-JA3-Fingerprint header.
+	fpRegistry := tlsfp.NewRegistry()
 	gwServer := &http.Server{
 		Addr: cfg.Listen,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -121,10 +166,15 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second, // ARCH: prevent slowloris
 		MaxHeaderBytes:    1 << 20,         // 1MB max header
+		ConnContext:       fpRegistry.ConnContext,
+		ConnState:         fpRegistry.ConnState,
+	}
+	if cfg.TLS.Enabled {
+		gwServer.TLSConfig = fpRegistry.TLSConfig(nil)
 	}
 
 	// ── Admin API Server ──────────────────────────────────────────────────────
-	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog)
+	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog, iamStore)
 
 	// FIX SEC: Protect admin API against brute force and DDoS
 	adminRateLimit := config.RateLimitConfig{
@@ -144,11 +194,24 @@ func main() {
 		log.Warn("SECURITY WARNING: TLS is not terminated at the gateway — ensure a trusted upstream terminates TLS, or set tls.enabled (and require_tls) in production", nil)
 	}
 
+	// Identity-propagation signature: in JWKS mode the JWT secret is unset, so
+	// backends only get a signed X-Gateway-Signature if a separate
+	// propagation_secret is configured. Flag this loudly — without a signature,
+	// the gatewayverify SDK on backends will reject every request.
+	if cfg.Security.Auth.Enabled && cfg.Security.Auth.JWKSURL != "" && cfg.Security.Auth.PropagationSecret == "" {
+		log.Warn("SECURITY WARNING: JWKS auth is on but auth.propagation_secret is empty — "+
+			"backends will not receive X-Gateway-Signature and the gatewayverify SDK will reject every request. "+
+			"Set AEGIS_PROPAGATION_SECRET to a strong random value", nil)
+	}
+
 	adminHandler := middleware.Chain(adminSrv,
-		middleware.RequestID(),       // innermost: stamp every request before anything else
+		middleware.RequestID(),       // outermost: stamp every request before anything else
 		middleware.SecurityHeaders(), // must wrap AdminAuth so 401/403 responses carry CSP/HSTS
+		// RateLimit must sit OUTSIDE AdminAuth: AdminAuth returns early on a failed
+		// credential, so a limiter placed inside it would never see unauthenticated
+		// brute-force / DDoS traffic — exactly what this limit is meant to absorb.
+		middleware.RateLimit(adminRateLimit, "admin", log, st),
 		middleware.AdminAuth(cfg, log, st),
-		middleware.RateLimit(adminRateLimit, log, st),
 		middleware.CORS(cfg.Security.CORS),
 	)
 	adminServer := &http.Server{
@@ -165,6 +228,13 @@ func main() {
 
 	// ── Start Servers ─────────────────────────────────────────────────────────
 	go func() {
+		if cfg.TLS.Enabled {
+			log.Info("gateway listening (TLS terminated at gateway)", map[string]any{"addr": cfg.Listen})
+			if err := gwServer.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile); err != nil && err != http.ErrServerClosed {
+				log.Error("gateway server error", map[string]any{"error": err.Error()})
+			}
+			return
+		}
 		log.Info("gateway listening", map[string]any{"addr": cfg.Listen})
 		if err := gwServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Error("gateway server error", map[string]any{"error": err.Error()})
@@ -201,15 +271,19 @@ func main() {
 }
 
 // buildHandlerChain constructs the full middleware chain for the gateway.
-func buildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st *store.Store, alerts *alert.Engine, catalog *discovery.Catalog) (http.Handler, *proxy.Gateway, error) {
+//
+// postureEng is the authority for *effective* per-route controls (global
+// security.* merged with per-route overrides). The auth/WAF/DLP/rate-limit
+// controls are wrapped in middleware.RouteGate so a per-route override is
+// actually enforced in the data plane — not merely reported by the posture
+// dashboard. Without this, require_auth: true on a route (with auth globally
+// off) showed "protected" while the request reached the backend unauthenticated.
+func buildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st *store.Store, alerts *alert.Engine, catalog *discovery.Catalog, postureEng *discovery.PostureEngine) (http.Handler, *proxy.Gateway, error) {
 	// Build proxy
 	gw, err := proxy.New(cfg.Routes, log)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	// Build JWT auth
-	jwtAuth := middleware.NewJWTAuth(cfg.Security.Auth, log, st)
 
 	// A nil *discovery.Catalog must be passed as a nil interface so the Discovery
 	// middleware's nil-check works (a typed-nil pointer in an interface is non-nil).
@@ -218,29 +292,111 @@ func buildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st *store.S
 		cat = catalog
 	}
 
+	// ── Per-route enforcement gates ──────────────────────────────────────────
+	// effective resolves the merged controls for a request path. The control
+	// middlewares below are built force-enabled and gated on these booleans, so a
+	// route can switch a control on even when it is globally off (and vice versa).
+	effective := func(path string) discovery.Controls {
+		c, _ := postureEng.ControlsFor(path)
+		return c
+	}
+
+	// authMW: enforce JWT when the effective controls require auth for the path.
+	// Built once with auth force-enabled (so JWKS init etc. run) only when auth is
+	// reachable — globally on, or switched on by at least one route override.
+	authMW := middleware.Middleware(passthroughMW)
+	if cfg.Security.Auth.Enabled || anyRouteRequiresAuth(cfg.Routes) {
+		authCfg := cfg.Security.Auth
+		authCfg.Enabled = true
+		forced := middleware.NewJWTAuth(authCfg, log, st).Middleware()
+		authMW = middleware.RouteGate(func(p string) bool { return effective(p).AuthRequired }, forced)
+	}
+
+	// wafMW / dlpMW / rateMW: same pattern for the other route-overridable controls.
+	wafMW := middleware.Middleware(passthroughMW)
+	if cfg.Security.WAF.Enabled || anyRouteEnablesBool(cfg.Routes, func(r config.RouteConfig) *bool { return r.WAF }) {
+		wafCfg := cfg.Security.WAF
+		wafCfg.Enabled = true
+		wafMW = middleware.RouteGate(func(p string) bool { return effective(p).WAF }, middleware.WAF(wafCfg, log, st))
+	}
+
+	dlpMW := middleware.Middleware(passthroughMW)
+	if cfg.Security.DLP.Enabled || anyRouteEnablesBool(cfg.Routes, func(r config.RouteConfig) *bool { return r.DLP }) {
+		dlpCfg := cfg.Security.DLP
+		dlpCfg.Enabled = true
+		dlpMW = middleware.RouteGate(func(p string) bool { return effective(p).DLP }, middleware.DLP(dlpCfg, log, st))
+	}
+
+	// rateMW resolves the effective rate-limit config per request path, so a route
+	// override controls both on/off AND its own requests/window. Counter keys are
+	// scoped ("gw" + route) so they never collide with the admin-plane limiter.
+	rateMW := middleware.Middleware(passthroughMW)
+	if cfg.Security.RateLimit.Enabled || anyRouteEnablesRateLimit(cfg.Routes) {
+		rateMW = middleware.RouteRateLimit(postureEng.RateLimitFor, log, st)
+	}
+
 	// Assemble middleware chain (order matters: outermost first).
 	// Discovery sits just inside the security perimeter (after WAF/rate-limit/bot
 	// so attacks stay out of the catalog) and outside auth/DLP so it can enrich
 	// the observation with identity and PII signals and capture the final status.
 	handler := middleware.Chain(gw,
-		middleware.CleanHeaders(),    // SEC: Strip spoofed X-Gateway-* headers
-		middleware.SecurityHeaders(), // ARCH-6: Security headers on every response
-		middleware.RequestID(),       // ARCH-4: Request ID for log correlation
+		middleware.TenantResolve(cfg.Multitenancy, cfg.Routes, log, st), // P0-3: resolve tenant first
+		middleware.CleanHeaders(),                        // SEC: Strip spoofed X-Gateway-* / X-JA3 headers
+		middleware.UpstreamFingerprint(cfg.Security.Bot), // trust upstream (Cloudflare) JA3 from trusted proxies
+		middleware.TLSFingerprint(),                      // SEC (P0-4): inject real ClientHello fingerprint
+		middleware.SecurityHeaders(),                     // ARCH-6: Security headers on every response
+		middleware.RequestID(),                           // ARCH-4: Request ID for log correlation
 		middleware.CORS(cfg.Security.CORS),
 		middleware.IPGuard(cfg.Security.IPGuard, log, st),
 		middleware.ThreatFeed(cfg.Security.ThreatFeed, log, st),
-		middleware.RateLimit(cfg.Security.RateLimit, log, st),
+		rateMW,
 		middleware.BotProtection(cfg.Security.Bot, log, st),
 		middleware.Challenge(cfg.Security.Challenge, log, st),
-		middleware.WAF(cfg.Security.WAF, log, st),
+		wafMW,
 		middleware.Discovery(cfg.Security.Inventory, cat, log), // passive API discovery
-		jwtAuth.Middleware(),
+		authMW,
 		middleware.AbuseDetection(cfg.Security.Abuse, log, st), // BOLA/BFLA (needs verified roles)
-		middleware.DLP(cfg.Security.DLP, log, st),
+		dlpMW,
 		middleware.BehaviorAnalysis(cfg.Security.Behavior, log, st),
 	)
 
 	return handler, gw, nil
+}
+
+// passthroughMW is a no-op middleware used when a control is fully inactive
+// (globally off and not enabled by any route override), so the gate machinery is
+// skipped entirely and no engine (e.g. Coraza) is constructed.
+func passthroughMW(next http.Handler) http.Handler { return next }
+
+// anyRouteRequiresAuth reports whether any route explicitly turns auth on.
+func anyRouteRequiresAuth(routes []config.RouteConfig) bool {
+	for _, r := range routes {
+		if r.RequireAuth != nil && *r.RequireAuth {
+			return true
+		}
+	}
+	return false
+}
+
+// anyRouteEnablesBool reports whether any route sets the selected *bool override
+// to true (used for WAF/DLP).
+func anyRouteEnablesBool(routes []config.RouteConfig, sel func(config.RouteConfig) *bool) bool {
+	for _, r := range routes {
+		if b := sel(r); b != nil && *b {
+			return true
+		}
+	}
+	return false
+}
+
+// anyRouteEnablesRateLimit reports whether any route turns rate limiting on.
+func anyRouteEnablesRateLimit(routes []config.RouteConfig) bool {
+	for _, r := range routes {
+		if r.RateLimit != nil && r.RateLimit.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 // watchConfigFile uses fsnotify for instant config hot-reload (zero-downtime).
@@ -260,7 +416,12 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 			return
 		}
 
-		newHandler, _, err := buildHandlerChain(newCfg, log, st, alerts, catalog)
+		// Rebuild the posture engine from the new config; it is the authority for
+		// both posture classification and the per-route enforcement gates, so the
+		// chain and the catalog must share the same fresh instance.
+		newPosture := discovery.NewPostureEngine(newCfg)
+
+		newHandler, _, err := buildHandlerChain(newCfg, log, st, alerts, catalog, newPosture)
 		if err != nil {
 			log.Error("hot-reload: chain build error", map[string]any{"error": err.Error()})
 			return
@@ -268,7 +429,7 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 
 		// Re-classify future traffic against the new configuration.
 		if catalog != nil {
-			catalog.SetPostureEngine(discovery.NewPostureEngine(newCfg))
+			catalog.SetPostureEngine(newPosture)
 		}
 
 		activeHandler.Store(newHandler)
