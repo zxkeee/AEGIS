@@ -250,6 +250,7 @@ type circuitBreaker struct {
 	resetAfter time.Duration
 	lastFail   time.Time
 	open       bool
+	probing    bool // a single half-open probe is in flight
 }
 
 func newCircuitBreaker(threshold int, resetAfter time.Duration) *circuitBreaker {
@@ -264,9 +265,16 @@ func (cb *circuitBreaker) isOpen() bool {
 	defer cb.mu.Unlock()
 
 	if cb.open && time.Since(cb.lastFail) > cb.resetAfter {
-		// Half-open: allow one request to test recovery
-		cb.open = false
-		cb.failures = 0
+		// Half-open: let exactly ONE probe through to test recovery and keep
+		// blocking everyone else until it resolves. The previous code cleared
+		// `open` here, which let every concurrent request hit a still-unhealthy
+		// upstream — defeating the breaker at the worst moment. recordSuccess
+		// closes the breaker; recordFailure re-arms it for the next window.
+		if cb.probing {
+			return true // a probe is already in flight; stay open to others
+		}
+		cb.probing = true
+		return false // this request is the probe
 	}
 	return cb.open
 }
@@ -277,6 +285,7 @@ func (cb *circuitBreaker) recordFailure() {
 
 	cb.failures++
 	cb.lastFail = time.Now()
+	cb.probing = false // a failed probe re-opens; a new probe is allowed next window
 	if cb.failures >= cb.threshold {
 		cb.open = true
 	}
@@ -287,4 +296,5 @@ func (cb *circuitBreaker) recordSuccess() {
 	defer cb.mu.Unlock()
 	cb.failures = 0
 	cb.open = false
+	cb.probing = false
 }
