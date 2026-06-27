@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"api-gateway/internal/classify"
 	"api-gateway/internal/config"
 )
 
@@ -23,32 +24,34 @@ func DLP(cfg config.DLPConfig, log Logger, st Store) Middleware {
 		return passthrough
 	}
 
-	// Compile PII patterns
-	defaults := []string{
-		`\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b`,             // Credit cards
-		`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b`, // Emails
-		`\b\d{3}-\d{2}-\d{4}\b`,                               // SSN
-	}
-
-	allPatterns := cfg.Patterns
-	if len(allPatterns) == 0 {
-		allPatterns = defaults
-	}
-
-	patterns := make([]*regexp.Regexp, 0, len(allPatterns))
-	for _, p := range allPatterns {
+	// Typed redaction + classification is handled by internal/classify (Luhn-
+	// validated cards, SSN range checks, etc.). Any additional operator-supplied
+	// regexes are applied on top; their matches redact but carry no data type.
+	customPatterns := make([]*regexp.Regexp, 0, len(cfg.Patterns))
+	for _, p := range cfg.Patterns {
 		if re, err := regexp.Compile(p); err == nil {
-			patterns = append(patterns, re)
+			customPatterns = append(customPatterns, re)
 		}
 	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Strip the client's Accept-Encoding before the request is proxied.
+			// Otherwise the backend may return a gzip/br-compressed body, and DLP
+			// would scan the compressed bytes — finding nothing and leaking PII
+			// silently. With the header removed, http.Transport transparently adds
+			// gzip and DECOMPRESSES the response, so DLP inspects plaintext. (This
+			// runs only when DLP is active for the path, since the middleware is
+			// gated per-route.)
+			r.Header.Del("Accept-Encoding")
+
 			// FIX BUG-3 & BUG-4: Capture status code, headers, AND body
 			dw := &dlpWriter{
 				ResponseWriter: w,
 				buf:            &bytes.Buffer{},
 				status:         http.StatusOK,
+				log:            log,
+				path:           r.URL.Path,
 			}
 
 			next.ServeHTTP(dw, r)
@@ -60,9 +63,15 @@ func DLP(cfg config.DLPConfig, log Logger, st Store) Middleware {
 			}
 
 			body := dw.buf.Bytes()
-			redacted := false
-			for _, re := range patterns {
-				newBody := re.ReplaceAll(body, []byte("***REDACTED***"))
+			mask := []byte("***REDACTED***")
+
+			// Typed pass: redacts and tells us WHICH data classes were present.
+			body, types := classify.Redact(body, mask)
+			redacted := len(types) > 0
+
+			// Custom operator regexes (untyped) on top.
+			for _, re := range customPatterns {
+				newBody := re.ReplaceAll(body, mask)
 				if len(newBody) != len(body) {
 					redacted = true
 				}
@@ -72,13 +81,15 @@ func DLP(cfg config.DLPConfig, log Logger, st Store) Middleware {
 			if redacted {
 				st.IncrMetric(r.Context(), "dlp_redacted")
 				// Flag the discovery observation so the catalog can mark this
-				// endpoint as exposing sensitive data (drives risk scoring).
+				// endpoint as exposing sensitive data (drives risk + findings).
 				if obs := observationFrom(r.Context()); obs != nil {
 					obs.PII = true
+					obs.PIITypes = types
 				}
-				log.Info("dlp: PII redacted from response", map[string]any{
-					"path": r.URL.Path,
-					"ip":   RealIP(r),
+				log.Info("dlp: sensitive data redacted from response", map[string]any{
+					"path":  r.URL.Path,
+					"ip":    RealIP(r),
+					"types": types,
 				})
 			}
 
@@ -100,6 +111,8 @@ type dlpWriter struct {
 	status      int
 	passthrough bool // once true, all writes go straight to the client
 	wroteHeader bool
+	log         Logger
+	path        string
 }
 
 func (d *dlpWriter) Write(b []byte) (int, error) {
@@ -119,8 +132,24 @@ func (d *dlpWriter) WriteHeader(code int) {
 		return
 	}
 	d.status = code
-	// Non-inspectable responses (protocol upgrades, server-sent events) must not
-	// be buffered — switch to passthrough and emit the header immediately.
+	// Non-inspectable responses must not be buffered — switch to passthrough and
+	// emit the header immediately. This covers protocol upgrades, server-sent
+	// events, and bodies still carrying a content encoding we cannot decode
+	// (defence in depth: Accept-Encoding is stripped upstream, so a compressed
+	// body here means the backend ignored that and produced bytes DLP cannot
+	// scan — we pass them through rather than falsely report a clean scan).
+	if enc := d.Header().Get("Content-Encoding"); enc != "" && !strings.EqualFold(enc, "identity") {
+		if d.log != nil {
+			d.log.Warn("dlp: response carries an undecodable content-encoding; skipping inspection", map[string]any{
+				"path":             d.path,
+				"content_encoding": enc,
+			})
+		}
+		d.passthrough = true
+		d.wroteHeader = true
+		d.ResponseWriter.WriteHeader(code)
+		return
+	}
 	if code == http.StatusSwitchingProtocols ||
 		strings.HasPrefix(d.Header().Get("Content-Type"), "text/event-stream") {
 		d.passthrough = true

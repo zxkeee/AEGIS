@@ -40,7 +40,18 @@ func IPGuard(cfg config.IPGuardConfig, log Logger, st Store) Middleware {
 			// Check dynamic blacklist (Redis)
 			blocked, err := st.IsIPBlocked(r.Context(), ip)
 			if err != nil {
-				log.Error("ip_guard: redis error", map[string]any{"error": err.Error()})
+				log.Error("ip_guard: redis error", map[string]any{
+					"error":       err.Error(),
+					"fail_closed": cfg.FailClosed,
+				})
+				if cfg.FailClosed {
+					// High-assurance mode: a backing-store outage must not silently
+					// disable IP blocking, so deny rather than pass through.
+					SecurityDeny(w, r, log, st, "ip_guard_store_unavailable", ip,
+						http.StatusServiceUnavailable, nil)
+					return
+				}
+				// Default: fail open to preserve availability.
 			}
 			if blocked {
 				SecurityDeny(w, r, log, st, "ip_blocked_dynamic", ip, http.StatusForbidden, nil)

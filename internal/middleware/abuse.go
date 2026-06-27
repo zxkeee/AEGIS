@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +36,26 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st Store) Middleware {
 	if threshold <= 0 {
 		threshold = 50
 	}
+	sensitivity := cfg.Sensitivity
+	if sensitivity <= 0 {
+		sensitivity = 3.0
+	}
+	adaptiveMin := cfg.AdaptiveMinObjects
+	if adaptiveMin <= 0 {
+		adaptiveMin = 8
+	}
+	// The baseline must outlive a single window so it reflects the consumer's norm
+	// across windows, not just the current one.
+	baselineTTL := 24 * window
+
+	// Build the false-positive allowlist once. A consumer named here is exempt
+	// from all abuse detection (A6 FP control).
+	allow := make(map[string]bool, len(cfg.Allowlist))
+	for _, c := range cfg.Allowlist {
+		if c = strings.TrimSpace(c); c != "" {
+			allow[c] = true
+		}
+	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -43,6 +64,13 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st Store) Middleware {
 			consumer := subject
 			if consumer == "" {
 				consumer = "ip:" + ip
+			}
+
+			// Allowlisted consumers skip detection entirely — they are known-benign
+			// high-cardinality callers (batch jobs, indexers, internal admins).
+			if allow[consumer] {
+				next.ServeHTTP(w, r)
+				return
 			}
 			roles := splitRoles(r.Header.Get("X-Gateway-Roles"))
 
@@ -54,7 +82,16 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st Store) Middleware {
 				if hasAnyRole(roles, pr.RequiredRoles) {
 					break // authorized for this prefix
 				}
-				extra := map[string]any{"consumer": consumer, "required_roles": pr.RequiredRoles}
+				// BFLA is a clear authorization violation on verified JWT roles —
+				// high confidence, hence "critical". The explanation makes the alert
+				// self-describing (A6 explainability).
+				extra := map[string]any{
+					"consumer":       consumer,
+					"required_roles": pr.RequiredRoles,
+					"severity":       "critical",
+					"why": "consumer '" + consumer + "' called privileged path '" + pr.Path +
+						"' holding none of the required roles " + strings.Join(pr.RequiredRoles, ","),
+				}
 				if cfg.BlockMode {
 					SecurityDeny(w, r, log, st, "bfla_privileged_access", ip, http.StatusForbidden, extra)
 					return
@@ -79,13 +116,55 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st Store) Middleware {
 						maxCount = cnt
 					}
 				}
-				if int(maxCount) > threshold {
-					extra := map[string]any{"consumer": consumer, "distinct_objects": maxCount, "endpoint": endpoint}
-					if cfg.BlockMode {
-						SecurityDeny(w, r, log, st, "bola_enumeration", ip, http.StatusTooManyRequests, extra)
-						return
+				if maxCount > 0 {
+					// EnumThreshold is the absolute hard ceiling (always enforced).
+					overCeiling := int(maxCount) > threshold
+					flagged := overCeiling
+					why := "consumer '" + consumer + "' accessed " + strconv.FormatInt(maxCount, 10) +
+						" distinct object IDs on '" + endpoint + "' (hard ceiling " + strconv.Itoa(threshold) + ")"
+
+					// A2: per-consumer adaptive baseline. Compare this window against the
+					// consumer's own learned norm; learn unless it is already a clear
+					// hard-ceiling breach (so an attack does not poison the baseline).
+					var baseline float64
+					if cfg.Adaptive {
+						b, err := st.TrackBaseline(r.Context(), consumer, endpoint, maxCount, !overCeiling, baselineTTL)
+						if err != nil {
+							log.Error("abuse: baseline tracking failed", map[string]any{"error": err.Error()})
+						} else {
+							baseline = b
+							if !flagged && int(maxCount) >= adaptiveMin && float64(maxCount) > b*sensitivity {
+								flagged = true
+								why = "consumer '" + consumer + "' accessed " + strconv.FormatInt(maxCount, 10) +
+									" distinct object IDs on '" + endpoint + "' — " +
+									strconv.FormatFloat(float64(maxCount)/maxF(b, 1), 'f', 1, 64) +
+									"x its baseline of " + strconv.FormatFloat(b, 'f', 1, 64) +
+									" (sensitivity " + strconv.FormatFloat(sensitivity, 'f', 1, 64) + ")"
+							}
+						}
 					}
-					recordAbuse(r, log, st, "bola_enumeration", ip, extra)
+
+					if flagged {
+						// BOLA is heuristic (legitimate pagination/bulk reads can resemble
+						// enumeration), so it is "warning", not "critical". The explanation
+						// states observed vs allowed/baseline so an operator can judge it
+						// or allowlist the consumer.
+						extra := map[string]any{
+							"consumer":         consumer,
+							"distinct_objects": maxCount,
+							"endpoint":         endpoint,
+							"severity":         "warning",
+							"why":              why,
+						}
+						if cfg.Adaptive {
+							extra["baseline"] = baseline
+						}
+						if cfg.BlockMode {
+							SecurityDeny(w, r, log, st, "bola_enumeration", ip, http.StatusTooManyRequests, extra)
+							return
+						}
+						recordAbuse(r, log, st, "bola_enumeration", ip, extra)
+					}
 				}
 			}
 
@@ -109,6 +188,15 @@ func recordAbuse(r *http.Request, log Logger, st Store, reason, ip string, extra
 		Code:      http.StatusOK, // allowed (detect-only)
 		Extra:     extra,
 	})
+}
+
+// maxF returns the larger of two floats (used to avoid divide-by-zero when
+// formatting the baseline multiple).
+func maxF(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // splitRoles parses the comma-separated X-Gateway-Roles header.

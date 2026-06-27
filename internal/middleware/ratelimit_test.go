@@ -16,7 +16,7 @@ func runRateLimit(cfg config.RateLimitConfig, st Store) *httptest.ResponseRecord
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	h := RateLimit(cfg, fakeLogger{}, st)(next)
+	h := RateLimit(cfg, "test", fakeLogger{}, st)(next)
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.RemoteAddr = "1.2.3.4:1111"

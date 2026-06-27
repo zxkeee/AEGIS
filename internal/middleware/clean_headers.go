@@ -17,6 +17,10 @@ func CleanHeaders() Middleware {
 					r.Header.Del(headerName)
 				}
 			}
+			// SEC (P0-4): the TLS fingerprint is gateway-internal. A client must
+			// never be able to supply it — only the TLSFingerprint middleware may
+			// set it, from the real ClientHello. Strip any inbound value.
+			r.Header.Del("X-JA3-Fingerprint")
 
 			next.ServeHTTP(w, r)
 		})

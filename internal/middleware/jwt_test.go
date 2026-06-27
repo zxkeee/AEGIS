@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"errors"
 	"crypto/rand"
 	"crypto/rsa"
 	"net/http"
@@ -118,5 +119,36 @@ func TestJWT_MissingHeader_Rejected(t *testing.T) {
 	rec := serveJWT(cfg, &fakeStore{}, "")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("missing Authorization: got %d, want 401", rec.Code)
+	}
+}
+
+// TestJWT_RevocationFailOpen_DefaultProceeds verifies the default behaviour: when
+// the JTI-revocation lookup errors (Redis outage) and revocation_fail_closed is
+// unset, the request proceeds (availability over strictness) — preserving the
+// pre-existing contract.
+func TestJWT_RevocationFailOpen_DefaultProceeds(t *testing.T) {
+	cfg := config.AuthConfig{Enabled: true, Secret: testSecret}
+	st := &fakeStore{jtiErr: errors.New("redis down")}
+	tok := hsToken(t, testSecret, jwt.MapClaims{
+		"sub": "alice", "jti": "abc", "exp": time.Now().Add(time.Hour).Unix(),
+	})
+	rec := serveJWT(cfg, st, "Bearer "+tok)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fail-open default: got %d, want 200", rec.Code)
+	}
+}
+
+// TestJWT_RevocationFailClosed_Denies verifies high-assurance mode: when the
+// revocation lookup errors and revocation_fail_closed is set, the request is
+// denied so a revoked token can never slip through during an outage.
+func TestJWT_RevocationFailClosed_Denies(t *testing.T) {
+	cfg := config.AuthConfig{Enabled: true, Secret: testSecret, RevocationFailClosed: true}
+	st := &fakeStore{jtiErr: errors.New("redis down")}
+	tok := hsToken(t, testSecret, jwt.MapClaims{
+		"sub": "alice", "jti": "abc", "exp": time.Now().Add(time.Hour).Unix(),
+	})
+	rec := serveJWT(cfg, st, "Bearer "+tok)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("fail-closed: got %d, want 503", rec.Code)
 	}
 }

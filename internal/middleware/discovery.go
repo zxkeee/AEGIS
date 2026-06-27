@@ -7,6 +7,7 @@ import (
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
+	"api-gateway/internal/tenant"
 )
 
 // Catalog is the dependency the Discovery middleware records observations to.
@@ -41,6 +42,7 @@ func Discovery(cfg config.APIInventoryConfig, cat Catalog, log Logger) Middlewar
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			obs := &discovery.Observation{
+				Tenant:     tenant.From(r.Context()),
 				Method:     r.Method,
 				Path:       r.URL.Path,
 				ConsumerIP: RealIP(r),

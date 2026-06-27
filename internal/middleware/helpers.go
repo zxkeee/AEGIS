@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"api-gateway/internal/store"
+	"api-gateway/internal/tenant"
 )
 
 // statusWriter wraps ResponseWriter to capture the HTTP status code.
@@ -105,6 +106,22 @@ func isTrustedProxyIP(ip net.IP) bool {
 	return false
 }
 
+// RemotePeerTrusted reports whether the immediate TCP peer (r.RemoteAddr) is a
+// configured trusted proxy. Used to decide whether to believe headers injected
+// by that upstream (e.g. a Cloudflare-supplied JA3 hash). With no trusted
+// proxies configured, nothing is trusted.
+func RemotePeerTrusted(r *http.Request) bool {
+	if len(trustedProxyNets) == 0 {
+		return false
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && isTrustedProxyIP(ip)
+}
+
 // SecurityDeny logs, records metrics/forensics, and responds with an error.
 func SecurityDeny(w http.ResponseWriter, r *http.Request,
 	log Logger, st Store,
@@ -113,6 +130,7 @@ func SecurityDeny(w http.ResponseWriter, r *http.Request,
 	log.BlockEvent(reason, ip, r.URL.Path, r.Method, extra)
 	st.IncrMetric(r.Context(), "blocked_"+reason)
 	st.PushForensic(r.Context(), store.ForensicEntry{
+		Tenant:    tenant.From(r.Context()),
 		Timestamp: time.Now().UTC(),
 		IP:        ip,
 		Path:      r.URL.Path,

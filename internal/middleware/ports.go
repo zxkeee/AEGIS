@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"api-gateway/internal/config"
+	"api-gateway/internal/iam"
 	"api-gateway/internal/store"
 )
 
@@ -58,9 +59,14 @@ type Store interface {
 
 	// Abuse detection (BOLA enumeration)
 	TrackObjectAccess(ctx context.Context, consumer, endpoint, objectID string, window time.Duration) (int64, error)
+	// TrackBaseline returns a consumer's EWMA baseline distinct-object count on an
+	// endpoint (the value BEFORE this update), folding `current` into the baseline
+	// only when learn is true. Drives the per-consumer adaptive BOLA threshold (A2).
+	TrackBaseline(ctx context.Context, consumer, endpoint string, current int64, learn bool, ttl time.Duration) (float64, error)
 
-	// Admin sessions (console authentication)
-	ValidateSession(ctx context.Context, token string) (csrf string, ok bool, err error)
+	// Admin sessions (console authentication). The returned Session carries the
+	// tenant + role that AdminAuth threads into the request context.
+	ValidateSession(ctx context.Context, token string) (iam.Session, bool, error)
 
 	// Forensics
 	PushForensic(ctx context.Context, e store.ForensicEntry)
