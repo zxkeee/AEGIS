@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"api-gateway/internal/tenant"
 )
 
 // Logger is the minimal logging interface the catalog needs.
@@ -16,12 +18,14 @@ type Logger interface {
 // middleware after the request has been served. It is the unit fed to the
 // catalog for aggregation.
 type Observation struct {
+	Tenant      string // resolved tenant; empty → DefaultTenant (set by the catalog)
 	Method      string
 	Path        string // raw path; normalized inside the catalog
 	Status      int
 	LatencyMs   int64
-	AuthPresent bool // a valid identity (JWT/API key) accompanied the request
-	PII         bool // DLP detected sensitive data in the response
+	AuthPresent bool     // a valid identity (JWT/API key) accompanied the request
+	PII         bool     // DLP detected sensitive data in the response
+	PIITypes    []string // classified data types in the response (e.g. credit_card, email)
 
 	// Consumer identity. Any non-empty field contributes a consumer record.
 	ConsumerSubject string // from JWT "sub"/claims  -> "jwt:<sub>"
@@ -41,12 +45,14 @@ type Endpoint struct {
 	AuthPresentCount int64            `json:"auth_present_count"`
 	AnonCount        int64            `json:"anon_count"`
 	PIICount         int64            `json:"pii_count"`
+	PIITypes         []string         `json:"pii_types,omitempty"`
 	AvgLatencyMs     int64            `json:"avg_latency_ms"`
 	StatusDist       map[string]int64 `json:"status_dist,omitempty"`
 	Posture          string           `json:"posture"`
 	RiskScore        int              `json:"risk_score"`
 	RoutePath        string           `json:"route_path"`
 	Controls         *Controls        `json:"controls,omitempty"`
+	Findings         []Finding        `json:"findings,omitempty"`
 
 	latencyMsSum   int64
 	latencySamples int64
@@ -95,16 +101,17 @@ type EndpointFilter struct {
 // ── Aggregation state (per flush window) ────────────────────────────────────
 
 type epAgg struct {
-	id, method, pathTemplate, routePath, posture string
-	requestCount, errorCount                     int64
-	authPresent, anonCount, piiCount             int64
-	latencyMsSum, latencySamples                 int64
-	riskScore                                    int
-	statusDist                                   map[int]int64
+	tenant, id, method, pathTemplate, routePath, posture string
+	requestCount, errorCount                             int64
+	authPresent, anonCount, piiCount                     int64
+	latencyMsSum, latencySamples                         int64
+	riskScore                                            int
+	statusDist                                           map[int]int64
+	piiTypes                                             map[string]bool // set of classified data types
 }
 
 type consumerAgg struct {
-	id, kind, label          string
+	tenant, id, kind, label  string
 	requestCount, errorCount int64
 }
 
@@ -183,7 +190,7 @@ func (c *Catalog) worker() {
 
 	eps := map[string]*epAgg{}
 	cons := map[string]*consumerAgg{}
-	epCons := map[[2]string]int64{} // {endpointID, consumerID} -> count
+	epCons := map[[3]string]int64{} // {tenant, endpointID, consumerID} -> count
 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -195,7 +202,7 @@ func (c *Catalog) worker() {
 		c.flush(eps, cons, epCons)
 		eps = map[string]*epAgg{}
 		cons = map[string]*consumerAgg{}
-		epCons = map[[2]string]int64{}
+		epCons = map[[3]string]int64{}
 	}
 
 	for {
@@ -224,15 +231,23 @@ func (c *Catalog) worker() {
 
 // aggregate folds one observation into the in-memory window.
 func (c *Catalog) aggregate(obs Observation, eps map[string]*epAgg,
-	cons map[string]*consumerAgg, epCons map[[2]string]int64) {
+	cons map[string]*consumerAgg, epCons map[[3]string]int64) {
 
 	eng := c.engine()
+	tnt := obs.Tenant
+	if tnt == "" {
+		tnt = tenant.Default
+	}
 	tmpl := NormalizePath(obs.Path)
 	id := EndpointKey(obs.Method, obs.Path)
+	// Aggregation maps are keyed by tenant+id so two tenants that share an
+	// endpoint id (or consumer id) never collide in the same flush window.
+	epKey := tnt + "\x00" + id
 
-	a := eps[id]
+	a := eps[epKey]
 	if a == nil {
 		a = &epAgg{
+			tenant:       tnt,
 			id:           id,
 			method:       obs.Method,
 			pathTemplate: tmpl,
@@ -241,7 +256,7 @@ func (c *Catalog) aggregate(obs Observation, eps map[string]*epAgg,
 		if route := eng.matchRoute(tmpl); route != nil {
 			a.routePath = route.Path
 		}
-		eps[id] = a
+		eps[epKey] = a
 	}
 	a.requestCount++
 	if obs.Status >= 400 {
@@ -254,6 +269,12 @@ func (c *Catalog) aggregate(obs Observation, eps map[string]*epAgg,
 	}
 	if obs.PII {
 		a.piiCount++
+	}
+	for _, t := range obs.PIITypes {
+		if a.piiTypes == nil {
+			a.piiTypes = make(map[string]bool)
+		}
+		a.piiTypes[t] = true
 	}
 	a.latencyMsSum += obs.LatencyMs
 	a.latencySamples++
@@ -271,16 +292,17 @@ func (c *Catalog) aggregate(obs Observation, eps map[string]*epAgg,
 
 	// Consumers: prefer the strongest identity available.
 	for _, cid := range consumerIdentities(obs) {
-		ca := cons[cid.id]
+		conKey := tnt + "\x00" + cid.id
+		ca := cons[conKey]
 		if ca == nil {
-			ca = &consumerAgg{id: cid.id, kind: cid.kind, label: cid.label}
-			cons[cid.id] = ca
+			ca = &consumerAgg{tenant: tnt, id: cid.id, kind: cid.kind, label: cid.label}
+			cons[conKey] = ca
 		}
 		ca.requestCount++
 		if obs.Status >= 400 {
 			ca.errorCount++
 		}
-		epCons[[2]string{id, cid.id}]++
+		epCons[[3]string{tnt, id, cid.id}]++
 	}
 }
 
@@ -306,7 +328,7 @@ func consumerIdentities(obs Observation) []consumerID {
 }
 
 // flush persists the aggregated window to PostgreSQL.
-func (c *Catalog) flush(eps map[string]*epAgg, cons map[string]*consumerAgg, epCons map[[2]string]int64) {
+func (c *Catalog) flush(eps map[string]*epAgg, cons map[string]*consumerAgg, epCons map[[3]string]int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -321,7 +343,8 @@ func (c *Catalog) flush(eps map[string]*epAgg, cons map[string]*consumerAgg, epC
 		}
 	}
 	for k, n := range epCons {
-		if err := c.pg.upsertEndpointConsumer(ctx, k[0], k[1], n); err != nil {
+		// k = {tenant, endpointID, consumerID}
+		if err := c.pg.upsertEndpointConsumer(ctx, k[0], k[1], k[2], n); err != nil {
 			c.log.Error("discovery: endpoint-consumer flush failed", map[string]any{"error": err.Error()})
 		}
 	}
@@ -332,37 +355,41 @@ func (c *Catalog) flush(eps map[string]*epAgg, cons map[string]*consumerAgg, epC
 
 // ── Read API (delegates to PG, enriches with live controls) ─────────────────
 
-// ListEndpoints returns catalog endpoints matching the filter.
+// ListEndpoints returns catalog endpoints for the request's tenant matching the
+// filter. The tenant is read from the context (set by the TenantResolve
+// middleware); reads are scoped so one tenant never sees another's endpoints.
 func (c *Catalog) ListEndpoints(ctx context.Context, f EndpointFilter) ([]Endpoint, error) {
-	eps, err := c.pg.listEndpoints(ctx, f)
+	eps, err := c.pg.listEndpoints(ctx, tenant.From(ctx), f)
 	if err != nil {
 		return nil, err
 	}
 	eng := c.engine()
 	for i := range eps {
-		ctrl, _ := eng.ControlsFor(eps[i].PathTemplate)
+		ctrl, matched := eng.ControlsFor(eps[i].PathTemplate)
 		eps[i].Controls = &ctrl
+		eps[i].Findings = DetectFindings(eps[i], ctrl, matched)
 	}
 	return eps, nil
 }
 
 // GetEndpoint returns one endpoint plus its consumers, or nil if unknown.
 func (c *Catalog) GetEndpoint(ctx context.Context, id string) (*Endpoint, []EndpointConsumer, error) {
-	e, consumers, err := c.pg.getEndpoint(ctx, id)
+	e, consumers, err := c.pg.getEndpoint(ctx, tenant.From(ctx), id)
 	if err != nil || e == nil {
 		return e, consumers, err
 	}
-	ctrl, _ := c.engine().ControlsFor(e.PathTemplate)
+	ctrl, matched := c.engine().ControlsFor(e.PathTemplate)
 	e.Controls = &ctrl
+	e.Findings = DetectFindings(*e, ctrl, matched)
 	return e, consumers, nil
 }
 
 // ListConsumers returns the top API consumers.
 func (c *Catalog) ListConsumers(ctx context.Context, limit int) ([]Consumer, error) {
-	return c.pg.listConsumers(ctx, limit)
+	return c.pg.listConsumers(ctx, tenant.From(ctx), limit)
 }
 
-// PostureSummary returns the coverage roll-up.
+// PostureSummary returns the coverage roll-up for the request's tenant.
 func (c *Catalog) PostureSummary(ctx context.Context) (PostureSummary, error) {
-	return c.pg.postureSummary(ctx)
+	return c.pg.postureSummary(ctx, tenant.From(ctx))
 }

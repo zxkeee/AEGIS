@@ -89,9 +89,23 @@ func (e *PostureEngine) ControlsFor(path string) (Controls, bool) {
 	return c, route != nil
 }
 
+// RateLimitFor resolves the effective rate-limit config for a path. A per-route
+// rate_limit override fully replaces the global config (its own requests/window/
+// fail_closed). The returned routeKey isolates a route's counter from the global
+// bucket so distinct routes don't share a window; it is empty when the global
+// config applies. enabled reports whether limiting runs for the path at all.
+func (e *PostureEngine) RateLimitFor(path string) (cfg config.RateLimitConfig, routeKey string, enabled bool) {
+	route := e.matchRoute(path)
+	if route != nil && route.RateLimit != nil {
+		return *route.RateLimit, route.Path, route.RateLimit.Enabled
+	}
+	g := e.cfg.Security.RateLimit
+	return g, "", g.Enabled
+}
+
 func (e *PostureEngine) authExcluded(path string) bool {
 	for _, ex := range e.cfg.Security.Auth.Exclude {
-		if ex != "" && strings.HasPrefix(path, ex) {
+		if config.PathHasPrefix(path, ex) {
 			return true
 		}
 	}

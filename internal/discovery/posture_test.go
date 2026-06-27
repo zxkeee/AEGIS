@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"testing"
+	"time"
 
 	"api-gateway/internal/config"
 )
@@ -65,5 +66,32 @@ func TestRiskScoreShadowWithPII(t *testing.T) {
 	}
 	if low != 0 {
 		t.Errorf("fully protected endpoint should be 0 risk, got %d", low)
+	}
+}
+
+func TestRateLimitFor_RouteOverrideReplacesGlobal(t *testing.T) {
+	rl := &config.RateLimitConfig{Enabled: true, Requests: 7, Window: 5 * time.Second}
+	cfg := config.GatewayConfig{
+		Security: config.SecurityConfig{
+			RateLimit: config.RateLimitConfig{Enabled: true, Requests: 100, Window: time.Minute},
+		},
+		Routes: []config.RouteConfig{
+			{Path: "/cheap", RateLimit: rl},
+			{Path: "/normal"}, // inherits global
+			{Path: "/off", RateLimit: &config.RateLimitConfig{Enabled: false}},
+		},
+	}
+	e := NewPostureEngine(cfg)
+
+	c, key, on := e.RateLimitFor("/cheap")
+	if !on || c.Requests != 7 || key != "/cheap" {
+		t.Fatalf("/cheap: got on=%v req=%d key=%q, want on=true req=7 key=/cheap", on, c.Requests, key)
+	}
+	c, key, on = e.RateLimitFor("/normal")
+	if !on || c.Requests != 100 || key != "" {
+		t.Fatalf("/normal: got on=%v req=%d key=%q, want global 100 with empty key", on, c.Requests, key)
+	}
+	if _, _, on = e.RateLimitFor("/off"); on {
+		t.Fatal("/off: route disabled rate limit, want on=false")
 	}
 }
