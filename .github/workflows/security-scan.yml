@@ -1,0 +1,104 @@
+name: Dynamic Security Scan
+
+# Boots a self-contained AEGIS instance and runs automated dynamic security
+# testing against it (RELEASE-CHECKLIST "Independent security testing"):
+#   1. tests/pentest.sh   — WAF efficacy + admin-auth smoke (deterministic).
+#   2. nuclei             — templated scan of the AEGIS *admin* plane.
+#
+# The scan targets the admin plane because that is AEGIS's own HTTP surface; the
+# data plane proxies to a disposable echo backend, so exposure templates would
+# false-positive there. The data plane's WAF is covered deterministically by
+# pentest.sh (payloads are denied with 403 before they ever reach a backend).
+#
+# Validated end-to-end on a Linux/amd64 Docker host before this workflow landed.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+jobs:
+  dynamic-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build gateway
+        run: go build -o bin/gateway ./cmd/gateway
+
+      # Redis must carry a password — config.Validate rejects an empty one. The
+      # official image takes it via --requirepass.
+      - name: Start Redis (password-protected)
+        run: |
+          docker run -d --name aegis-scan-redis -p 6379:6379 \
+            redis:7-alpine redis-server --requirepass scanpass
+
+      # Disposable upstream so the proxy has somewhere to forward to.
+      - name: Start echo backend
+        run: |
+          docker run -d --name aegis-scan-echo -p 3000:8080 \
+            mendhak/http-https-echo:31
+
+      - name: Launch AEGIS
+        env:
+          AEGIS_REDIS_PASSWORD: scanpass
+        run: |
+          # Strong admin secret (config.Validate rejects placeholders/short keys).
+          AEGIS_ADMIN_SECRET="$(openssl rand -hex 32)"
+          echo "AEGIS_ADMIN_SECRET=$AEGIS_ADMIN_SECRET" >> "$GITHUB_ENV"
+          AEGIS_ADMIN_SECRET="$AEGIS_ADMIN_SECRET" \
+            ./bin/gateway --config tests/dynamic/gateway.ci.yaml > gateway.log 2>&1 &
+          echo "AEGIS_PID=$!" >> "$GITHUB_ENV"
+          # Wait for readiness (max ~30s).
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8081/health; then
+              echo "gateway healthy"; exit 0
+            fi
+            sleep 1
+          done
+          echo "gateway failed to become healthy"; cat gateway.log; exit 1
+
+      - name: WAF + auth smoke (pentest.sh)
+        run: bash tests/pentest.sh http://127.0.0.1:8080 http://127.0.0.1:8081
+
+      - name: nuclei scan (admin plane)
+        run: |
+          # Build -eid args from the allowlist (skip comments / blank lines).
+          EID_ARGS=()
+          while IFS= read -r line; do
+            id="${line%%#*}"; id="$(echo "$id" | xargs)"
+            [ -n "$id" ] && EID_ARGS+=( -eid "$id" )
+          done < tests/dynamic/nuclei-ignore.txt
+
+          docker run --rm --network host -v "$PWD/tests/dynamic:/work" \
+            projectdiscovery/nuclei:latest \
+            -u http://127.0.0.1:8081 \
+            -severity high,critical -ni -rl 80 -timeout 5 -retries 1 \
+            "${EID_ARGS[@]}" \
+            -jsonl -o /work/nuclei-findings.jsonl || true
+
+          if [ -s tests/dynamic/nuclei-findings.jsonl ]; then
+            echo "::error::nuclei reported high/critical findings on the admin plane:"
+            cat tests/dynamic/nuclei-findings.jsonl
+            exit 1
+          fi
+          echo "nuclei: no high/critical findings"
+
+      - name: Gateway logs (always)
+        if: always()
+        run: cat gateway.log || true
+
+      - name: Teardown
+        if: always()
+        run: |
+          [ -n "${AEGIS_PID:-}" ] && kill "$AEGIS_PID" 2>/dev/null || true
+          docker rm -f aegis-scan-redis aegis-scan-echo 2>/dev/null || true

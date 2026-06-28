@@ -1,0 +1,57 @@
+# AEGIS — dynamic-scan stand config (CI + local).
+#
+# Boots a self-contained gateway for automated dynamic scanning (nuclei / the
+# pentest smoke suite). Secrets come from the environment, never this file:
+#   AEGIS_ADMIN_SECRET   strong admin secret (config.Validate rejects placeholders)
+#   AEGIS_REDIS_PASSWORD optional (empty for the CI redis service)
+#
+# Plaintext on purpose: CI terminates no TLS, so require_tls stays false and the
+# session cookie is allowed over HTTP (admin_cookie_insecure). NEVER use these
+# settings in production.
+
+listen: ":8080"
+admin_listen: ":8081"
+admin_auth: true
+admin_secret: ""              # set via AEGIS_ADMIN_SECRET
+admin_session_ttl: 8h
+admin_cookie_insecure: true   # CI is plain HTTP
+require_tls: false
+trusted_proxies: []
+
+tls:
+  enabled: false
+
+redis:
+  addr: "127.0.0.1:6379"
+  password: ""                # set via AEGIS_REDIS_PASSWORD
+
+# A single catch-all route to the disposable echo upstream, so path probes proxy
+# somewhere real and the WAF (which runs before routing) can reject attacks.
+routes:
+  - path: "/"
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+    upstreams:
+      - "http://127.0.0.1:3000"
+    load_balance: "round_robin"
+    timeout: "15s"
+    retry_attempts: 1
+    strip_prefix: false
+
+security:
+  # WAF on: the scan asserts injection/XSS/SSRF/scanner payloads are rejected.
+  waf:
+    enabled: true
+  # Auth OFF on the data plane so the scanner can reach the proxy and exercise
+  # the WAF; the admin plane stays authenticated (admin_auth: true above).
+  auth:
+    enabled: false
+  rate_limit:
+    enabled: false              # don't throttle the scanner mid-run
+  bot:
+    enabled: true               # scanner-UA detection (sqlmap/nikto/…)
+  dlp:
+    enabled: true
+  ip_guard:
+    enabled: false
+  abuse:
+    enabled: false

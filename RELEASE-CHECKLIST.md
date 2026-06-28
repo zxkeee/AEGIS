@@ -39,9 +39,17 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       API/CLI. (Full OIDC/SAML SSO + `admin`/`viewer` roles + MFA remain P1.)
 - [x] **Dependency CVE scanning.** `govulncheck` runs in CI; x/net bumped and
       toolchain pinned (go1.26.4) so the module and stdlib are CVE-clean.
-- [ ] **Independent security testing.** Manual pentest plus an automated dynamic
-      scan (OWASP ZAP / nuclei) against a running instance; triage and fix.
-      (External step — cannot be self-certified.)
+- [~] **Independent security testing.** Automated dynamic scan in place
+      (`.github/workflows/security-scan.yml`): boots a self-contained instance and
+      runs `tests/pentest.sh` (WAF efficacy + admin-auth) plus **nuclei** against
+      the admin plane (high/critical gate, allowlist in `tests/dynamic/`).
+      Validated end-to-end on a Linux Docker host: pentest 18/18, nuclei admin
+      plane 0 high/critical. This scan also surfaced and fixed a real WAF gap
+      (JSON request bodies were not inspected — see `waf.go` JSON body processor).
+      Note: nuclei against the data plane false-positives on the reflecting test
+      backend, so the gate scans the admin plane and pentest.sh covers the WAF.
+      Still open (external, cannot be self-certified): an **independent manual
+      pentest** by a third party.
 - [x] **TLS mandatory in production.** `require_tls` makes startup fail without
       gateway TLS; the gateway now actually terminates TLS
       (`ListenAndServeTLS`) when `tls.enabled`, not just plaintext; a loud
@@ -83,16 +91,32 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
 - [x] Coverage, effectiveness and reporting (JSON/CSV)
 
 ### P1 — table stakes / flagship
-- [ ] **OWASP API Top-10 detection**, starting with **BOLA/BFLA** built on the
+- [x] **OWASP API Top-10 detection**, starting with **BOLA/BFLA** built on the
       existing consumer graph. This is the primary reason customers buy API
-      security; without it the product reads as "another WAF".
+      security; without it the product reads as "another WAF". Implemented in
+      `middleware.AbuseDetection` (wired after JWT so it sees verified roles):
+      **BFLA** flags a consumer hitting a privileged path prefix without any
+      required role; **BOLA/IDOR** flags object-ID enumeration via per-consumer/
+      endpoint distinct-ID counts (`store.TrackObjectAccess`) against both a hard
+      `enum_threshold` ceiling and an adaptive per-consumer EWMA baseline
+      (`store.TrackBaseline`, A2). Detect-only or block mode, with an allowlist
+      for known high-cardinality callers and explainable `why` on every event.
 - [~] **SIEM integration** (Splunk / Elastic) and **alerting** (Slack / PagerDuty)
       with configurable webhooks. Done: `alerting` config block (webhook URL,
       `generic`/`slack` payload format, `min_severity` gate); `AEGIS_ALERT_WEBHOOK_URL`
       env override. Remaining: per-rule routing, ticketing (Jira/ServiceNow).
 - [x] **Native Prometheus exposition** of the AEGIS counters (`GET /metrics`,
       text format 0.0.4, behind the admin bearer; scrape config in `prometheus.yml`).
-- [ ] **OpenAPI / spec drift**: import a spec, compare documented vs observed.
+- [x] **OpenAPI / spec drift**: import an OpenAPI 3.x / Swagger 2.0 spec (config
+      `discovery.spec_path` fallback or per-tenant `PUT /api/discovery/spec`) and
+      compare documented vs observed. `GET /api/discovery/drift` reports
+      **undocumented** endpoints (observed, not in spec — OWASP API9) and
+      **zombie** operations (documented, never observed); undocumented endpoints
+      also surface as `undocumented_endpoint`/`undocumented_method` findings on
+      the catalog. Spec paths are canonicalised to the catalog's `{id}` template
+      so documented and observed surfaces compare exactly. Parser is dependency
+      -free (yaml.v3, which also reads JSON). Per-tenant spec stored in PG with
+      RLS; validated on the home-server containers.
 
 ### P2
 - [ ] Multi-tenancy (organisations, per-tenant data isolation).

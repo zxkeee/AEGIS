@@ -1,0 +1,10 @@
+# nuclei template IDs to exclude from the dynamic-scan gate, one per line.
+#
+# Use this only for confirmed false positives, with a justification comment and a
+# date. The CI scan targets the AEGIS *admin* plane (its own HTTP surface); the
+# data plane is exercised by tests/pentest.sh instead, because a reflecting test
+# backend makes exposure templates false-positive there.
+#
+# Format: <template-id>   # why — who/when
+#
+# (empty — the admin-plane scan currently reports no high/critical findings)

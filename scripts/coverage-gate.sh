@@ -14,16 +14,16 @@ set -euo pipefail
 # these up as real coverage rises; never down. Portable (no assoc arrays, so it
 # runs on macOS bash 3.2 as well as CI).
 FLOORS="
-api-gateway/internal/middleware 76
+api-gateway/internal/middleware 80
 api-gateway/internal/config 86
 api-gateway/internal/alert 75
 api-gateway/internal/tlsfp 95
 api-gateway/internal/tenant 100
 api-gateway/internal/iam 7
 api-gateway/internal/proxy 89
-api-gateway/internal/discovery 38
+api-gateway/internal/discovery 40
 api-gateway/internal/classify 90
-api-gateway/internal/api 39
+api-gateway/internal/api 42
 api-gateway/sdk/gatewayverify 90
 "
 
