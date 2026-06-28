@@ -38,12 +38,12 @@ func main() {
 	// Outage orchestration.
 	go func() {
 		time.Sleep(time.Duration(*outStart) * time.Second)
-		_ = exec.Command("docker", "stop", *container).Run()
+		_ = exec.Command("docker", "stop", *container).Run() // #nosec G204 -- load-test tool; container is an operator-supplied flag
 		fmt.Printf("[t=%ds] redis STOPPED\n", *outStart)
 	}()
 	go func() {
 		time.Sleep(time.Duration(*outEnd) * time.Second)
-		_ = exec.Command("docker", "start", *container).Run()
+		_ = exec.Command("docker", "start", *container).Run() // #nosec G204 -- load-test tool; container is an operator-supplied flag
 		fmt.Printf("[t=%ds] redis STARTED\n", *outEnd)
 	}()
 
@@ -63,7 +63,7 @@ func main() {
 			lat := time.Since(t0)
 			ok := err == nil && resp != nil && resp.StatusCode == 200
 			if resp != nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			}
 			mu.Lock()
 			samples = append(samples, sample{elapsed, lat, ok})

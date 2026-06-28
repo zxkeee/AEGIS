@@ -208,7 +208,7 @@ func TestPG_CatalogEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCatalog 2: %v", err)
 	}
-	defer cat2.Close()
+	defer func() { _ = cat2.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

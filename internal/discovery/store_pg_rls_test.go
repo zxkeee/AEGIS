@@ -6,12 +6,31 @@ import (
 	"testing"
 )
 
+// skipIfRLSBypassed skips when the connected PostgreSQL role bypasses Row-Level
+// Security (a superuser or a BYPASSRLS role). RLS simply does not engage for such
+// a role, so the assertions below cannot hold: the CI postgres service runs as
+// the `postgres` superuser, whereas a production / home-server app role is
+// non-privileged and does enforce RLS. Mirrors newPGStore's startup warning.
+func skipIfRLSBypassed(t *testing.T, s *pgStore) {
+	t.Helper()
+	var bypass bool
+	if err := s.db.QueryRow(
+		`SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user`,
+	).Scan(&bypass); err != nil {
+		t.Fatalf("role capability check: %v", err)
+	}
+	if bypass {
+		t.Skip("connected role bypasses RLS (superuser/BYPASSRLS); RLS is validated with a non-privileged app role")
+	}
+}
+
 // TestPG_RLS_FailsClosedWithoutGUC is the acceptance test for ADR phase 2b:
 // even a SELECT that "forgets" the WHERE tenant_id filter must return zero
 // rows for any tenant other than the one pinned via app.tenant_id. This
 // protects against forgotten filters and SQL-injection peek-attempts.
 func TestPG_RLS_FailsClosedWithoutGUC(t *testing.T) {
 	s := freshStore(t)
+	skipIfRLSBypassed(t, s)
 	ctx := context.Background()
 
 	// Seed one row under each of two tenants.
@@ -76,6 +95,7 @@ func TestPG_RLS_FailsClosedWithoutGUC(t *testing.T) {
 // the GUC-pinned one is rejected by PostgreSQL with an RLS violation.
 func TestPG_RLS_RejectsCrossTenantWrite(t *testing.T) {
 	s := freshStore(t)
+	skipIfRLSBypassed(t, s)
 	ctx := context.Background()
 
 	// Pin GUC to "acme" but attempt to insert tenant_id='globex'.
