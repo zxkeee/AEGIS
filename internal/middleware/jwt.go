@@ -138,8 +138,11 @@ func (ja *JWTAuth) Middleware() Middleware {
 
 			tokenStr := strings.TrimPrefix(auth, "Bearer ")
 
-			// Parse and validate using the appropriate key function
-			token, err := jwt.Parse(tokenStr, ja.keyFunc)
+			// Parse and validate using the appropriate key function.
+			// WithExpirationRequired rejects tokens that carry no "exp" claim:
+			// golang-jwt does not require one by default, which would let a signed
+			// token live forever. A security gateway must enforce expiry.
+			token, err := jwt.Parse(tokenStr, ja.keyFunc, jwt.WithExpirationRequired())
 			if err != nil || !token.Valid {
 				errMsg := "unknown"
 				if err != nil {
