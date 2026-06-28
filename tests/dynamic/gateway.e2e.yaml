@@ -1,0 +1,41 @@
+# AEGIS — end-to-end smoke config (CI).
+#
+# Like gateway.ci.yaml but with the passive discovery catalog enabled
+# (api_inventory + AEGIS_FORENSIC_DSN, a PostgreSQL DSN, set in the workflow), so
+# the smoke test can drive traffic and assert the catalog and posture populate.
+# WAF/auth are off so traffic flows freely into the catalog. Secrets come from
+# the environment (AEGIS_ADMIN_SECRET, AEGIS_REDIS_PASSWORD, AEGIS_FORENSIC_DSN).
+
+listen: ":8080"
+admin_listen: ":8081"
+admin_auth: true
+admin_secret: ""
+admin_cookie_insecure: true
+require_tls: false
+trusted_proxies: []
+
+tls:
+  enabled: false
+
+redis:
+  addr: "127.0.0.1:6379"
+  password: ""
+
+routes:
+  - path: "/"
+    methods: ["GET", "POST", "PUT", "DELETE"]
+    upstreams:
+      - "http://127.0.0.1:3000"
+    timeout: "15s"
+
+security:
+  waf:
+    enabled: false
+  auth:
+    enabled: false
+  rate_limit:
+    enabled: false
+  # Passive API discovery: records an observation per request and rolls it up
+  # into the PostgreSQL catalog. Needs AEGIS_FORENSIC_DSN to actually persist.
+  api_inventory:
+    enabled: true

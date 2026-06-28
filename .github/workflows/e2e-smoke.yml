@@ -1,0 +1,115 @@
+name: E2E Smoke
+
+# End-to-end smoke test: boot the gateway against real Redis + PostgreSQL, drive
+# traffic through it, and assert the passive discovery catalog and posture
+# summary populate. This exercises the full request path plus the async catalog
+# worker and the admin read API — not just unit-level behaviour.
+#
+# Validated end-to-end on a Linux Docker host before this workflow landed.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+jobs:
+  e2e-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build gateway
+        run: go build -o bin/gateway ./cmd/gateway
+
+      - name: Start Redis (password-protected)
+        run: |
+          docker run -d --name aegis-e2e-redis -p 6379:6379 \
+            redis:7-alpine redis-server --requirepass scanpass
+
+      - name: Start PostgreSQL
+        run: |
+          docker run -d --name aegis-e2e-postgres -p 5432:5432 \
+            -e POSTGRES_USER=aegis -e POSTGRES_PASSWORD=aegis -e POSTGRES_DB=aegis \
+            postgres:15-alpine
+          # Wait for the database to accept connections.
+          for i in $(seq 1 30); do
+            if docker exec aegis-e2e-postgres pg_isready -U aegis -q; then
+              echo "postgres ready"; break
+            fi
+            sleep 1
+          done
+
+      - name: Start echo backend
+        run: |
+          docker run -d --name aegis-e2e-echo -p 3000:8080 \
+            mendhak/http-https-echo:31
+
+      - name: Launch AEGIS (catalog enabled)
+        env:
+          AEGIS_REDIS_PASSWORD: scanpass
+          AEGIS_FORENSIC_DSN: postgres://aegis:aegis@127.0.0.1:5432/aegis?sslmode=disable
+        run: |
+          AEGIS_ADMIN_SECRET="$(openssl rand -hex 32)"
+          echo "AEGIS_ADMIN_SECRET=$AEGIS_ADMIN_SECRET" >> "$GITHUB_ENV"
+          AEGIS_ADMIN_SECRET="$AEGIS_ADMIN_SECRET" \
+            ./bin/gateway --config tests/dynamic/gateway.e2e.yaml > gateway.log 2>&1 &
+          echo "AEGIS_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8081/health; then
+              echo "gateway healthy"; exit 0
+            fi
+            sleep 1
+          done
+          echo "gateway failed to become healthy"; cat gateway.log; exit 1
+
+      - name: Drive traffic
+        run: |
+          for p in /api/v1/users/1 /api/v1/users/2 /api/v1/users/3 \
+                   /api/v1/orders/10 /api/v1/orders/11 /api/v1/products /health; do
+            curl -fsS -o /dev/null "http://127.0.0.1:8080$p" || true
+          done
+          # The catalog worker flushes its window to PostgreSQL every 5s.
+          sleep 8
+
+      - name: Assert catalog and posture populate
+        run: |
+          AUTH="Authorization: Bearer $AEGIS_ADMIN_SECRET"
+          catalog="$(curl -fsS -H "$AUTH" http://127.0.0.1:8081/api/catalog)"
+          posture="$(curl -fsS -H "$AUTH" http://127.0.0.1:8081/api/posture/summary)"
+          echo "catalog: $catalog"
+          echo "posture: $posture"
+          python3 - "$catalog" "$posture" <<'PY'
+          import json, sys
+          catalog = json.loads(sys.argv[1])
+          posture = json.loads(sys.argv[2])
+          count = catalog.get("count", 0)
+          total = posture.get("total", 0)
+          if count < 1:
+              print(f"FAIL: catalog is empty (count={count})"); sys.exit(1)
+          if total < 1:
+              print(f"FAIL: posture summary is empty (total={total})"); sys.exit(1)
+          # Paths must be normalised (e.g. /api/v1/users/{id}).
+          templates = [e.get("path_template", "") for e in catalog.get("endpoints", [])]
+          if not any("{id}" in t for t in templates):
+              print(f"FAIL: no normalised {{id}} endpoint in {templates}"); sys.exit(1)
+          print(f"OK: catalog count={count}, posture total={total}, templates={templates}")
+          PY
+
+      - name: Gateway logs (always)
+        if: always()
+        run: cat gateway.log || true
+
+      - name: Teardown
+        if: always()
+        run: |
+          [ -n "${AEGIS_PID:-}" ] && kill "$AEGIS_PID" 2>/dev/null || true
+          docker rm -f aegis-e2e-redis aegis-e2e-postgres aegis-e2e-echo 2>/dev/null || true

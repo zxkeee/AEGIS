@@ -170,8 +170,12 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       is mode-agnostic (the client handles failover).
 - [~] Capacity-planning guidance with **rule-of-thumb** sizing (in `ha.md`);
       concrete numbers pending the benchmark run on reference hardware.
-- [ ] End-to-end smoke test in CI (start gateway + Redis + PG, drive traffic,
-      assert catalog and posture populate).
+- [x] End-to-end smoke test in CI (start gateway + Redis + PG, drive traffic,
+      assert catalog and posture populate). `.github/workflows/e2e-smoke.yml`
+      boots the gateway against real Redis + PostgreSQL + an echo upstream, drives
+      traffic, and asserts the discovery catalog (`/api/catalog`) and posture
+      summary (`/api/posture/summary`) populate with normalised `{id}` templates.
+      Validated end-to-end on a Linux Docker host.
 
 ---
 
