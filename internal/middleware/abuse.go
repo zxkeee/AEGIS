@@ -75,8 +75,12 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st Store) Middleware {
 			roles := splitRoles(r.Header.Get("X-Gateway-Roles"))
 
 			// ── BFLA: privileged path without an allowed role ──────────────────
+			// Match case-insensitively and on a segment boundary: a backend that
+			// routes case-insensitively would otherwise let "/ADMIN" slip past a
+			// "/admin" rule, and a raw prefix would falsely flag "/administrators".
+			lpath := strings.ToLower(r.URL.Path)
 			for _, pr := range cfg.Privileged {
-				if pr.Path == "" || !strings.HasPrefix(r.URL.Path, pr.Path) {
+				if pr.Path == "" || !config.PathHasPrefix(lpath, strings.ToLower(pr.Path)) {
 					continue
 				}
 				if hasAnyRole(roles, pr.RequiredRoles) {
@@ -101,10 +105,8 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st Store) Middleware {
 			}
 
 			// ── BOLA: object-ID enumeration by one consumer ────────────────────
-			tmpl := discovery.NormalizePath(r.URL.Path)
-			ids := extractObjectIDs(r.URL.Path, tmpl)
+			endpoint, ids := bolaTarget(r.Method, r.URL.Path)
 			if len(ids) > 0 {
-				endpoint := r.Method + " " + tmpl
 				var maxCount int64
 				for _, id := range ids {
 					cnt, err := st.TrackObjectAccess(r.Context(), consumer, endpoint, id, window)
@@ -228,6 +230,37 @@ func hasAnyRole(have, required []string) bool {
 		}
 	}
 	return false
+}
+
+// bolaTarget resolves the BOLA tracking key for a request: the endpoint
+// ("METHOD /template") and the concrete object IDs accessed.
+//
+// Primary case: the normalized template already has "{id}" segments (numeric,
+// UUID, hash, opaque) — those are the object IDs.
+//
+// Fallback: when no segment normalizes to "{id}" (e.g. string slugs like
+// /api/members/alice), the terminal segment of a collection is treated as the
+// object ID under a synthesized "parent/{id}" template. Without this, enumerating
+// string identifiers evades BOLA entirely, since each value would otherwise look
+// like a distinct static endpoint. False positives are bounded by enum_threshold
+// (default 50), the per-consumer adaptive baseline, and the allowlist.
+func bolaTarget(method, rawPath string) (endpoint string, ids []string) {
+	tmpl := discovery.NormalizePath(rawPath)
+	if got := extractObjectIDs(rawPath, tmpl); len(got) > 0 {
+		return method + " " + tmpl, got
+	}
+	segs := strings.Split(strings.Trim(rawPath, "/"), "/")
+	if len(segs) >= 2 {
+		last := segs[len(segs)-1]
+		if last != "" {
+			parent := discovery.NormalizePath("/" + strings.Join(segs[:len(segs)-1], "/"))
+			if parent == "/" {
+				parent = ""
+			}
+			return method + " " + parent + "/{id}", []string{last}
+		}
+	}
+	return "", nil
 }
 
 // extractObjectIDs returns the concrete values of the dynamic ("{id}") segments

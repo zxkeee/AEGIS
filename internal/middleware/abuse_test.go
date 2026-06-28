@@ -52,6 +52,40 @@ func TestBFLA_BlocksUnprivilegedConsumer(t *testing.T) {
 	}
 }
 
+// Regression: a backend may route case-insensitively, so "/ADMIN" must not slip
+// past a "/admin" privileged rule.
+func TestBFLA_CaseInsensitiveMatch(t *testing.T) {
+	cfg := config.AbuseConfig{
+		Enabled:   true,
+		BlockMode: true,
+		Privileged: []config.PrivilegedRule{
+			{Path: "/admin", RequiredRoles: []string{"admin"}},
+		},
+	}
+	for _, p := range []string{"/ADMIN/users", "/Admin/users", "/admin/users"} {
+		rec := runAbuse(cfg, &fakeStore{}, http.MethodGet, p, "mallory", "user")
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("BFLA case-bypass via %q: got %d, want 403", p, rec.Code)
+		}
+	}
+}
+
+// A path that merely shares a prefix but not a segment boundary must not be
+// falsely flagged as privileged.
+func TestBFLA_BoundaryNoFalsePositive(t *testing.T) {
+	cfg := config.AbuseConfig{
+		Enabled:   true,
+		BlockMode: true,
+		Privileged: []config.PrivilegedRule{
+			{Path: "/admin", RequiredRoles: []string{"admin"}},
+		},
+	}
+	rec := runAbuse(cfg, &fakeStore{}, http.MethodGet, "/administrators/list", "alice", "user")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/administrators wrongly flagged as /admin: got %d, want 200", rec.Code)
+	}
+}
+
 func TestBFLA_AllowsPrivilegedConsumer(t *testing.T) {
 	cfg := config.AbuseConfig{
 		Enabled:   true,
@@ -87,6 +121,27 @@ func TestBOLA_BlocksEnumeration(t *testing.T) {
 	rec := runAbuse(cfg, st, http.MethodGet, "/api/v1/users/777", "scraper", "user")
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("enumeration over threshold: got %d, want 429", rec.Code)
+	}
+}
+
+// Regression: enumerating string identifiers (slugs/usernames) that do not
+// normalize to "{id}" must still be tracked via the terminal-segment fallback.
+func TestBOLA_BlocksStringIDEnumeration(t *testing.T) {
+	cfg := config.AbuseConfig{Enabled: true, BlockMode: true, EnumThreshold: 50, Window: time.Minute}
+	st := &fakeStore{trackObject: func() (int64, error) { return 51, nil }}
+	rec := runAbuse(cfg, st, http.MethodGet, "/api/members/alice", "scraper", "user")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("string-ID enumeration: got %d, want 429", rec.Code)
+	}
+}
+
+// A single-segment path has no collection/object shape and must not be tracked.
+func TestBOLA_SingleSegment_NotTracked(t *testing.T) {
+	cfg := config.AbuseConfig{Enabled: true, BlockMode: true, EnumThreshold: 50, Window: time.Minute}
+	st := &fakeStore{trackObject: func() (int64, error) { return 999, nil }}
+	rec := runAbuse(cfg, st, http.MethodGet, "/health", "x", "user")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("single-segment path should not be BOLA-tracked: got %d, want 200", rec.Code)
 	}
 }
 
