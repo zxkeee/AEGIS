@@ -373,6 +373,7 @@ func buildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st *store.S
 		middleware.TLSFingerprint(),                      // SEC (P0-4): inject real ClientHello fingerprint
 		middleware.SecurityHeaders(),                     // ARCH-6: Security headers on every response
 		middleware.RequestID(),                           // ARCH-4: Request ID for log correlation
+		middleware.PathSanity(log, st),                   // SEC: reject traversal/encoded-separator paths before any prefix-based policy
 		middleware.CORS(cfg.Security.CORS),
 		middleware.IPGuard(cfg.Security.IPGuard, log, st),
 		middleware.ThreatFeed(cfg.Security.ThreatFeed, log, st),
