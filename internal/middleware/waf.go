@@ -27,23 +27,52 @@ func WAF(cfg config.WAFConfig, log Logger, st Store) Middleware {
 		SecResponseBodyAccess Off
 		SecRequestBodyLimit 13107200
 		SecRequestBodyNoFilesLimit 131072
+		# Reject (don't silently scan-partial) a body over the limit, so an
+		# attacker cannot hide a payload past the 13 MB mark in an unscanned tail.
+		# Operators with legitimately larger uploads should raise SecRequestBodyLimit.
+		SecRequestBodyLimitAction Reject
 
-		# SQL Injection
-		SecRule ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_BODY "@rx (?i)(?:union\s+select|select\s+(?:@@|from|count)|(?:insert|update|delete)\s+(?:into|from|set)|drop\s+(?:table|database)|alter\s+table|exec\s*\()" \
+		# Enable JSON request-body parsing. Coraza only auto-selects the urlencoded
+		# and multipart body processors; without this an application/json body (the
+		# API norm) is never flattened into ARGS, so every body-borne SQLi/XSS/RCE
+		# payload bypasses the rules below simply by setting Content-Type: json.
+		# Runs in phase 1 (before the body is read) and matches json and +json
+		# media types (e.g. application/vnd.api+json).
+		SecRule REQUEST_HEADERS:Content-Type "@rx ^application/(?:[a-z0-9.+-]+\+)?json" \
+			"id:10000,phase:1,pass,nolog,ctl:requestBodyProcessor=JSON"
+
+		# Force raw-body inspection for content types Coraza has no structured
+		# processor for (text/plain, text/xml, application/octet-stream, unknown).
+		# Without this REQUEST_BODY is never populated for them, so a body-borne
+		# payload bypasses every rule below simply by picking such a Content-Type
+		# (this also makes the XXE rule effective on text/xml). JSON, urlencoded and
+		# multipart keep their own parsers and are excluded.
+		SecRule REQUEST_HEADERS:Content-Type "!@rx (?i)^(?:application/(?:[a-z0-9.+-]+\+)?json|application/x-www-form-urlencoded|multipart/form-data)" \
+			"id:10013,phase:1,pass,nolog,ctl:forceRequestBodyVariable=On"
+
+		# Same, for requests that send a body with NO Content-Type header at all
+		# (Coraza selects no processor, so REQUEST_BODY would otherwise stay empty).
+		SecRule &REQUEST_HEADERS:Content-Type "@eq 0" \
+			"id:10014,phase:1,pass,nolog,ctl:forceRequestBodyVariable=On"
+
+		# SQL Injection. REQUEST_HEADERS is inspected too (minus Authorization, a
+		# base64 JWT, and Cookie, already covered by REQUEST_COOKIES) so a payload
+		# in an arbitrary header like X-Search cannot reach a header-trusting backend.
+		SecRule ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_BODY|REQUEST_HEADERS|!REQUEST_HEADERS:Authorization|!REQUEST_HEADERS:Cookie "@rx (?i)(?:union\s+select|select\s+(?:@@|from|count)|(?:insert|update|delete)\s+(?:into|from|set)|drop\s+(?:table|database)|alter\s+table|exec\s*\()" \
 			"id:10001,phase:2,deny,status:403,log,msg:'SQL Injection',tag:'sqli',severity:CRITICAL"
 
 		SecRule ARGS|REQUEST_BODY "@rx (?i)(?:'\s*(?:or|and|union|select|insert|delete|drop)\s|--\s*$|/\*.*?\*/)" \
 			"id:10002,phase:2,deny,status:403,log,msg:'SQL Injection (Boolean)',tag:'sqli',severity:CRITICAL"
 
 		# XSS
-		SecRule ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_BODY "@rx (?i)(?:<script|javascript:|on(?:error|load|click|mouseover)\s*=)" \
+		SecRule ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_BODY|REQUEST_HEADERS|!REQUEST_HEADERS:Authorization|!REQUEST_HEADERS:Cookie "@rx (?i)(?:<script|javascript:|on(?:error|load|click|mouseover)\s*=)" \
 			"id:10003,phase:2,deny,status:403,log,msg:'XSS Attack',tag:'xss',severity:CRITICAL"
 
 		SecRule ARGS|REQUEST_BODY "@rx (?i)(?:eval\s*\(|document\.(?:cookie|write|location)|\.innerHTML\s*=|alert\s*\()" \
 			"id:10004,phase:2,deny,status:403,log,msg:'XSS (DOM)',tag:'xss',severity:CRITICAL"
 
 		# Command Injection
-		SecRule ARGS|REQUEST_BODY "@rx (?i)(?:;\s*(?:ls|cat|id|whoami|wget|curl|bash|sh|python|perl|php)\b)" \
+		SecRule ARGS|REQUEST_BODY|REQUEST_HEADERS|!REQUEST_HEADERS:Authorization|!REQUEST_HEADERS:Cookie "@rx (?i)(?:;\s*(?:ls|cat|id|whoami|wget|curl|bash|sh|python|perl|php)\b)" \
 			"id:10005,phase:2,deny,status:403,log,msg:'Command Injection',tag:'rce',severity:CRITICAL"
 
 		# Path Traversal / LFI
@@ -87,7 +116,7 @@ func WAF(cfg config.WAFConfig, log Logger, st Store) Middleware {
 	}
 
 	log.Info("waf: Coraza engine ready", map[string]any{
-		"rules":      12,
+		"rules":      15,
 		"block_mode": cfg.BlockMode,
 	})
 
