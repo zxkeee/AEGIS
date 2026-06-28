@@ -26,6 +26,10 @@ type handlers struct {
 	gateway *proxy.Gateway
 	alerts  *alert.Engine
 	catalog *discovery.Catalog
+	// specCat is the spec/drift surface of the catalog behind a narrow interface
+	// so the spec handlers are testable with a fake (no PostgreSQL). It is left
+	// nil when discovery is disabled; spec handlers then degrade to 503.
+	specCat specOps
 	users   *iam.Store // optional: nil when forensic_dsn is unset
 }
 

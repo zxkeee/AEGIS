@@ -41,6 +41,8 @@ func TestCatalog_NilDegradesTo503(t *testing.T) {
 		{"posture", h.getPostureSummary, "/api/posture/summary", nil},
 		{"findings", h.getFindings, "/api/findings", nil},
 		{"report", h.getReport, "/api/report", nil},
+		{"spec-meta", h.getSpec, "/api/discovery/spec", nil},
+		{"drift", h.getDrift, "/api/discovery/drift", nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -52,6 +54,26 @@ func TestCatalog_NilDegradesTo503(t *testing.T) {
 				t.Fatalf("%s: missing error message", c.name)
 			}
 		})
+	}
+}
+
+// Mutating spec endpoints also degrade to 503 without a catalog (no DSN).
+func TestSpecMutations_NilDegradeTo503(t *testing.T) {
+	h, _ := redisHandlers(t) // catalog == nil
+
+	put := httptest.NewRequest(http.MethodPut, "/api/discovery/spec",
+		strings.NewReader("openapi: 3.0.0"))
+	recPut := httptest.NewRecorder()
+	h.putSpec(recPut, put)
+	if recPut.Code != http.StatusServiceUnavailable {
+		t.Fatalf("putSpec = %d, want 503", recPut.Code)
+	}
+
+	del := httptest.NewRequest(http.MethodDelete, "/api/discovery/spec", nil)
+	recDel := httptest.NewRecorder()
+	h.deleteSpec(recDel, del)
+	if recDel.Code != http.StatusServiceUnavailable {
+		t.Fatalf("deleteSpec = %d, want 503", recDel.Code)
 	}
 }
 

@@ -1122,6 +1122,10 @@ authenticated calls).
 | GET | `/api/posture/summary` | Coverage roll-up and top-risk endpoints |
 | GET | `/api/effectiveness` | Blocks per control, total blocks, coverage |
 | GET | `/api/report` | Full report; `format=json` (default) or `format=csv` |
+| GET | `/api/discovery/spec` | Metadata of the tenant's uploaded OpenAPI spec |
+| PUT | `/api/discovery/spec` | Import an OpenAPI 3.x / Swagger 2.0 spec (raw YAML/JSON body) |
+| DELETE | `/api/discovery/spec` | Remove the tenant's uploaded spec |
+| GET | `/api/discovery/drift` | Documented-vs-observed drift: undocumented endpoints + zombie operations |
 | GET | `/api/blocked-ips` | Current dynamic IP blocklist |
 | POST | `/api/blocked-ips` | Block an IP (`{"ip": "...", "reason": "..."}`) |
 | DELETE | `/api/blocked-ips/{ip}` | Unblock an IP |
@@ -1143,6 +1147,17 @@ Example — export the posture report as CSV:
 ```bash
 curl -s -H "Authorization: Bearer $AEGIS_ADMIN_SECRET" \
   "http://localhost:8081/api/report?format=csv" -o aegis-api-report.csv
+```
+
+Example — import an OpenAPI spec and read the drift (undocumented + zombie):
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $AEGIS_ADMIN_SECRET" \
+  --data-binary @openapi.yaml \
+  "http://localhost:8081/api/discovery/spec"
+
+curl -s -H "Authorization: Bearer $AEGIS_ADMIN_SECRET" \
+  "http://localhost:8081/api/discovery/drift" | jq .
 ```
 
 ---
@@ -1924,7 +1939,8 @@ stdout (подія доступу на запит, події блокуванн
 Перелік ендпойнтів: `/health`, `/readyz`, `/api/metrics`, `/api/config`,
 `/api/routes`, `/api/block-log`, `/api/inventory`, `/api/catalog`,
 `/api/catalog/{id}`, `/api/consumers`, `/api/posture/summary`,
-`/api/effectiveness`, `/api/report` (`format=json|csv`), `/api/blocked-ips`
+`/api/effectiveness`, `/api/report` (`format=json|csv`), `/api/discovery/spec`
+(GET/PUT/DELETE), `/api/discovery/drift` (GET), `/api/blocked-ips`
 (GET/POST), `/api/blocked-ips/{ip}` (DELETE), `/api/jwt/revoke` (POST). Мутуючі
 ендпойнти перевіряють токен повторно всередині обробника, обмежують розмір тіла й
 не розкривають внутрішніх деталей у помилках.

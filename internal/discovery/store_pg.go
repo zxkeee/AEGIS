@@ -68,6 +68,18 @@ CREATE TABLE IF NOT EXISTS api_endpoint_consumers (
 	PRIMARY KEY (tenant_id, endpoint_id, consumer_id)
 );
 
+-- One imported OpenAPI/Swagger spec per tenant, used for documented-vs-observed
+-- drift detection. The raw document is retained so it can be re-parsed (and so a
+-- newer parser picks up more fields) without forcing a re-upload.
+CREATE TABLE IF NOT EXISTS api_specs (
+	tenant_id   TEXT NOT NULL DEFAULT 'default',
+	version     TEXT NOT NULL,
+	raw         TEXT NOT NULL,
+	op_count    INT  NOT NULL DEFAULT 0,
+	uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	PRIMARY KEY (tenant_id)
+);
+
 -- Idempotent migration for installs created before multi-tenancy (the column
 -- adds with a 'default' backfill; CREATE TABLE above is skipped when the table
 -- already exists).
@@ -102,7 +114,7 @@ CREATE INDEX IF NOT EXISTS idx_epc_consumer            ON api_endpoint_consumers
 DO $$
 DECLARE t TEXT;
 BEGIN
-  FOREACH t IN ARRAY ARRAY['api_endpoints','api_endpoint_status','api_consumers','api_endpoint_consumers'] LOOP
+  FOREACH t IN ARRAY ARRAY['api_endpoints','api_endpoint_status','api_consumers','api_endpoint_consumers','api_specs'] LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     -- FORCE applies the policy even to the table owner, so a connection that
     -- forgets to SET LOCAL app.tenant_id sees no rows instead of all of them.
@@ -471,6 +483,89 @@ func scanEndpoint(r rowScanner) (Endpoint, error) {
 		e.AvgLatencyMs = e.latencyMsSum / e.latencySamples
 	}
 	return e, nil
+}
+
+// upsertSpec stores (or replaces) the imported spec for a tenant.
+func (s *pgStore) upsertSpec(ctx context.Context, tenantID, version, raw string, opCount int) error {
+	const q = `
+INSERT INTO api_specs (tenant_id, version, raw, op_count, uploaded_at)
+VALUES ($1,$2,$3,$4,NOW())
+ON CONFLICT (tenant_id) DO UPDATE SET
+	version     = EXCLUDED.version,
+	raw         = EXCLUDED.raw,
+	op_count    = EXCLUDED.op_count,
+	uploaded_at = NOW()`
+	return s.withTenantTx(ctx, tenantID, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, q, tenantOr(tenantID), version, raw, opCount)
+		return err
+	})
+}
+
+// SpecInfo is the lightweight spec record: everything except the raw document.
+type SpecInfo struct {
+	Version    string    `json:"version"`
+	OpCount    int       `json:"op_count"`
+	UploadedAt time.Time `json:"uploaded_at"`
+}
+
+// getSpec returns the stored raw document and its metadata for a tenant. found
+// is false when the tenant has uploaded no spec.
+func (s *pgStore) getSpec(ctx context.Context, tenantID string) (raw string, meta SpecInfo, found bool, err error) {
+	err = s.withTenantTx(ctx, tenantID, func(tx *sql.Tx) error {
+		row := tx.QueryRowContext(ctx,
+			`SELECT version, raw, op_count, uploaded_at FROM api_specs WHERE tenant_id = $1`,
+			tenantOr(tenantID))
+		scanErr := row.Scan(&meta.Version, &raw, &meta.OpCount, &meta.UploadedAt)
+		if scanErr == sql.ErrNoRows {
+			return nil
+		}
+		if scanErr != nil {
+			return scanErr
+		}
+		found = true
+		return nil
+	})
+	return raw, meta, found, err
+}
+
+// deleteSpec removes a tenant's stored spec. ok is false when there was none.
+func (s *pgStore) deleteSpec(ctx context.Context, tenantID string) (ok bool, err error) {
+	err = s.withTenantTx(ctx, tenantID, func(tx *sql.Tx) error {
+		res, derr := tx.ExecContext(ctx, `DELETE FROM api_specs WHERE tenant_id = $1`, tenantOr(tenantID))
+		if derr != nil {
+			return derr
+		}
+		n, _ := res.RowsAffected()
+		ok = n > 0
+		return nil
+	})
+	return ok, err
+}
+
+// listEndpointKeys returns every observed (method, path_template) for a tenant,
+// unbounded, so drift detection compares the full observed surface against the
+// spec (listEndpoints caps results for the UI and is unsuitable here).
+func (s *pgStore) listEndpointKeys(ctx context.Context, tenantID string) ([]Endpoint, error) {
+	var out []Endpoint
+	err := s.withTenantTx(ctx, tenantID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx,
+			`SELECT method, path_template, request_count, risk_score
+			   FROM api_endpoints WHERE tenant_id = $1`, tenantOr(tenantID))
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		out = []Endpoint{}
+		for rows.Next() {
+			var e Endpoint
+			if err := rows.Scan(&e.Method, &e.PathTemplate, &e.RequestCount, &e.RiskScore); err != nil {
+				return err
+			}
+			out = append(out, e)
+		}
+		return rows.Err()
+	})
+	return out, err
 }
 
 // piiTypeSlice converts the aggregator's data-type set into a sorted slice for

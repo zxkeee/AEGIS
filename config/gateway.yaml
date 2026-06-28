@@ -76,6 +76,13 @@ multitenancy:
 #     tenant_id: acme
 #     upstreams: ["http://orders.acme:8080"]
 
+discovery:
+  # Optional OpenAPI 3.x / Swagger 2.0 spec (YAML or JSON) used as the fallback
+  # for documented-vs-observed drift detection. It applies to every tenant that
+  # has not uploaded its own via PUT /api/discovery/spec. The catalog itself is
+  # enabled by forensic_dsn (PostgreSQL); this only adds drift detection.
+  # spec_path: ./openapi.yaml
+
 security:
   rate_limit:
     enabled: true

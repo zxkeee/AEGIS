@@ -67,6 +67,17 @@ type GatewayConfig struct {
 	Logging        LoggingConfig      `yaml:"logging"`
 	Alerting       AlertingConfig     `yaml:"alerting"`
 	Multitenancy   MultitenancyConfig `yaml:"multitenancy"`
+	Discovery      DiscoveryConfig    `yaml:"discovery"`
+}
+
+// DiscoveryConfig tunes passive API discovery. The catalog itself is enabled by
+// forensic_dsn (PostgreSQL); these are optional refinements.
+type DiscoveryConfig struct {
+	// SpecPath points to an OpenAPI 3.x / Swagger 2.0 document (YAML or JSON)
+	// used as the fallback for documented-vs-observed drift detection. It applies
+	// to every tenant that has not uploaded its own spec via the admin API. Empty
+	// disables the config-level fallback.
+	SpecPath string `yaml:"spec_path"`
 }
 
 // MultitenancyConfig enables hard data isolation between organisations. See

@@ -33,7 +33,7 @@ func freshStore(t *testing.T) *pgStore {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	// Deterministic state for each test.
-	_, _ = s.db.Exec(`TRUNCATE api_endpoints, api_endpoint_status, api_consumers, api_endpoint_consumers`)
+	_, _ = s.db.Exec(`TRUNCATE api_endpoints, api_endpoint_status, api_consumers, api_endpoint_consumers, api_specs`)
 	return s
 }
 
@@ -187,7 +187,7 @@ func TestPG_CatalogEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newPGStore: %v", err)
 	}
-	_, _ = s.db.Exec(`TRUNCATE api_endpoints, api_endpoint_status, api_consumers, api_endpoint_consumers`)
+	_, _ = s.db.Exec(`TRUNCATE api_endpoints, api_endpoint_status, api_consumers, api_endpoint_consumers, api_specs`)
 	_ = s.Close()
 
 	cat, err := NewCatalog(dsn, NewPostureEngine(config.GatewayConfig{}), nopLogger{})

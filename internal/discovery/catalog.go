@@ -126,8 +126,21 @@ type Catalog struct {
 	mu      sync.RWMutex
 	posture *PostureEngine // swapped on config hot-reload
 
+	// cfgSpec is the fallback OpenAPI spec from gateway config (discovery.
+	// spec_path); it applies to any tenant that has not uploaded its own. A
+	// per-tenant uploaded spec (in api_specs) takes precedence. specCache holds
+	// parsed per-tenant specs keyed by tenant, invalidated by uploaded_at.
+	specMu    sync.RWMutex
+	cfgSpec   *Spec
+	specCache map[string]specCacheEntry
+
 	wg   sync.WaitGroup
 	quit chan struct{}
+}
+
+type specCacheEntry struct {
+	uploadedAt time.Time
+	spec       *Spec
 }
 
 // NewCatalog connects to PostgreSQL, migrates the schema, and starts the
@@ -138,11 +151,12 @@ func NewCatalog(dsn string, posture *PostureEngine, log Logger) (*Catalog, error
 		return nil, err
 	}
 	c := &Catalog{
-		pg:      pg,
-		log:     log,
-		ch:      make(chan Observation, 8192),
-		posture: posture,
-		quit:    make(chan struct{}),
+		pg:        pg,
+		log:       log,
+		ch:        make(chan Observation, 8192),
+		posture:   posture,
+		specCache: map[string]specCacheEntry{},
+		quit:      make(chan struct{}),
 	}
 	c.wg.Add(1)
 	go c.worker()
@@ -364,10 +378,14 @@ func (c *Catalog) ListEndpoints(ctx context.Context, f EndpointFilter) ([]Endpoi
 		return nil, err
 	}
 	eng := c.engine()
+	spec := c.specFor(ctx)
 	for i := range eps {
 		ctrl, matched := eng.ControlsFor(eps[i].PathTemplate)
 		eps[i].Controls = &ctrl
 		eps[i].Findings = DetectFindings(eps[i], ctrl, matched)
+		if f, ok := driftFinding(eps[i], spec); ok {
+			eps[i].Findings = append(eps[i].Findings, f)
+		}
 	}
 	return eps, nil
 }
@@ -381,6 +399,9 @@ func (c *Catalog) GetEndpoint(ctx context.Context, id string) (*Endpoint, []Endp
 	ctrl, matched := c.engine().ControlsFor(e.PathTemplate)
 	e.Controls = &ctrl
 	e.Findings = DetectFindings(*e, ctrl, matched)
+	if f, ok := driftFinding(*e, c.specFor(ctx)); ok {
+		e.Findings = append(e.Findings, f)
+	}
 	return e, consumers, nil
 }
 

@@ -43,6 +43,11 @@ func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw
 
 func (s *Server) registerRoutes() {
 	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog, users: s.users}
+	// Assign the spec interface only for a real catalog, so a nil *discovery.
+	// Catalog does not become a non-nil interface holding a typed-nil pointer.
+	if s.catalog != nil {
+		h.specCat = s.catalog
+	}
 
 	// Dashboard (unauthenticated — auth handled via JS prompt)
 	s.mux.HandleFunc("GET /", h.serveDashboard)
@@ -71,6 +76,12 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/effectiveness", h.getEffectiveness)
 	s.mux.HandleFunc("GET /api/findings", h.getFindings)
 	s.mux.HandleFunc("GET /api/report", h.getReport)
+
+	// OpenAPI spec import + documented-vs-observed drift (per-tenant).
+	s.mux.HandleFunc("GET /api/discovery/spec", h.getSpec)
+	s.mux.HandleFunc("PUT /api/discovery/spec", h.putSpec)
+	s.mux.HandleFunc("DELETE /api/discovery/spec", h.deleteSpec)
+	s.mux.HandleFunc("GET /api/discovery/drift", h.getDrift)
 
 	// IP management
 	s.mux.HandleFunc("GET /api/blocked-ips", h.getBlockedIPs)

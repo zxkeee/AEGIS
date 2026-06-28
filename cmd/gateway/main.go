@@ -111,6 +111,7 @@ func main() {
 		} else {
 			defer func() { _ = catalog.Close() }()
 			log.Info("api discovery catalog enabled", map[string]any{"backend": "postgresql"})
+			loadConfigSpec(cfg, catalog, log)
 		}
 	} else {
 		log.Warn("forensic_dsn not set — API discovery catalog disabled")
@@ -268,6 +269,32 @@ func main() {
 	}
 
 	log.Info("AEGIS gateway stopped gracefully")
+}
+
+// loadConfigSpec loads the optional config-level OpenAPI spec (discovery.
+// spec_path) and installs it as the catalog's fallback for drift detection. A
+// missing path clears the fallback; a read/parse error is logged and leaves the
+// previous fallback in place rather than failing the gateway over a bad spec.
+func loadConfigSpec(cfg config.GatewayConfig, catalog *discovery.Catalog, log *logger.Logger) {
+	path := cfg.Discovery.SpecPath
+	if path == "" {
+		catalog.SetConfigSpec(nil)
+		return
+	}
+	raw, err := os.ReadFile(path) // #nosec G304 -- operator-supplied config path, not user input
+	if err != nil {
+		log.Error("discovery: spec_path read failed", map[string]any{"error": err.Error(), "path": path})
+		return
+	}
+	spec, err := discovery.ParseSpec(raw)
+	if err != nil {
+		log.Error("discovery: spec_path parse failed", map[string]any{"error": err.Error(), "path": path})
+		return
+	}
+	catalog.SetConfigSpec(spec)
+	log.Info("discovery: config spec loaded", map[string]any{
+		"path": path, "version": spec.Version, "operations": spec.OpCount(),
+	})
 }
 
 // buildHandlerChain constructs the full middleware chain for the gateway.
@@ -430,6 +457,7 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 		// Re-classify future traffic against the new configuration.
 		if catalog != nil {
 			catalog.SetPostureEngine(newPosture)
+			loadConfigSpec(newCfg, catalog, log)
 		}
 
 		activeHandler.Store(newHandler)
