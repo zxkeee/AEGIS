@@ -1,60 +1,57 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/secevent"
 
+	coreruleset "github.com/corazawaf/coraza-coreruleset/v4"
 	"github.com/corazawaf/coraza/v3"
 	txhttp "github.com/corazawaf/coraza/v3/http"
 )
 
-// WAF provides Web Application Firewall protection using Coraza (OWASP CRS).
-// Protects against: SQL Injection, XSS, RCE, LFI, SSRF, XXE, Log4Shell, and more.
-func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
-	if !cfg.Enabled {
-		return passthrough
-	}
+// wafEngineSetup configures the Coraza engine for the curated ruleset (CRS mode
+// gets these from @coraza.conf-recommended instead).
+const wafEngineSetup = `
+	SecRuleEngine On
+	SecRequestBodyAccess On
+	SecResponseBodyAccess Off
+	SecRequestBodyLimit 13107200
+	SecRequestBodyNoFilesLimit 131072
+	# Reject (don't silently scan-partial) a body over the limit, so an
+	# attacker cannot hide a payload past the 13 MB mark in an unscanned tail.
+	# Operators with legitimately larger uploads should raise SecRequestBodyLimit.
+	SecRequestBodyLimitAction Reject
+`
 
-	wafCfg := coraza.NewWAFConfig()
+// wafBodyProcessors makes body-borne payloads visible to the rules regardless of
+// Content-Type. Shared by both the curated ruleset and CRS mode, because Coraza
+// only auto-selects the urlencoded/multipart processors — without these a JSON
+// (or unknown-type) body bypasses every content rule. Phase 1 (before the body
+// is read). IDs are in a private 10000-block that never collides with CRS (9xxxxx).
+const wafBodyProcessors = `
+	# Enable JSON request-body parsing (application/json and +json media types).
+	SecRule REQUEST_HEADERS:Content-Type "@rx ^application/(?:[a-z0-9.+-]+\+)?json" \
+		"id:10000,phase:1,pass,nolog,ctl:requestBodyProcessor=JSON"
 
-	// Built-in rules covering OWASP Top 10
-	directives := `
-		SecRuleEngine On
-		SecRequestBodyAccess On
-		SecResponseBodyAccess Off
-		SecRequestBodyLimit 13107200
-		SecRequestBodyNoFilesLimit 131072
-		# Reject (don't silently scan-partial) a body over the limit, so an
-		# attacker cannot hide a payload past the 13 MB mark in an unscanned tail.
-		# Operators with legitimately larger uploads should raise SecRequestBodyLimit.
-		SecRequestBodyLimitAction Reject
+	# Force raw-body inspection for content types with no structured processor
+	# (text/plain, text/xml, application/octet-stream, unknown) so REQUEST_BODY is
+	# populated; JSON/urlencoded/multipart keep their own parsers and are excluded.
+	SecRule REQUEST_HEADERS:Content-Type "!@rx (?i)^(?:application/(?:[a-z0-9.+-]+\+)?json|application/x-www-form-urlencoded|multipart/form-data)" \
+		"id:10013,phase:1,pass,nolog,ctl:forceRequestBodyVariable=On"
 
-		# Enable JSON request-body parsing. Coraza only auto-selects the urlencoded
-		# and multipart body processors; without this an application/json body (the
-		# API norm) is never flattened into ARGS, so every body-borne SQLi/XSS/RCE
-		# payload bypasses the rules below simply by setting Content-Type: json.
-		# Runs in phase 1 (before the body is read) and matches json and +json
-		# media types (e.g. application/vnd.api+json).
-		SecRule REQUEST_HEADERS:Content-Type "@rx ^application/(?:[a-z0-9.+-]+\+)?json" \
-			"id:10000,phase:1,pass,nolog,ctl:requestBodyProcessor=JSON"
+	# Same, for a body sent with NO Content-Type header at all.
+	SecRule &REQUEST_HEADERS:Content-Type "@eq 0" \
+		"id:10014,phase:1,pass,nolog,ctl:forceRequestBodyVariable=On"
+`
 
-		# Force raw-body inspection for content types Coraza has no structured
-		# processor for (text/plain, text/xml, application/octet-stream, unknown).
-		# Without this REQUEST_BODY is never populated for them, so a body-borne
-		# payload bypasses every rule below simply by picking such a Content-Type
-		# (this also makes the XXE rule effective on text/xml). JSON, urlencoded and
-		# multipart keep their own parsers and are excluded.
-		SecRule REQUEST_HEADERS:Content-Type "!@rx (?i)^(?:application/(?:[a-z0-9.+-]+\+)?json|application/x-www-form-urlencoded|multipart/form-data)" \
-			"id:10013,phase:1,pass,nolog,ctl:forceRequestBodyVariable=On"
-
-		# Same, for requests that send a body with NO Content-Type header at all
-		# (Coraza selects no processor, so REQUEST_BODY would otherwise stay empty).
-		SecRule &REQUEST_HEADERS:Content-Type "@eq 0" \
-			"id:10014,phase:1,pass,nolog,ctl:forceRequestBodyVariable=On"
-
+// wafCuratedRules is the built-in, low-false-positive ruleset covering the OWASP
+// Top 10. It is the default; CRS mode (waf.crs_enabled) replaces it with the full
+// Core Rule Set.
+const wafCuratedRules = `
 		# SQL Injection. REQUEST_HEADERS is inspected too (minus Authorization, a
 		# base64 JWT, and Cookie, already covered by REQUEST_COOKIES) so a payload
 		# in an arbitrary header like X-Search cannot reach a header-trusting backend.
@@ -104,19 +101,23 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 			"id:10012,phase:1,deny,status:400,log,msg:'Request Smuggling',tag:'protocol',severity:CRITICAL"
 	`
 
-	if cfg.RulesetPath != "" {
-		wafCfg = wafCfg.WithDirectivesFromFile(cfg.RulesetPath)
+// WAF provides Web Application Firewall protection using Coraza. By default it
+// loads a curated, low-false-positive ruleset covering the OWASP Top 10; with
+// waf.crs_enabled it loads the full embedded OWASP Core Rule Set (anomaly-scoring
+// mode) at the configured paranoia level.
+func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
+	if !cfg.Enabled {
+		return passthrough
 	}
-	wafCfg = wafCfg.WithDirectives(directives)
 
-	waf, err := coraza.NewWAF(wafCfg)
+	waf, mode, err := buildWAF(cfg)
 	if err != nil {
-		log.Error("waf: failed to initialize", map[string]any{"error": err.Error()})
+		log.Error("waf: failed to initialize", map[string]any{"error": err.Error(), "mode": mode})
 		return passthrough
 	}
 
 	log.Info("waf: Coraza engine ready", map[string]any{
-		"rules":      15,
+		"mode":       mode,
 		"block_mode": cfg.BlockMode,
 	})
 
@@ -147,6 +148,44 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 			}
 		})
 	}
+}
+
+// buildWAF constructs the Coraza WAF in either curated or full-CRS mode and
+// returns a short mode label for logging. An optional ruleset_path is appended
+// last so an operator can add overrides/exclusions on top of either base.
+func buildWAF(cfg config.WAFConfig) (coraza.WAF, string, error) {
+	var wafCfg coraza.WAFConfig
+	mode := "curated"
+
+	if cfg.CRSEnabled {
+		mode = "owasp-crs"
+		pl := cfg.ParanoiaLevel
+		if pl < 1 || pl > 4 {
+			pl = 1
+		}
+		// Order matters: recommended engine config, then our body processors,
+		// then the CRS setup, then a paranoia-level override (distinct id so it
+		// does not clash with crs-setup's 900000), then the rules themselves.
+		// @coraza.conf-recommended ships SecRuleEngine DetectionOnly (a safe
+		// default that only logs); force On so the anomaly-scoring block actually
+		// denies. Operators wanting detect-only can set waf.block_mode handling.
+		directives := "Include @coraza.conf-recommended\n" +
+			"SecRuleEngine On\n" +
+			wafBodyProcessors +
+			"Include @crs-setup.conf.example\n" +
+			fmt.Sprintf("SecAction \"id:900001,phase:1,pass,nolog,t:none,"+
+				"setvar:tx.blocking_paranoia_level=%d,setvar:tx.detection_paranoia_level=%d\"\n", pl, pl) +
+			"Include @owasp_crs/*.conf\n"
+		wafCfg = coraza.NewWAFConfig().WithRootFS(coreruleset.FS).WithDirectives(directives)
+	} else {
+		wafCfg = coraza.NewWAFConfig().WithDirectives(wafEngineSetup + wafBodyProcessors + wafCuratedRules)
+	}
+
+	if cfg.RulesetPath != "" {
+		wafCfg = wafCfg.WithDirectivesFromFile(cfg.RulesetPath)
+	}
+	waf, err := coraza.NewWAF(wafCfg)
+	return waf, mode, err
 }
 
 type wafStatusWriter struct {

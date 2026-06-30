@@ -189,6 +189,15 @@ type WAFConfig struct {
 	RulesetPath string   `yaml:"ruleset_path"`
 	BlockMode   bool     `yaml:"block_mode"`
 	Exclude     []string `yaml:"exclude_paths"`
+	// CRSEnabled loads the full embedded OWASP Core Rule Set (anomaly-scoring
+	// mode) instead of the built-in curated rules. The CRS is broad but needs
+	// tuning; the curated rules (default) are low-false-positive and fast. When
+	// on, the curated rules are not loaded — operators tune via ParanoiaLevel and
+	// ruleset_path overrides.
+	CRSEnabled bool `yaml:"crs_enabled"`
+	// ParanoiaLevel sets the CRS paranoia level 1-4: higher catches more but
+	// raises false positives. Only meaningful with CRSEnabled. Default 1.
+	ParanoiaLevel int `yaml:"paranoia_level"`
 }
 
 type BotConfig struct {
@@ -460,6 +469,22 @@ func Validate(cfg GatewayConfig) error {
 	}
 	if err := validateMultitenancy(cfg); err != nil {
 		return err
+	}
+	if err := validateWAF(cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateWAF(cfg GatewayConfig) error {
+	w := cfg.Security.WAF
+	// 0 means "unset" (defaults to 1 at build time); otherwise it must be a valid
+	// CRS paranoia level.
+	if w.ParanoiaLevel < 0 || w.ParanoiaLevel > 4 {
+		return fmt.Errorf("security.waf.paranoia_level must be between 1 and 4 (got %d)", w.ParanoiaLevel)
+	}
+	if w.ParanoiaLevel != 0 && !w.CRSEnabled {
+		return errors.New("security.waf.paranoia_level is set but crs_enabled is false (paranoia level only applies to the OWASP CRS)")
 	}
 	return nil
 }

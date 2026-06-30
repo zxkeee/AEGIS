@@ -7,6 +7,7 @@ toolchain go1.26.4
 require (
 	github.com/MicahParks/keyfunc/v3 v3.8.0
 	github.com/alicebob/miniredis/v2 v2.38.0
+	github.com/corazawaf/coraza-coreruleset/v4 v4.25.0
 	github.com/corazawaf/coraza/v3 v3.7.0
 	github.com/fsnotify/fsnotify v1.10.0
 	github.com/golang-jwt/jwt/v5 v5.3.1

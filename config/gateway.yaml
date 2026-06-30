@@ -115,6 +115,11 @@ security:
     enabled: true
     ruleset_path: ""
     block_mode: true
+    # crs_enabled loads the full embedded OWASP Core Rule Set (anomaly scoring)
+    # instead of the built-in curated rules. Broad coverage but needs tuning;
+    # start at paranoia_level 1. Leave false for the low-false-positive default.
+    crs_enabled: false
+    paranoia_level: 1   # 1-4, only applies when crs_enabled (higher = stricter)
 
   bot:
     enabled: true

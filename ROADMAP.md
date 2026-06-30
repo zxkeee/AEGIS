@@ -16,7 +16,7 @@ API Security (Akamai / Salt / Noname). Оценка основана на фак
 - ✅ JWT auth: HMAC + JWKS, защита от alg-confusion, fail-closed при недоступном JWKS
 - ✅ DLP-маскирование ответов (стриминг, Flusher, Hijacker/WebSocket)
 - ✅ IP-guard, threat feed, behavior scoring, challenge, security headers
-- ✅ WAF на Coraza (🟡 12 самописных правил, не полный OWASP CRS)
+- ✅ WAF на Coraza: curated-правила (low-FP, дефолт) + опционально полный встроенный OWASP CRS (`waf.crs_enabled`, anomaly-scoring, paranoia 1–4)
 - ✅ Hot-reload конфига, graceful shutdown
 - ✅ Forensic-логи в PostgreSQL (батчинг)
 - ✅ Audit log админ-действий в PostgreSQL (`internal/audit`, async; `GET /api/audit`)
@@ -67,7 +67,7 @@ API Security (Akamai / Salt / Noname). Оценка основана на фак
 |---|--------|-------------|
 | P2-1 | **Compliance-отчётность** | Шаблоны PCI-DSS / HIPAA / GDPR, классификация PII (сейчас regex), data residency, DSAR. |
 | P2-2 | **Лицензирование/метеринг** | License-ключи, тарифы, учёт потребления. |
-| P2-3 | **WAF maturity** | Полный OWASP CRS, управление false-positive, тюнинг правил из UI. |
+| P2-3 | **WAF maturity** 🟡 v1 | Сделано: полный встроенный OWASP CRS (`coraza-coreruleset`, anomaly-scoring, paranoia-level 1–4) через `waf.crs_enabled`; curated low-FP ruleset остаётся дефолтом; `ruleset_path` для overrides поверх любого base. Дальше: управление false-positive и тюнинг правил из UI. |
 | P2-4 | **UI-зрелость** | Временные диапазоны, пагинация каталога, нормальная библиотека графиков, drill-down фильтры. |
 | P2-5 | **Документация** | Runbooks, upgrade path, миграции, SLA. |
 

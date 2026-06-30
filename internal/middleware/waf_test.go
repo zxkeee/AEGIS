@@ -157,3 +157,35 @@ func TestWAF_DisabledIsPassthrough(t *testing.T) {
 		t.Errorf("disabled WAF should pass through: got %d", code)
 	}
 }
+
+// TestWAF_CRSMode exercises the full OWASP Core Rule Set path (waf.crs_enabled):
+// the engine must initialize from the embedded CRS (a failed init would fall back
+// to passthrough and let the attacks below through), block unambiguous attacks
+// via anomaly scoring, and let benign traffic pass.
+func TestWAF_CRSMode(t *testing.T) {
+	mw := WAF(config.WAFConfig{Enabled: true, BlockMode: true, CRSEnabled: true, ParanoiaLevel: 1},
+		fakeLogger{}, &fakeStore{})
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	t.Run("benign passes", func(t *testing.T) {
+		if code := wafDo(t, h, http.MethodGet, "/api/users?page=2&sort=name", "", ""); code != http.StatusOK {
+			t.Errorf("benign request blocked: status %d", code)
+		}
+	})
+	t.Run("sqli blocked", func(t *testing.T) {
+		if code := wafDo(t, h, http.MethodGet, "/?id=1%27%20OR%20%271%27%3D%271%27%20--%20", "", ""); code == http.StatusOK {
+			t.Errorf("CRS did not block SQLi (status 200) — engine may have failed to init")
+		}
+	})
+	t.Run("xss blocked", func(t *testing.T) {
+		if code := wafDo(t, h, http.MethodGet, "/?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E", "", ""); code == http.StatusOK {
+			t.Errorf("CRS did not block XSS (status 200)")
+		}
+	})
+	t.Run("json body sqli blocked", func(t *testing.T) {
+		if code := wafDo(t, h, http.MethodPost, "/api/login", "application/json",
+			`{"user":"admin","pass":"' OR 1=1 -- "}`); code == http.StatusOK {
+			t.Errorf("CRS did not block JSON-body SQLi (body processor gap?)")
+		}
+	})
+}
