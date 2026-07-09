@@ -53,7 +53,10 @@ func AdminAuth(cfg config.GatewayConfig, log Logger, st adminStore, aud audit.Re
 				return
 			}
 			// The console's hashed bundle assets are public (they contain no data).
-			if strings.HasPrefix(r.URL.Path, "/assets/") {
+			// Use the segment-boundary matcher (not raw HasPrefix) so path
+			// prefixing is uniform across the codebase and the lint invariant
+			// stays strict.
+			if config.PathHasPrefix(r.URL.Path, "/assets/") {
 				next.ServeHTTP(w, r)
 				return
 			}

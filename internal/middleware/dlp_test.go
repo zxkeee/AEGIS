@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -68,6 +69,92 @@ func TestDLP_ChunkedResponseIsRedacted(t *testing.T) {
 		t.Fatalf("expected redaction marker, got %q", body)
 	}
 }
+
+// TestDLP_ResponseFormMatrix pins DLP behaviour across the response shapes a
+// backend can emit. The chunked bypass (P0) slipped through because the tests
+// only covered the fixed-Content-Length happy path; this matrix makes every
+// inspectable form prove it redacts and every genuinely-uninspectable form
+// prove it passes through intact.
+func TestDLP_ResponseFormMatrix(t *testing.T) {
+	_ = InitTrustedProxies(nil)
+	const card = "4111 1111 1111 1111"
+
+	cases := []struct {
+		name       string
+		write      func(w http.ResponseWriter)
+		wantRedact bool // true: card must be gone; false: body must survive verbatim
+	}{
+		{
+			name: "fixed_content_length",
+			write: func(w http.ResponseWriter) {
+				body := `{"card":"` + card + `"}`
+				w.Header().Set("Content-Length", itoa(len(body)))
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, body)
+			},
+			wantRedact: true,
+		},
+		{
+			name: "chunked_flushed_midflight",
+			write: func(w http.ResponseWriter) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, `{"card":"`+card)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush() // Content-Length: -1 makes the proxy flush here
+				}
+				_, _ = io.WriteString(w, `"}`)
+			},
+			wantRedact: true,
+		},
+		{
+			name: "no_content_length_no_flush",
+			write: func(w http.ResponseWriter) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, `{"card":"`+card+`"}`)
+			},
+			wantRedact: true,
+		},
+		{
+			name: "sse_streams_through",
+			write: func(w http.ResponseWriter) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, "data: "+card+"\n\n")
+			},
+			wantRedact: false, // SSE is not buffered/inspected by design
+		},
+		{
+			name: "precompressed_passes_through",
+			write: func(w http.ResponseWriter) {
+				w.Header().Set("Content-Encoding", "gzip")
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, "\x1f\x8b\x08"+card) // undecodable: passed through
+			},
+			wantRedact: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.DLPConfig{Enabled: true}
+			h := DLP(cfg, fakeLogger{}, &fakeStore{})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				tc.write(w)
+			}))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+			body := rec.Body.String()
+			if tc.wantRedact && strings.Contains(body, card) {
+				t.Fatalf("%s: card leaked (DLP bypassed): %q", tc.name, body)
+			}
+			if !tc.wantRedact && !strings.Contains(body, card) {
+				t.Fatalf("%s: uninspectable body was altered, want verbatim: %q", tc.name, body)
+			}
+		})
+	}
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }
 
 func TestDLP_StreamingPassthrough(t *testing.T) {
 	// Server-sent events must not be buffered/redacted; they stream through.

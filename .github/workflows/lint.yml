@@ -34,3 +34,9 @@ jobs:
       # loadgen binary that once sat untracked in the repo root).
       - name: Check for committed binaries
         run: ./scripts/check-no-binaries.sh
+
+      # Security invariants a general linter cannot express (each encodes a bug
+      # we shipped and fixed): no raw path-prefix matching, all forwarded
+      # identity headers are covered by the signature payload.
+      - name: Check security invariants
+        run: ./scripts/lint-invariants.sh
