@@ -250,8 +250,12 @@ func (ja *JWTAuth) Middleware() Middleware {
 			// so BOLA ownership detection can compare the resource owner in a
 			// response body against the caller's real id even when it is not `sub`.
 			// CleanHeaders strips any inbound X-Gateway-* so this cannot be forged.
+			// The value is also folded into the signed payload below so a backend
+			// (via the gatewayverify SDK) can authenticate it, not just the gateway.
+			var identityStr string
 			if ja.cfg.IdentityClaim != "" {
 				if id := claimToString(claims[ja.cfg.IdentityClaim]); id != "" {
+					identityStr = id
 					r.Header.Set("X-Gateway-Identity", id)
 				}
 			}
@@ -269,17 +273,30 @@ func (ja *JWTAuth) Middleware() Middleware {
 			if sub != "" && propSecret != "" {
 				ts := fmt.Sprintf("%d", time.Now().Unix())
 				nonceBytes := make([]byte, 16)
-				rand.Read(nonceBytes) //nolint:errcheck
-				nonce := hex.EncodeToString(nonceBytes)
+				// A failed read would yield an all-zero (predictable) nonce, which
+				// weakens replay defence. crypto/rand failing is catastrophic and
+				// practically never happens, but fail closed: skip signing so the
+				// backend's gatewayverify SDK rejects the request rather than trust
+				// a weak nonce.
+				if _, err := rand.Read(nonceBytes); err != nil {
+					ja.log.Error("jwt: identity nonce generation failed; skipping signature", map[string]any{
+						"error": err.Error(),
+					})
+				} else {
+					nonce := hex.EncodeToString(nonceBytes)
 
-				// Canonical payload — upstream must reconstruct it identically.
-				payload := strings.Join([]string{sub, roleStr, scopeStr, ts, nonce}, ":")
-				mac := hmac.New(sha256.New, []byte(propSecret))
-				mac.Write([]byte(payload))
+					// Canonical payload — upstream must reconstruct it identically.
+					// identityStr is included so the ownership claim is authenticated,
+					// not just the gateway-internal header (which a backend reachable
+					// directly could otherwise be tricked into trusting).
+					payload := strings.Join([]string{sub, roleStr, scopeStr, identityStr, ts, nonce}, ":")
+					mac := hmac.New(sha256.New, []byte(propSecret))
+					mac.Write([]byte(payload))
 
-				r.Header.Set("X-Gateway-Timestamp", ts)
-				r.Header.Set("X-Gateway-Nonce", nonce)
-				r.Header.Set("X-Gateway-Signature", hex.EncodeToString(mac.Sum(nil)))
+					r.Header.Set("X-Gateway-Timestamp", ts)
+					r.Header.Set("X-Gateway-Nonce", nonce)
+					r.Header.Set("X-Gateway-Signature", hex.EncodeToString(mac.Sum(nil)))
+				}
 			}
 
 			// Enrich the discovery observation with the verified identity so the

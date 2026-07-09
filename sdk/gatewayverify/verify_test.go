@@ -15,11 +15,18 @@ import (
 const testSecret = "a-strong-shared-secret-32-characters!!"
 
 // signRequest reproduces exactly what AEGIS does in middleware/jwt.go so the
-// reference verifier is tested against the real wire format.
+// reference verifier is tested against the real wire format. Identity is empty
+// (no identity_claim configured); signRequestID covers the populated case.
 func signRequest(secret, sub, roles, scopes, nonce string, ts int64) *http.Request {
+	return signRequestID(secret, sub, roles, scopes, "", nonce, ts)
+}
+
+// signRequestID is signRequest plus the ownership-identity claim, mirroring the
+// canonical payload sub:roles:scopes:identity:ts:nonce.
+func signRequestID(secret, sub, roles, scopes, identity, nonce string, ts int64) *http.Request {
 	r := httptest.NewRequest(http.MethodGet, "/orders/42", nil)
 	tss := strconv.FormatInt(ts, 10)
-	payload := strings.Join([]string{sub, roles, scopes, tss, nonce}, ":")
+	payload := strings.Join([]string{sub, roles, scopes, identity, tss, nonce}, ":")
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(payload))
 
@@ -30,10 +37,37 @@ func signRequest(secret, sub, roles, scopes, nonce string, ts int64) *http.Reque
 	if scopes != "" {
 		r.Header.Set(HeaderScopes, scopes)
 	}
+	if identity != "" {
+		r.Header.Set(HeaderIdentity, identity)
+	}
 	r.Header.Set(HeaderTimestamp, tss)
 	r.Header.Set(HeaderNonce, nonce)
 	r.Header.Set(HeaderSignature, hex.EncodeToString(mac.Sum(nil)))
 	return r
+}
+
+// TestVerify_IdentityIsAuthenticated confirms the ownership-identity claim is
+// covered by the signature: a valid identity is returned, and forging it
+// (without re-signing) is rejected — the gap that let a directly-reachable
+// backend trust an unsigned X-Gateway-Identity.
+func TestVerify_IdentityIsAuthenticated(t *testing.T) {
+	v := New(testSecret, time.Minute, NewMemoryNonceStore())
+
+	r := signRequestID(testSecret, "user-7", "", "", "42", "id-nonce-1", time.Now().Unix())
+	id, err := v.Verify(r)
+	if err != nil {
+		t.Fatalf("verify failed: %v", err)
+	}
+	if id.Identity != "42" {
+		t.Errorf("identity = %q, want 42", id.Identity)
+	}
+
+	// Forge the identity header without re-signing: must be rejected.
+	tampered := signRequestID(testSecret, "user-7", "", "", "42", "id-nonce-2", time.Now().Unix())
+	tampered.Header.Set(HeaderIdentity, "99")
+	if _, err := v.Verify(tampered); err != ErrBadSignature {
+		t.Fatalf("tampered identity: got %v, want ErrBadSignature", err)
+	}
 }
 
 func TestVerify_HappyPath(t *testing.T) {

@@ -5,7 +5,7 @@
 // `X-Gateway-*` headers only when they were produced by the gateway (and not
 // injected by a client that reached the backend directly). The gateway computes:
 //
-//	payload   = subject ":" roles ":" scopes ":" timestamp ":" nonce
+//	payload   = subject ":" roles ":" scopes ":" identity ":" timestamp ":" nonce
 //	signature = hex( HMAC-SHA256(shared_secret, payload) )
 //
 // and sets these request headers:
@@ -13,6 +13,7 @@
 //	X-Gateway-Subject    the authenticated subject (JWT `sub`)
 //	X-Gateway-Roles      comma-separated roles (may be empty)
 //	X-Gateway-Scopes     OAuth2 scopes (may be empty)
+//	X-Gateway-Identity   ownership-identity claim, e.g. a numeric uid (may be empty)
 //	X-Gateway-Timestamp  unix seconds when the request was signed
 //	X-Gateway-Nonce      per-request random nonce (hex)
 //	X-Gateway-Signature  hex HMAC-SHA256 over the payload above
@@ -46,6 +47,7 @@ const (
 	HeaderSubject   = "X-Gateway-Subject"
 	HeaderRoles     = "X-Gateway-Roles"
 	HeaderScopes    = "X-Gateway-Scopes"
+	HeaderIdentity  = "X-Gateway-Identity"
 	HeaderTimestamp = "X-Gateway-Timestamp"
 	HeaderNonce     = "X-Gateway-Nonce"
 	HeaderSignature = "X-Gateway-Signature"
@@ -78,6 +80,11 @@ type Identity struct {
 	Subject string
 	Roles   []string
 	Scopes  []string
+	// Identity is the ownership-identity claim (X-Gateway-Identity), e.g. a
+	// numeric user id used for object-ownership (BOLA) checks. Empty when the
+	// gateway was not configured with an identity_claim. It is covered by the
+	// signature, so a backend may trust it for authorization.
+	Identity string
 }
 
 // HasRole reports whether the identity carries the given role.
@@ -118,6 +125,7 @@ func (v *Verifier) Verify(r *http.Request) (Identity, error) {
 	sub := r.Header.Get(HeaderSubject)
 	roles := r.Header.Get(HeaderRoles)
 	scopes := r.Header.Get(HeaderScopes)
+	identity := r.Header.Get(HeaderIdentity)
 	ts := r.Header.Get(HeaderTimestamp)
 	nonce := r.Header.Get(HeaderNonce)
 	sig := r.Header.Get(HeaderSignature)
@@ -137,7 +145,7 @@ func (v *Verifier) Verify(r *http.Request) (Identity, error) {
 	}
 
 	// 2. Authenticity — constant-time HMAC comparison over the canonical payload.
-	payload := strings.Join([]string{sub, roles, scopes, ts, nonce}, ":")
+	payload := strings.Join([]string{sub, roles, scopes, identity, ts, nonce}, ":")
 	mac := hmac.New(sha256.New, v.secret)
 	mac.Write([]byte(payload))
 	expected := mac.Sum(nil)
@@ -153,7 +161,7 @@ func (v *Verifier) Verify(r *http.Request) (Identity, error) {
 		return Identity{}, ErrReplay
 	}
 
-	id := Identity{Subject: sub}
+	id := Identity{Subject: sub, Identity: identity}
 	if roles != "" {
 		id.Roles = strings.Split(roles, ",")
 	}
