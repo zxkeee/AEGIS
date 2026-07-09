@@ -135,3 +135,35 @@ func TestIAM_UpsertSSOUser(t *testing.T) {
 		t.Fatalf("want exactly one user after re-login, got %d", len(list))
 	}
 }
+
+// TestIAM_UpsertSSOUser_DoesNotConvertLocalAccount guards against account
+// takeover: an OIDC login whose email collides with an existing LOCAL (password)
+// account in the same tenant must be refused, not silently converted to SSO and
+// re-privileged from IdP group claims.
+func TestIAM_UpsertSSOUser_DoesNotConvertLocalAccount(t *testing.T) {
+	s := freshIAM(t)
+	ctx := context.Background()
+
+	if err := s.CreateTenant(ctx, "acme", "ACME"); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	local := User{ID: "u-local", TenantID: "acme", Email: "op@acme.io", Role: RoleAdmin, SuperAdmin: true}
+	if err := s.CreateUser(ctx, local, "correct-horse-battery"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// OIDC login for the same tenant+email, mapped to a LOWER privilege, must be
+	// rejected rather than downgrading/converting the local super-admin.
+	if _, err := s.UpsertSSOUser(ctx, "acme", "OP@Acme.io", RoleViewer, false); err == nil {
+		t.Fatal("expected UpsertSSOUser to refuse converting a local account")
+	}
+
+	// The local account is untouched: password still works, still super-admin.
+	got, err := s.VerifyPassword(ctx, "acme", "op@acme.io", "correct-horse-battery")
+	if err != nil {
+		t.Fatalf("local account was disturbed: %v", err)
+	}
+	if got.ID != "u-local" || got.Role != RoleAdmin || !got.SuperAdmin {
+		t.Fatalf("local account privileges changed: %+v", got)
+	}
+}

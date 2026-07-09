@@ -207,15 +207,25 @@ func (s *Store) UpsertSSOUser(ctx context.Context, tenantID, email string, role 
 	}
 	newID := "u-" + hex.EncodeToString(idBytes)
 
+	// The DO UPDATE is guarded to auth_source = 'oidc': a returning SSO user has
+	// role/super_admin re-synced from current IdP claims, but a pre-existing
+	// LOCAL (password) account with the same tenant+email is NOT silently
+	// converted to SSO and re-privileged from IdP groups. When the conflict row
+	// is local the UPDATE matches nothing, RETURNING yields no row (ErrNoRows),
+	// and we surface a clear conflict instead of an account takeover.
 	var u User
 	err = tx.QueryRowContext(ctx,
 		`INSERT INTO admin_users (id, tenant_id, email, password_hash, role, super_admin, auth_source)
 		 VALUES ($1, $2, $3, $4, $5, $6, 'oidc')
 		 ON CONFLICT (tenant_id, lower(email)) DO UPDATE
-		   SET role = EXCLUDED.role, super_admin = EXCLUDED.super_admin, auth_source = 'oidc'
+		   SET role = EXCLUDED.role, super_admin = EXCLUDED.super_admin
+		   WHERE admin_users.auth_source = 'oidc'
 		 RETURNING id, tenant_id, email, role, super_admin, created_at`,
 		newID, tenantID, email, ssoPasswordSentinel, string(role), superAdmin,
 	).Scan(&u.ID, &u.TenantID, &u.Email, &u.Role, &u.SuperAdmin, &u.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, fmt.Errorf("iam: %q already exists as a local (password) account in tenant %q; refusing to convert it to SSO", email, tenantID)
+	}
 	if err != nil {
 		return User{}, fmt.Errorf("iam: sso user upsert: %w", err)
 	}
