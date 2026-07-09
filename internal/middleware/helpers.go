@@ -177,8 +177,13 @@ func RequestID() Middleware {
 			id := r.Header.Get("X-Request-ID")
 			if !requestIDShape.MatchString(id) {
 				b := make([]byte, 8)
-				rand.Read(b) //nolint:errcheck
-				id = hex.EncodeToString(b)
+				if _, err := rand.Read(b); err != nil {
+					// crypto/rand should never fail; fall back to a time-based id so
+					// correlation still works rather than emitting an all-zero id.
+					id = fmt.Sprintf("%x", time.Now().UnixNano())
+				} else {
+					id = hex.EncodeToString(b)
+				}
 			}
 			r.Header.Set("X-Request-ID", id)
 			w.Header().Set("X-Request-ID", id)
