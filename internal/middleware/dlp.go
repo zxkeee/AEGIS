@@ -172,11 +172,19 @@ func (d *dlpWriter) flushPassthrough() {
 	}
 }
 
-// Flush implements http.Flusher. In buffering mode flushing is a no-op (we must
-// hold the body for inspection); in passthrough mode it delegates downstream.
+// Flush implements http.Flusher. In buffering mode it is deliberately a NO-OP:
+// we must hold the body for inspection. The reverse proxy calls Flush eagerly
+// for any response with Content-Length: -1 (chunked / unknown length — the norm
+// for a JSON API that does not set Content-Length). Honouring that flush here
+// would emit the body BEFORE classify.Redact runs, silently bypassing DLP on
+// every chunked response — the scanner would never see the bytes and no
+// redaction would be logged. Genuine streams that must not be stalled (SSE,
+// protocol upgrades) already flipped to passthrough in WriteHeader/Hijack, so a
+// Flush reached in buffering mode is never such a stream. Memory stays bounded:
+// once the buffer cap is hit, Write() switches to passthrough on its own.
 func (d *dlpWriter) Flush() {
 	if !d.passthrough {
-		d.flushPassthrough()
+		return
 	}
 	if f, ok := d.ResponseWriter.(http.Flusher); ok {
 		f.Flush()

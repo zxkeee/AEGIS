@@ -34,6 +34,41 @@ func TestDLP_RedactsDefaultPatterns(t *testing.T) {
 	}
 }
 
+// TestDLP_ChunkedResponseIsRedacted guards the DLP bypass on chunked responses.
+// A backend that does not set Content-Length makes the reverse proxy flush the
+// body mid-flight (Go sets FlushInterval to immediate when ContentLength == -1).
+// If DLP honoured that flush it would emit the body before inspection — the
+// flagship control failing silently. Here we drive a next handler that writes,
+// Flushes, then writes more; every sensitive token must still be redacted.
+func TestDLP_ChunkedResponseIsRedacted(t *testing.T) {
+	_ = InitTrustedProxies(nil)
+	cfg := config.DLPConfig{Enabled: true}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"card":"4111 1111 1111 1111",`)
+		// The reverse proxy flushes here for a Content-Length: -1 response.
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = io.WriteString(w, `"email":"a@b.com"}`)
+	})
+	h := DLP(cfg, fakeLogger{}, &fakeStore{})(next)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	body := rec.Body.String()
+	if strings.Contains(body, "4111 1111 1111 1111") {
+		t.Fatalf("credit card leaked through a flushed (chunked) response: %q", body)
+	}
+	if strings.Contains(body, "a@b.com") {
+		t.Fatalf("email leaked through a flushed (chunked) response: %q", body)
+	}
+	if !strings.Contains(body, "REDACTED") {
+		t.Fatalf("expected redaction marker, got %q", body)
+	}
+}
+
 func TestDLP_StreamingPassthrough(t *testing.T) {
 	// Server-sent events must not be buffered/redacted; they stream through.
 	_ = InitTrustedProxies(nil)
