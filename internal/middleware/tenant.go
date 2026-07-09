@@ -77,7 +77,12 @@ func TenantResolve(cfg config.MultitenancyConfig, routes []config.RouteConfig, l
 
 			var tenantRouteID string
 			for _, tr := range troutes {
-				if strings.HasPrefix(r.URL.Path, tr.path) {
+				// Segment-boundary match (not raw HasPrefix): route "/orders" must
+				// own "/orders" and "/orders/42" but NOT "/ordersXYZ", otherwise an
+				// adjacent path name is silently attributed to the wrong tenant —
+				// corrupting that tenant's metrics/Redis/catalog isolation. An empty
+				// prefix (a root "/" route) matches everything, as before.
+				if tr.path == "" || config.PathHasPrefix(r.URL.Path, tr.path) {
 					tenantRouteID = tr.tenant
 					break
 				}

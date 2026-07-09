@@ -41,6 +41,20 @@ func TestTenant_ResolvedByRoute(t *testing.T) {
 	}
 }
 
+// TestTenant_AdjacentPathNotCaptured guards the segment-boundary match: a route
+// "/orders" owned by acme must NOT capture "/ordersXYZ", which shares a raw
+// prefix but is a different path. Without the boundary check that request would
+// be mis-attributed to acme's tenant (wrong Redis/metrics/catalog isolation).
+func TestTenant_AdjacentPathNotCaptured(t *testing.T) {
+	mt := config.MultitenancyConfig{Enabled: true, Tenants: []config.TenantConfig{{ID: "acme"}}}
+	routes := []config.RouteConfig{{Path: "/orders", TenantID: "acme"}}
+	got, code := tenantOf(t, mt, routes, func(r *http.Request) { r.URL.Path = "/ordersXYZ" })
+	// No route and no host match → unresolved → 404, never silently acme.
+	if code != http.StatusNotFound {
+		t.Fatalf("adjacent path: tenant=%q code=%d, want unresolved/404", got, code)
+	}
+}
+
 func TestTenant_ResolvedByHost(t *testing.T) {
 	mt := config.MultitenancyConfig{Enabled: true, Tenants: []config.TenantConfig{
 		{ID: "globex", Hosts: []string{"globex.api.example"}},
