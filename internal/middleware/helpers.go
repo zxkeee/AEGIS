@@ -205,6 +205,15 @@ func SecurityHeaders() Middleware {
 			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 			w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
 			w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+			// Cross-origin isolation (defence-in-depth; surfaced by a nuclei
+			// misconfig scan). Safe for the self-contained same-origin console:
+			// it loads only same-origin assets, so isolating the browsing context
+			// and refusing cross-origin embedding of our responses costs nothing.
+			// COEP is deliberately omitted — it can break legitimate cross-origin
+			// subresource loads and adds little here.
+			w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+			w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+			w.Header().Set("X-Permitted-Cross-Domain-Policies", "none")
 			next.ServeHTTP(w, r)
 		})
 	}
