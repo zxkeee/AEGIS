@@ -2,7 +2,7 @@ module api-gateway
 
 go 1.25.0
 
-toolchain go1.26.4
+toolchain go1.26.5
 
 require (
 	github.com/MicahParks/keyfunc/v3 v3.8.0
