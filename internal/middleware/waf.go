@@ -1,8 +1,12 @@
 package middleware
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 
 	"api-gateway/internal/config"
@@ -28,6 +32,57 @@ const jsonBodyDirectives = `
 	SecRule &REQUEST_HEADERS:Content-Type "@eq 0" \
 		"id:10014,phase:1,pass,nolog,ctl:forceRequestBodyVariable=On"
 `
+
+// xxeScanLimit bounds how much of an XML body the XXE pre-filter reads. A DTD
+// (DOCTYPE/ENTITY) is always in the prologue at the very top of the document, so
+// the first few KB are sufficient; the rest streams to Coraza and the backend
+// untouched.
+const xxeScanLimit = 8 << 10 // 8 KB
+
+// xxeMarkerRE matches the structural signature of an XML external-entity attack:
+// a DOCTYPE or ENTITY declaration that references an external SYSTEM/PUBLIC id.
+// Mirrors the built-in ruleset's id:10008. It is deliberately specific so it
+// does NOT fire on an ordinary "<?xml …?>" declaration or benign markup.
+var xxeMarkerRE = regexp.MustCompile(`(?i)<!(?:DOCTYPE|ENTITY)\s[^>]*(?:SYSTEM|PUBLIC)\s`)
+
+// isXMLContentType reports whether a Content-Type denotes XML (application/xml,
+// text/xml, or any structured +xml suffix such as application/soap+xml).
+func isXMLContentType(ct string) bool {
+	ct = strings.ToLower(ct)
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = ct[:i]
+	}
+	ct = strings.TrimSpace(ct)
+	return ct == "application/xml" || ct == "text/xml" || strings.HasSuffix(ct, "+xml")
+}
+
+// screenXXE checks an XML request body for the XXE structural marker WITHOUT
+// consuming it: it reads the bounded head, tests the marker, and rewinds the
+// body (head + untouched remainder) so Coraza and the backend still see the full
+// stream. Returns true when an XXE payload is present.
+//
+// This exists because OWASP CRS v4 does not reliably catch XXE — its XML body
+// processor consumes the DTD prologue, so REQUEST_BODY never contains it, and
+// forcing raw inspection instead false-positives on the "<?xml" declaration via
+// the PHP-open-tag rules. Screening in Go, before Coraza, closes that gap with
+// no false positives and works regardless of paranoia level. Without it,
+// enabling use_crs would SILENTLY DROP the XXE protection the built-in ruleset
+// provides via id:10008 — a regression exactly when an operator "upgrades" to
+// CRS for production.
+func screenXXE(r *http.Request) bool {
+	if r.Body == nil || !isXMLContentType(r.Header.Get("Content-Type")) {
+		return false
+	}
+	head := make([]byte, xxeScanLimit)
+	n, _ := io.ReadFull(r.Body, head)
+	head = head[:n]
+	// Rewind: the backend/Coraza must still read the complete body.
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(head), r.Body), r.Body}
+	return xxeMarkerRE.Match(head)
+}
 
 // WAF provides Web Application Firewall protection using Coraza (OWASP CRS).
 // Protects against: SQL Injection, XSS, RCE, LFI, SSRF, XXE, Log4Shell, and more.
@@ -141,6 +196,28 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// XXE pre-filter (CRS mode only — the built-in ruleset already blocks
+			// XXE via id:10008). CRS v4 does not reliably detect XXE, so screen the
+			// XML body here before Coraza. Enforce only in block mode, matching CRS's
+			// detection-vs-blocking semantics; in detection mode we log and continue.
+			if cfg.UseCRS && screenXXE(r) {
+				ip := RealIP(r)
+				if cfg.BlockMode {
+					st.IncrMetric(r.Context(), "waf_blocked")
+					st.IncrBehaviorScore(r.Context(), ip, 15)
+					log.BlockEvent("waf_xxe_blocked", ip, r.URL.Path, r.Method, map[string]any{"status": http.StatusForbidden})
+					st.PushForensic(r.Context(), secevent.Entry{
+						Timestamp: time.Now().UTC(), IP: ip, Path: r.URL.Path,
+						Method: r.Method, Reason: "waf_xxe_blocked", Code: http.StatusForbidden,
+					})
+					http.Error(w, "Forbidden", http.StatusForbidden)
+					return
+				}
+				log.Warn("waf: XXE payload detected (detection mode, not blocked)", map[string]any{
+					"ip": ip, "path": r.URL.Path,
+				})
+			}
+
 			// Distinguish a real WAF interruption from a downstream response. Coraza
 			// calls next ONLY when it does NOT block, so a closure-captured flag set
 			// by this sentinel tells us the request reached the backend. Without it,
