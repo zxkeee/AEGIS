@@ -10,12 +10,25 @@ fail=0
 # ── Invariant 1: no raw prefix match on request paths ────────────────────────
 #
 # strings.HasPrefix(r.URL.Path, ...) matches on a byte boundary, so a rule for
-# "/orders" also captures "/ordersXYZ". That mis-attributed requests to the
-# wrong tenant (isolation bug). Path prefixing MUST go through
-# config.PathHasPrefix, which matches on a path-segment boundary.
-echo "invariant: no raw strings.HasPrefix on r.URL.Path"
-if hits=$(grep -rn --include='*.go' 'strings\.HasPrefix(r\.URL\.Path' internal cmd sdk 2>/dev/null); then
-  echo "ERROR: raw strings.HasPrefix on a request path — use config.PathHasPrefix (segment boundary):"
+# "/orders" also captures "/ordersXYZ". That has shipped as two DIFFERENT bugs
+# so far: a tenant-isolation mis-attribution (fixed in tenant.go) and a
+# route-posture confusion in discovery/posture.go that let a permissive route
+# like "/api/public" silently strip auth/WAF/DLP/rate-limit off an unrelated,
+# longer path such as "/api/publicdata/42" (2026-08-21 audit, CRITICAL). Both
+# instances used a local variable holding a path (`path`, `lpath`, `rawPath`,
+# ...), not the literal `r.URL.Path` expression the original version of this
+# check looked for — which is exactly why the second bug slipped past it.
+# Path prefixing MUST go through config.PathHasPrefix, which matches on a
+# path-segment boundary.
+#
+# Matches any strings.HasPrefix call whose first argument is an identifier
+# (optionally dotted, e.g. r.URL.Path) ending in "path"/"Path" — not just the
+# literal r.URL.Path spelling. internal/config/config.go is excluded: it is
+# PathHasPrefix's own implementation, the one place a raw strings.HasPrefix on
+# a path variable is correct.
+echo "invariant: no raw strings.HasPrefix on a path variable"
+if hits=$(grep -rn --include='*.go' -E 'strings\.HasPrefix\([A-Za-z0-9_.]*[Pp]ath\b' internal cmd sdk 2>/dev/null | grep -v '^internal/config/config\.go:'); then
+  echo "ERROR: raw strings.HasPrefix on a path variable — use config.PathHasPrefix (segment boundary):"
   echo "$hits"
   fail=1
 fi
