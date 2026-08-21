@@ -34,6 +34,16 @@ is_weak() {
   done
   # Also reject anything under 12 characters — too short to be a generated secret.
   [ "${#1}" -lt 12 ] && return 0
+  # Reject low-diversity values that pass both checks above but still aren't
+  # random — e.g. "111111111111" or "abababababab" (12 chars, absent from the
+  # literal list). A real generated secret (openssl rand -hex, base64, etc.)
+  # over 12 characters draws from a wide alphabet; fewer than 6 distinct
+  # characters is a strong repetition signal on its own. Mirrors
+  # internal/config's looksLowEntropy check for AEGIS_ADMIN_SECRET/JWT_SECRET/
+  # PROPAGATION_SECRET, which these infra passwords bypass entirely.
+  local distinct
+  distinct=$(printf '%s' "$1" | fold -w1 | sort -u | wc -l | tr -d ' ')
+  [ "$distinct" -lt 6 ] && return 0
   return 1
 }
 

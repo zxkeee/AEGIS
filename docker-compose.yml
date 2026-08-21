@@ -99,11 +99,10 @@ services:
   # ── Prometheus (Metrics Collection) ──────────────────────────────────────────
   # Prometheus is NOT exposed to the host — access via Grafana or kubectl port-forward.
   prometheus:
-    # TODO(security-audit): pin by digest like redis/postgres above, e.g.:
-    #   docker pull prom/prometheus:v2.52.0 && docker inspect --format='{{index .RepoDigests 0}}' prom/prometheus:v2.52.0
-    # Left as a tag pin for now — resolving the digest needs registry/Docker
-    # daemon access this change was made without.
-    image: prom/prometheus:v2.52.0
+    # Digest resolved from the Docker Hub v2 API (multi-arch manifest list) for
+    # prom/prometheus:v2.52.0. Re-pin the same way if the tag is ever bumped:
+    #   docker pull prom/prometheus:vX.Y.Z && docker inspect --format='{{index .RepoDigests 0}}' prom/prometheus:vX.Y.Z
+    image: prom/prometheus:v2.52.0@sha256:5c435642ca4d8427ca26f4901c11114023004709037880cd7860d5b7176aa731
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -129,9 +128,10 @@ services:
 
   # ── Grafana (Dashboards) ─────────────────────────────────────────────────────
   grafana:
-    # TODO(security-audit): pin by digest like redis/postgres above (see the
-    # matching TODO on the prometheus service).
-    image: grafana/grafana:10.4.3
+    # Digest resolved from the Docker Hub v2 API (multi-arch manifest list) for
+    # grafana/grafana:10.4.3. Re-pin the same way if the tag is ever bumped
+    # (see the matching comment on the prometheus service above).
+    image: grafana/grafana:10.4.3@sha256:b7fcb534f7b3512801bb3f4e658238846435804deb479d105b5cdc680847c272
     ports:
       - "127.0.0.1:3000:3000"   # localhost only — do not expose publicly
     volumes:

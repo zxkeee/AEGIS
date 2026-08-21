@@ -2,7 +2,6 @@ package discovery
 
 import (
 	"sort"
-	"strings"
 
 	"api-gateway/internal/config"
 )
@@ -46,9 +45,19 @@ func NewPostureEngine(cfg config.GatewayConfig) *PostureEngine {
 }
 
 // matchRoute returns the most specific configured route for a path, or nil.
+//
+// Uses config.PathHasPrefix (segment-boundary-safe), NOT a raw strings.HasPrefix:
+// a raw prefix match lets an adjacent route name "cover" a longer path that
+// merely starts with the same characters — e.g. a permissive "/api/public"
+// route would incorrectly match "/api/publicdata/42" and hand it that route's
+// (weaker) auth/WAF/DLP/rate-limit posture. This is the same bug class already
+// fixed in middleware/tenant.go and middleware/jwt.go's Exclude matching; this
+// resolver was the one place it was missed, and it feeds RouteGate for every
+// route-overridable control (ControlsFor / RateLimitFor below), so the gap
+// silently disabled those controls for any such adjacent path.
 func (e *PostureEngine) matchRoute(path string) *config.RouteConfig {
 	for i := range e.routes {
-		if strings.HasPrefix(path, e.routes[i].Path) {
+		if config.PathHasPrefix(path, e.routes[i].Path) {
 			return &e.routes[i]
 		}
 	}

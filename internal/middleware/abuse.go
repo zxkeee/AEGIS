@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -117,12 +119,20 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 			// ── BOLA: object-ID enumeration by one consumer ────────────────────
 			// endpoint (method-specific) drives enumeration; scope (method-
 			// independent) drives ownership so a read-learned owner also protects
-			// against a cross-owner write.
-			endpoint, scope, ids := bolaTarget(r.Method, r.URL.Path)
-			if len(ids) > 0 {
+			// against a cross-owner write. Candidates cover both path-embedded IDs
+			// (/orders/{id}) and query-string IDs (?order_id={id}): the latter used
+			// to be a complete blind spot, since the value never appears in the path
+			// template extractObjectIDs looks at.
+			candidates := bolaTargets(r.Method, r.URL.Path, r.URL.Query())
+
+			blocked := false
+			for _, cand := range candidates {
+				if len(cand.ids) == 0 {
+					continue
+				}
 				var maxCount int64
-				for _, id := range ids {
-					cnt, err := st.TrackObjectAccess(r.Context(), consumer, endpoint, id, window)
+				for _, id := range cand.ids {
+					cnt, err := st.TrackObjectAccess(r.Context(), consumer, cand.endpoint, id, window)
 					if err != nil {
 						log.Error("abuse: object-access tracking failed", map[string]any{"error": err.Error()})
 						continue
@@ -131,56 +141,61 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 						maxCount = cnt
 					}
 				}
-				if maxCount > 0 {
-					// EnumThreshold is the absolute hard ceiling (always enforced).
-					overCeiling := int(maxCount) > threshold
-					flagged := overCeiling
-					why := "consumer '" + consumer + "' accessed " + strconv.FormatInt(maxCount, 10) +
-						" distinct object IDs on '" + endpoint + "' (hard ceiling " + strconv.Itoa(threshold) + ")"
+				if maxCount == 0 {
+					continue
+				}
+				// EnumThreshold is the absolute hard ceiling (always enforced).
+				overCeiling := int(maxCount) > threshold
+				flagged := overCeiling
+				why := "consumer '" + consumer + "' accessed " + strconv.FormatInt(maxCount, 10) +
+					" distinct object IDs on '" + cand.endpoint + "' (hard ceiling " + strconv.Itoa(threshold) + ")"
 
-					// A2: per-consumer adaptive baseline. Compare this window against the
-					// consumer's own learned norm; learn unless it is already a clear
-					// hard-ceiling breach (so an attack does not poison the baseline).
-					var baseline float64
-					if cfg.Adaptive {
-						b, err := st.TrackBaseline(r.Context(), consumer, endpoint, maxCount, !overCeiling, baselineTTL)
-						if err != nil {
-							log.Error("abuse: baseline tracking failed", map[string]any{"error": err.Error()})
-						} else {
-							baseline = b
-							if !flagged && int(maxCount) >= adaptiveMin && float64(maxCount) > b*sensitivity {
-								flagged = true
-								why = "consumer '" + consumer + "' accessed " + strconv.FormatInt(maxCount, 10) +
-									" distinct object IDs on '" + endpoint + "' — " +
-									strconv.FormatFloat(float64(maxCount)/maxF(b, 1), 'f', 1, 64) +
-									"x its baseline of " + strconv.FormatFloat(b, 'f', 1, 64) +
-									" (sensitivity " + strconv.FormatFloat(sensitivity, 'f', 1, 64) + ")"
-							}
+				// A2: per-consumer adaptive baseline. Compare this window against the
+				// consumer's own learned norm; learn unless it is already a clear
+				// hard-ceiling breach (so an attack does not poison the baseline).
+				var baseline float64
+				if cfg.Adaptive {
+					b, err := st.TrackBaseline(r.Context(), consumer, cand.endpoint, maxCount, !overCeiling, baselineTTL)
+					if err != nil {
+						log.Error("abuse: baseline tracking failed", map[string]any{"error": err.Error()})
+					} else {
+						baseline = b
+						if !flagged && int(maxCount) >= adaptiveMin && float64(maxCount) > b*sensitivity {
+							flagged = true
+							why = "consumer '" + consumer + "' accessed " + strconv.FormatInt(maxCount, 10) +
+								" distinct object IDs on '" + cand.endpoint + "' — " +
+								strconv.FormatFloat(float64(maxCount)/maxF(b, 1), 'f', 1, 64) +
+								"x its baseline of " + strconv.FormatFloat(b, 'f', 1, 64) +
+								" (sensitivity " + strconv.FormatFloat(sensitivity, 'f', 1, 64) + ")"
 						}
-					}
-
-					if flagged {
-						// BOLA is heuristic (legitimate pagination/bulk reads can resemble
-						// enumeration), so it is "warning", not "critical". The explanation
-						// states observed vs allowed/baseline so an operator can judge it
-						// or allowlist the consumer.
-						extra := map[string]any{
-							"consumer":         consumer,
-							"distinct_objects": maxCount,
-							"endpoint":         endpoint,
-							"severity":         "warning",
-							"why":              why,
-						}
-						if cfg.Adaptive {
-							extra["baseline"] = baseline
-						}
-						if cfg.BlockMode {
-							SecurityDeny(w, r, log, st, "bola_enumeration", ip, http.StatusTooManyRequests, extra)
-							return
-						}
-						recordAbuse(r, log, st, "bola_enumeration", ip, extra)
 					}
 				}
+
+				if flagged {
+					// BOLA is heuristic (legitimate pagination/bulk reads can resemble
+					// enumeration), so it is "warning", not "critical". The explanation
+					// states observed vs allowed/baseline so an operator can judge it
+					// or allowlist the consumer.
+					extra := map[string]any{
+						"consumer":         consumer,
+						"distinct_objects": maxCount,
+						"endpoint":         cand.endpoint,
+						"severity":         "warning",
+						"why":              why,
+					}
+					if cfg.Adaptive {
+						extra["baseline"] = baseline
+					}
+					if cfg.BlockMode {
+						SecurityDeny(w, r, log, st, "bola_enumeration", ip, http.StatusTooManyRequests, extra)
+						blocked = true
+						break
+					}
+					recordAbuse(r, log, st, "bola_enumeration", ip, extra)
+				}
+			}
+			if blocked {
+				return
 			}
 
 			// ── BOLA (object ownership): single-object IDOR ────────────────────
@@ -190,7 +205,14 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 			// under NAT/DHCP to attribute ownership); consumers holding a bypass role
 			// (support/admin) are allowed to see others' objects.
 			bypassed := len(cfg.OwnershipBypassRoles) > 0 && hasAnyRole(roles, cfg.OwnershipBypassRoles)
-			if (cfg.ObjectOwnership || cfg.ObjectOwnershipBlock) && subject != "" && len(ids) > 0 && !bypassed {
+			anyIDs := false
+			for _, cand := range candidates {
+				if len(cand.ids) > 0 {
+					anyIDs = true
+					break
+				}
+			}
+			if (cfg.ObjectOwnership || cfg.ObjectOwnershipBlock) && subject != "" && anyIDs && !bypassed {
 				ownTTL := cfg.ObjectOwnershipTTL
 				if ownTTL <= 0 {
 					ownTTL = 168 * time.Hour
@@ -207,23 +229,25 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 				// Proactive block (before forwarding): if an object's confirmed owner
 				// is already known and is someone else, deny the leak up front.
 				if cfg.ObjectOwnershipBlock {
-					for _, id := range ids {
-						owner, known, err := st.GetObjectOwner(r.Context(), scope, id)
-						if err != nil {
-							log.Error("abuse: object-owner lookup failed", map[string]any{"error": err.Error()})
-							continue
-						}
-						if known && owner != "" && owner != identity {
-							SecurityDeny(w, r, log, st, "bola_owner_block", ip, http.StatusForbidden, map[string]any{
-								"consumer":  consumer,
-								"object_id": id,
-								"endpoint":  endpoint,
-								"owner":     owner,
-								"severity":  "critical",
-								"why": "consumer '" + consumer + "' denied " + r.Method + " on object '" + id + "' (" + scope +
-									") owned by '" + owner + "' — cross-owner access (BOLA) blocked before forwarding",
-							})
-							return
+					for _, cand := range candidates {
+						for _, id := range cand.ids {
+							owner, known, err := st.GetObjectOwner(r.Context(), cand.scope, id)
+							if err != nil {
+								log.Error("abuse: object-owner lookup failed", map[string]any{"error": err.Error()})
+								continue
+							}
+							if known && owner != "" && owner != identity {
+								SecurityDeny(w, r, log, st, "bola_owner_block", ip, http.StatusForbidden, map[string]any{
+									"consumer":  consumer,
+									"object_id": id,
+									"endpoint":  cand.endpoint,
+									"owner":     owner,
+									"severity":  "critical",
+									"why": "consumer '" + consumer + "' denied " + r.Method + " on object '" + id + "' (" + cand.scope +
+										") owned by '" + owner + "' — cross-owner access (BOLA) blocked before forwarding",
+								})
+								return
+							}
 						}
 					}
 				}
@@ -252,21 +276,28 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 					// CONFIRMED path: the response body names the object's owner. Bind
 					// it (so future cross-owner requests are blocked) and, if it is not
 					// the caller, flag a confirmed IDOR — a real data leak, "critical".
-					objID := ids[len(ids)-1]
-					if err := st.SetObjectOwner(r.Context(), scope, objID, bodyOwner, ownTTL); err != nil {
-						log.Error("abuse: set object-owner failed", map[string]any{"error": err.Error()})
-					}
-					if bodyOwner != identity {
-						recordAbuse(r, log, st, "bola_object_ownership", ip, map[string]any{
-							"consumer":  consumer,
-							"object_id": objID,
-							"endpoint":  endpoint,
-							"owner":     bodyOwner,
-							"confirmed": true,
-							"severity":  "critical",
-							"why": "consumer '" + consumer + "' " + r.Method + " object '" + objID + "' (" + scope +
-								") owned by '" + bodyOwner + "' (from response body) — confirmed IDOR (BOLA)",
-						})
+					// Bound against every candidate's last ID, since a request can carry
+					// both a path ID and a query ID at once.
+					for _, cand := range candidates {
+						if len(cand.ids) == 0 {
+							continue
+						}
+						objID := cand.ids[len(cand.ids)-1]
+						if err := st.SetObjectOwner(r.Context(), cand.scope, objID, bodyOwner, ownTTL); err != nil {
+							log.Error("abuse: set object-owner failed", map[string]any{"error": err.Error()})
+						}
+						if bodyOwner != identity {
+							recordAbuse(r, log, st, "bola_object_ownership", ip, map[string]any{
+								"consumer":  consumer,
+								"object_id": objID,
+								"endpoint":  cand.endpoint,
+								"owner":     bodyOwner,
+								"confirmed": true,
+								"severity":  "critical",
+								"why": "consumer '" + consumer + "' " + r.Method + " object '" + objID + "' (" + cand.scope +
+									") owned by '" + bodyOwner + "' (from response body) — confirmed IDOR (BOLA)",
+							})
+						}
 					}
 					return
 				}
@@ -276,23 +307,25 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 				if shared <= 0 {
 					shared = 2
 				}
-				for _, id := range ids {
-					prior, already, err := st.TrackObjectOwner(r.Context(), scope, id, consumer, ownTTL)
-					if err != nil {
-						log.Error("abuse: object-owner tracking failed", map[string]any{"error": err.Error()})
-						continue
-					}
-					if !already && prior >= 1 && int(prior) <= shared {
-						recordAbuse(r, log, st, "bola_object_ownership", ip, map[string]any{
-							"consumer":     consumer,
-							"object_id":    id,
-							"endpoint":     endpoint,
-							"prior_owners": prior,
-							"severity":     "warning",
-							"why": "consumer '" + consumer + "' " + r.Method + " object '" + id + "' (" + scope +
-								") owned by " + strconv.FormatInt(prior, 10) +
-								" other consumer(s) and never accessed by it — possible IDOR (BOLA, heuristic)",
-						})
+				for _, cand := range candidates {
+					for _, id := range cand.ids {
+						prior, already, err := st.TrackObjectOwner(r.Context(), cand.scope, id, consumer, ownTTL)
+						if err != nil {
+							log.Error("abuse: object-owner tracking failed", map[string]any{"error": err.Error()})
+							continue
+						}
+						if !already && prior >= 1 && int(prior) <= shared {
+							recordAbuse(r, log, st, "bola_object_ownership", ip, map[string]any{
+								"consumer":     consumer,
+								"object_id":    id,
+								"endpoint":     cand.endpoint,
+								"prior_owners": prior,
+								"severity":     "warning",
+								"why": "consumer '" + consumer + "' " + r.Method + " object '" + id + "' (" + cand.scope +
+									") owned by " + strconv.FormatInt(prior, 10) +
+									" other consumer(s) and never accessed by it — possible IDOR (BOLA, heuristic)",
+							})
+						}
 					}
 				}
 				return
@@ -445,41 +478,93 @@ func hasAnyRole(have, required []string) bool {
 	return false
 }
 
-// bolaTarget resolves the BOLA keys for a request: the method-specific endpoint
-// ("METHOD /template", used for enumeration), the method-INDEPENDENT object scope
-// ("/template", used for ownership), and the concrete object IDs accessed.
+// bolaCandidate is one BOLA detection target within a request: the
+// method-specific endpoint key (used for enumeration), the method-independent
+// object scope (used for ownership), and the concrete object ID(s) found.
+type bolaCandidate struct {
+	endpoint string
+	scope    string
+	ids      []string
+}
+
+// bolaTargets resolves ALL BOLA detection targets for a request: the
+// path-embedded object (as before) plus any query-string parameter whose
+// single value looks like an object identifier.
 //
-// The object scope omits the method on purpose: order 1001 is the same object
-// whether it is read (GET), modified (PUT/PATCH) or deleted (DELETE), so
-// ownership learned from a read must also protect it against a cross-owner write.
+// The path target's object scope omits the method on purpose: order 1001 is
+// the same object whether it is read (GET), modified (PUT/PATCH) or deleted
+// (DELETE), so ownership learned from a read must also protect it against a
+// cross-owner write.
 //
-// Primary case: the normalized template already has "{id}" segments (numeric,
-// UUID, hash, opaque) — those are the object IDs.
+// Path primary case: the normalized template already has "{id}" segments
+// (numeric, UUID, hash, opaque) — those are the object IDs.
 //
-// Fallback: when no segment normalizes to "{id}" (e.g. string slugs like
+// Path fallback: when no segment normalizes to "{id}" (e.g. string slugs like
 // /api/members/alice), the terminal segment of a collection is treated as the
-// object ID under a synthesized "parent/{id}" template. Without this, enumerating
-// string identifiers evades BOLA entirely, since each value would otherwise look
-// like a distinct static endpoint. False positives are bounded by enum_threshold
-// (default 50), the per-consumer adaptive baseline, and the allowlist.
-func bolaTarget(method, rawPath string) (endpoint, scope string, ids []string) {
+// object ID under a synthesized "parent/{id}" template. Without this,
+// enumerating string identifiers evades BOLA entirely, since each value would
+// otherwise look like a distinct static endpoint.
+//
+// Query-string case (VULN-M02 fix): a REST endpoint that keys object access
+// off a query parameter (?order_id=1002, ?user=42) rather than a path segment
+// used to be a complete blind spot — the value never appears in the path
+// template extractObjectIDs looks at, so it was never tracked, never counted
+// toward the enumeration threshold, and never protected by ownership checks.
+// Each qualifying parameter (single-valued, numeric- or UUID-shaped — bounding
+// false positives from free-text search/filter params) gets its own
+// endpoint/scope keyed by parameter name, so distinct parameters never share
+// one enumeration counter and a path-target and a query-target on the same
+// request are tracked independently.
+//
+// False positives across all targets are bounded by enum_threshold (default
+// 50), the per-consumer adaptive baseline, and the allowlist.
+func bolaTargets(method, rawPath string, query url.Values) []bolaCandidate {
+	var out []bolaCandidate
+
 	tmpl := discovery.NormalizePath(rawPath)
 	if got := extractObjectIDs(rawPath, tmpl); len(got) > 0 {
-		return method + " " + tmpl, tmpl, got
-	}
-	segs := strings.Split(strings.Trim(rawPath, "/"), "/")
-	if len(segs) >= 2 {
-		last := segs[len(segs)-1]
-		if last != "" {
-			parent := discovery.NormalizePath("/" + strings.Join(segs[:len(segs)-1], "/"))
-			if parent == "/" {
-				parent = ""
+		out = append(out, bolaCandidate{endpoint: method + " " + tmpl, scope: tmpl, ids: got})
+	} else {
+		segs := strings.Split(strings.Trim(rawPath, "/"), "/")
+		if len(segs) >= 2 {
+			last := segs[len(segs)-1]
+			if last != "" {
+				parent := discovery.NormalizePath("/" + strings.Join(segs[:len(segs)-1], "/"))
+				if parent == "/" {
+					parent = ""
+				}
+				scope := parent + "/{id}"
+				out = append(out, bolaCandidate{endpoint: method + " " + scope, scope: scope, ids: []string{last}})
 			}
-			scope = parent + "/{id}"
-			return method + " " + scope, scope, []string{last}
 		}
 	}
-	return "", "", nil
+
+	for name, vals := range query {
+		if len(vals) != 1 || !looksLikeObjectID(vals[0]) {
+			continue
+		}
+		qScope := tmpl + "?" + name + "={id}"
+		out = append(out, bolaCandidate{endpoint: method + " " + qScope, scope: qScope, ids: []string{vals[0]}})
+	}
+
+	return out
+}
+
+// objectIDNumericRE/objectIDUUIDRE bound looksLikeObjectID to values that are
+// plausibly database/opaque identifiers, so a free-text search or filter
+// query parameter (?q=..., ?name=...) is not mistaken for object enumeration.
+var (
+	objectIDNumericRE = regexp.MustCompile(`^[0-9]{1,32}$`)
+	objectIDUUIDRE    = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+)
+
+// looksLikeObjectID reports whether a query-parameter value is shaped like an
+// object identifier (a decimal integer or a UUID) rather than free text.
+func looksLikeObjectID(v string) bool {
+	if v == "" {
+		return false
+	}
+	return objectIDNumericRE.MatchString(v) || objectIDUUIDRE.MatchString(v)
 }
 
 // extractObjectIDs returns the concrete values of the dynamic ("{id}") segments

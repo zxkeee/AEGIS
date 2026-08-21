@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"regexp"
@@ -981,6 +982,40 @@ func validateAlerting(cfg GatewayConfig) error {
 	return nil
 }
 
+// looksLowEntropy reports whether a secret is unlikely to be a strong random
+// value even though it passes the length floor and matches no literal in
+// insecurePlaceholders. The literal-list check alone lets a long-but-predictable
+// value through — e.g. "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" or
+// "abcdefghijklmnopqrstuvwxyzabcdef" (both 32 chars) — because it can only ever
+// catch values someone thought to enumerate in advance.
+//
+// Two independent signals, either of which flags the secret:
+//   - Fewer than 8 distinct characters: a real random hex/base64/alphanumeric
+//     secret of 32+ characters draws from a wide alphabet; this few distinct
+//     characters is a strong repetition signal on its own.
+//   - Shannon entropy below 3 bits/character: random hex sits around 4
+//     bits/char, base64 around 6; patterned or low-diversity strings (runs,
+//     short repeating cycles, mostly-one-character values) sit well below 3.
+func looksLowEntropy(s string) bool {
+	if s == "" {
+		return true
+	}
+	counts := make(map[rune]int)
+	for _, r := range s {
+		counts[r]++
+	}
+	if len(counts) < 8 {
+		return true
+	}
+	var entropy float64
+	n := float64(len([]rune(s)))
+	for _, c := range counts {
+		p := float64(c) / n
+		entropy -= p * math.Log2(p)
+	}
+	return entropy < 3.0
+}
+
 func validateAdminSecret(cfg GatewayConfig) error {
 	if !cfg.AdminAuth {
 		return nil
@@ -995,6 +1030,10 @@ func validateAdminSecret(cfg GatewayConfig) error {
 	}
 	if len(cfg.AdminSecret) < 32 {
 		return errors.New("admin_secret is too short; minimum 32 characters required")
+	}
+	if looksLowEntropy(cfg.AdminSecret) {
+		return errors.New("admin_secret does not look random (too few distinct characters or a repeating pattern); " +
+			"set AEGIS_ADMIN_SECRET to a strong random secret (e.g. openssl rand -hex 32)")
 	}
 	return nil
 }
@@ -1035,6 +1074,10 @@ func validateJWT(cfg GatewayConfig) error {
 	if len(cfg.Security.Auth.Secret) < 32 {
 		return errors.New("auth.secret is too short; minimum 32 characters required for HMAC-SHA256")
 	}
+	if looksLowEntropy(cfg.Security.Auth.Secret) {
+		return errors.New("auth.secret does not look random (too few distinct characters or a repeating pattern); " +
+			"set AEGIS_JWT_SECRET to a strong random value (e.g. openssl rand -hex 32)")
+	}
 	return nil
 }
 
@@ -1054,6 +1097,10 @@ func validatePropagationSecret(cfg GatewayConfig) error {
 	}
 	if len(secret) < 32 {
 		return errors.New("auth.propagation_secret is too short; minimum 32 characters required for HMAC-SHA256")
+	}
+	if looksLowEntropy(secret) {
+		return errors.New("auth.propagation_secret does not look random (too few distinct characters or a repeating pattern); " +
+			"set AEGIS_PROPAGATION_SECRET to a strong random value (e.g. openssl rand -hex 32)")
 	}
 	return nil
 }

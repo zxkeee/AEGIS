@@ -129,22 +129,31 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 		# SQL Injection. REQUEST_HEADERS is inspected too (minus Authorization, a
 		# base64 JWT, and Cookie, already covered by REQUEST_COOKIES) so a payload
 		# in an arbitrary header like X-Search cannot reach a header-trusting backend.
-		SecRule ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_BODY|REQUEST_HEADERS|!REQUEST_HEADERS:Authorization|!REQUEST_HEADERS:Cookie "@rx (?i)(?:union\s+select|select\s+(?:@@|from|count)|(?:insert|update|delete)\s+(?:into|from|set)|drop\s+(?:table|database)|alter\s+table|exec\s*\()" \
-			"id:10001,phase:2,deny,status:403,log,msg:'SQL Injection',tag:'sqli',severity:CRITICAL"
+		# REQUEST_URI is inspected too: ARGS covers only query-string/body params,
+		# so a REST path segment (/api/orders/{payload}) was otherwise completely
+		# invisible to every rule below — a payload placed in the path bypassed
+		# SQLi/XSS/RCE/Log4Shell detection entirely despite matching the pattern.
+		# t:urlDecodeUni is required for REQUEST_URI specifically: unlike ARGS (already
+		# decoded by Coraza's query/body parser), REQUEST_URI holds the raw,
+		# percent-encoded request target, so an apostrophe/space/angle-bracket in a
+		# path segment arrives as %27/%20/%3C and a plain-text pattern silently never
+		# matches it without decoding first.
+		SecRule ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_BODY|REQUEST_HEADERS|REQUEST_URI|!REQUEST_HEADERS:Authorization|!REQUEST_HEADERS:Cookie "@rx (?i)(?:union\s+select|select\s+(?:@@|from|count)|(?:insert|update|delete)\s+(?:into|from|set)|drop\s+(?:table|database)|alter\s+table|exec\s*\()" \
+			"id:10001,phase:2,t:urlDecodeUni,deny,status:403,log,msg:'SQL Injection',tag:'sqli',severity:CRITICAL"
 
-		SecRule ARGS|REQUEST_BODY "@rx (?i)(?:'\s*(?:or|and|union|select|insert|delete|drop)\s|--\s*$|/\*.*?\*/)" \
-			"id:10002,phase:2,deny,status:403,log,msg:'SQL Injection (Boolean)',tag:'sqli',severity:CRITICAL"
+		SecRule ARGS|REQUEST_BODY|REQUEST_URI "@rx (?i)(?:'\s*(?:or|and|union|select|insert|delete|drop)\s|--\s*$|/\*.*?\*/)" \
+			"id:10002,phase:2,t:urlDecodeUni,deny,status:403,log,msg:'SQL Injection (Boolean)',tag:'sqli',severity:CRITICAL"
 
 		# XSS
-		SecRule ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_BODY|REQUEST_HEADERS|!REQUEST_HEADERS:Authorization|!REQUEST_HEADERS:Cookie "@rx (?i)(?:<script|javascript:|on(?:error|load|click|mouseover)\s*=)" \
-			"id:10003,phase:2,deny,status:403,log,msg:'XSS Attack',tag:'xss',severity:CRITICAL"
+		SecRule ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_BODY|REQUEST_HEADERS|REQUEST_URI|!REQUEST_HEADERS:Authorization|!REQUEST_HEADERS:Cookie "@rx (?i)(?:<script|javascript:|on(?:error|load|click|mouseover)\s*=)" \
+			"id:10003,phase:2,t:urlDecodeUni,deny,status:403,log,msg:'XSS Attack',tag:'xss',severity:CRITICAL"
 
-		SecRule ARGS|REQUEST_BODY "@rx (?i)(?:eval\s*\(|document\.(?:cookie|write|location)|\.innerHTML\s*=|alert\s*\()" \
-			"id:10004,phase:2,deny,status:403,log,msg:'XSS (DOM)',tag:'xss',severity:CRITICAL"
+		SecRule ARGS|REQUEST_BODY|REQUEST_URI "@rx (?i)(?:eval\s*\(|document\.(?:cookie|write|location)|\.innerHTML\s*=|alert\s*\()" \
+			"id:10004,phase:2,t:urlDecodeUni,deny,status:403,log,msg:'XSS (DOM)',tag:'xss',severity:CRITICAL"
 
 		# Command Injection
-		SecRule ARGS|REQUEST_BODY|REQUEST_HEADERS|!REQUEST_HEADERS:Authorization|!REQUEST_HEADERS:Cookie "@rx (?i)(?:;\s*(?:ls|cat|id|whoami|wget|curl|bash|sh|python|perl|php)\b)" \
-			"id:10005,phase:2,deny,status:403,log,msg:'Command Injection',tag:'rce',severity:CRITICAL"
+		SecRule ARGS|REQUEST_BODY|REQUEST_HEADERS|REQUEST_URI|!REQUEST_HEADERS:Authorization|!REQUEST_HEADERS:Cookie "@rx (?i)(?:;\s*(?:ls|cat|id|whoami|wget|curl|bash|sh|python|perl|php)\b)" \
+			"id:10005,phase:2,t:urlDecodeUni,deny,status:403,log,msg:'Command Injection',tag:'rce',severity:CRITICAL"
 
 		# Path Traversal / LFI
 		SecRule ARGS|REQUEST_URI|REQUEST_BODY "@rx (?:(?:\.\./){2,}|/etc/(?:passwd|shadow)|/proc/self)" \
@@ -167,12 +176,19 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 			"id:10010,phase:1,deny,status:403,log,msg:'Scanner Detected',tag:'scanner',severity:WARNING"
 
 		# Log4Shell / JNDI
-		SecRule ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_HEADERS|REQUEST_BODY "@rx (?i)(?:\$\{(?:jndi|lower|upper|env|sys|java):)" \
-			"id:10011,phase:2,deny,status:403,log,msg:'Log4Shell/JNDI',tag:'rce',severity:CRITICAL"
+		SecRule ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_HEADERS|REQUEST_BODY|REQUEST_URI "@rx (?i)(?:\$\{(?:jndi|lower|upper|env|sys|java):)" \
+			"id:10011,phase:2,t:urlDecodeUni,deny,status:403,log,msg:'Log4Shell/JNDI',tag:'rce',severity:CRITICAL"
 
-		# Request Smuggling
+		# Request Smuggling. Catches both the classic duplicate-token smuggling
+		# signature AND a request that carries Content-Length together with
+		# Transfer-Encoding at all — the CL.TE/TE.CL desync pattern that matters
+		# against a downstream with different framing precedence than Go's own
+		# strict net/http parser.
 		SecRule REQUEST_HEADERS:Transfer-Encoding "@rx (?i)(?:chunked.*,.*chunked)" \
 			"id:10012,phase:1,deny,status:400,log,msg:'Request Smuggling',tag:'protocol',severity:CRITICAL"
+
+		SecRule REQUEST_HEADERS:Transfer-Encoding "@rx ." "chain,id:10015,phase:1,deny,status:400,log,msg:'Request Smuggling (CL.TE)',tag:'protocol',severity:CRITICAL"
+			SecRule REQUEST_HEADERS:Content-Length "@rx ."
 	`
 
 	// Observe/pilot mode: run every rule but interrupt nothing. The built-in
@@ -198,7 +214,7 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 		})
 	} else {
 		log.Info("waf: Coraza engine ready (built-in rules)", map[string]any{
-			"rules":      12,
+			"rules":      13,
 			"block_mode": cfg.BlockMode,
 		})
 	}

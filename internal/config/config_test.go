@@ -188,9 +188,40 @@ func TestValidate_RejectsShortPropagationSecret(t *testing.T) {
 
 func TestValidate_AcceptsStrongPropagationSecret(t *testing.T) {
 	c := validBase()
-	c.Security.Auth.PropagationSecret = strings.Repeat("a", 32)
+	// A genuinely random-looking 32+ char secret, not strings.Repeat("a", 32) —
+	// that fixture used to pass only because Validate checked length and a
+	// literal placeholder list, not entropy; it is exactly the low-entropy
+	// shape looksLowEntropy now rejects (see TestValidate_RejectsLowEntropySecret).
+	c.Security.Auth.PropagationSecret = "9f3a7c1e5b8d2046af71c3e9b05d8f42"
 	if err := Validate(c); err != nil {
 		t.Fatalf("strong propagation_secret should be accepted, got %v", err)
+	}
+}
+
+// TestValidate_RejectsLowEntropySecret is a regression test for the secret-scan
+// finding that placeholder rejection was exact-string-match only: a value long
+// enough to pass the 32-char floor and absent from insecurePlaceholders — a
+// run of one character, or a short repeating cycle — used to be accepted.
+func TestValidate_RejectsLowEntropySecret(t *testing.T) {
+	cases := map[string]string{
+		"admin_secret":       strings.Repeat("a", 32),
+		"auth.secret":        strings.Repeat("ab", 16), // short repeating cycle
+		"propagation_secret": strings.Repeat("x", 40),
+	}
+	for name, secret := range cases {
+		c := validBase()
+		switch name {
+		case "admin_secret":
+			c.AdminSecret = secret
+		case "auth.secret":
+			c.Security.Auth.Enabled = true
+			c.Security.Auth.Secret = secret
+		case "propagation_secret":
+			c.Security.Auth.PropagationSecret = secret
+		}
+		if err := Validate(c); err == nil {
+			t.Errorf("%s = %q: low-entropy secret should be rejected, got nil error", name, secret)
+		}
 	}
 }
 

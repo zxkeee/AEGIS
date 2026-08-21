@@ -4,7 +4,11 @@
 FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb AS webbuild
 WORKDIR /site
 COPY v3/package.json v3/package-lock.json* ./
-RUN npm install
+# npm ci (not npm install): fails closed on any lockfile/manifest mismatch and
+# never rewrites package-lock.json, so the image is built from exactly the
+# versions the lockfile pins instead of silently drifting to fresher
+# semver-range-compatible releases on every rebuild.
+RUN npm ci
 COPY v3/ ./
 RUN npm run build
 

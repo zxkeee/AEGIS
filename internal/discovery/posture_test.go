@@ -95,3 +95,48 @@ func TestRateLimitFor_RouteOverrideReplacesGlobal(t *testing.T) {
 		t.Fatal("/off: route disabled rate limit, want on=false")
 	}
 }
+
+// TestMatchRoute_SegmentBoundary is a regression test for a critical bypass:
+// matchRoute used to compare paths with a raw strings.HasPrefix, so a
+// permissive route like "/api/public" (no trailing slash) would incorrectly
+// "cover" an unrelated, longer path like "/api/publicdata/42" that merely
+// starts with the same characters — silently handing it the permissive
+// route's auth/WAF/DLP/rate-limit posture instead of the global (protected)
+// defaults. matchRoute must use config.PathHasPrefix, which requires a "/"
+// boundary, exactly like tenant.go and jwt.go's Exclude matching already do.
+func TestMatchRoute_SegmentBoundary(t *testing.T) {
+	cfg := config.GatewayConfig{
+		Security: config.SecurityConfig{
+			Auth: config.AuthConfig{Enabled: true},
+			WAF:  config.WAFConfig{Enabled: true},
+		},
+		Routes: []config.RouteConfig{
+			{Path: "/api/public", RequireAuth: boolPtr(false), WAF: boolPtr(false)},
+		},
+	}
+	e := NewPostureEngine(cfg)
+
+	// Exact match and true sub-path: the override legitimately applies.
+	for _, p := range []string{"/api/public", "/api/public/info"} {
+		c, matched := e.ControlsFor(p)
+		if !matched {
+			t.Fatalf("ControlsFor(%q): expected a route match", p)
+		}
+		if c.AuthRequired || c.WAF {
+			t.Errorf("ControlsFor(%q) = %+v, want AuthRequired=false WAF=false (route override)", p, c)
+		}
+	}
+
+	// Adjacent path sharing only a string prefix, no "/" boundary: must NOT
+	// inherit /api/public's override. It has no dedicated route, so it falls
+	// through to the global (protected) defaults.
+	for _, p := range []string{"/api/publicdata/42", "/api/publicity"} {
+		c, matched := e.ControlsFor(p)
+		if matched {
+			t.Errorf("ControlsFor(%q): matched /api/public by raw prefix (segment-boundary regression); want no route match", p)
+		}
+		if !c.AuthRequired || !c.WAF {
+			t.Errorf("ControlsFor(%q) = %+v, want global defaults AuthRequired=true WAF=true — /api/public leaked its override", p, c)
+		}
+	}
+}
