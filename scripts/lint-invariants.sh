@@ -82,6 +82,77 @@ else
   done < <(grep -oE 'X-Gateway-[A-Za-z-]+' "$JWT" | sort -u)
 fi
 
+# ── Invariant 3: every AEGIS_*-sourced secret field is force-blanked in the
+#    Helm ConfigMap ───────────────────────────────────────────────────────────
+#
+# charts/aegis/templates/configmap.yaml renders .Values.gateway verbatim into
+# a plaintext, RBAC-only-protected ConfigMap. Any field also reachable via an
+# AEGIS_* env var (internal/config's applyEnvOverrides — Secret-backed,
+# authoritative at runtime) must be force-blanked there: an operator who sets
+# the real value directly in values.yaml (the natural shape) instead of via
+# secrets.* would otherwise get it persisted in cleartext, readable by anyone
+# with ConfigMap RBAC. This shipped as exactly this bug twice: first for
+# forensic_dsn/redis.password, then admin_secret/security.auth.secret were
+# found missed on the identical fix (2026-08-22 audit) — plus four more of
+# the same env-override family (propagation_secret, redis.sentinel_password,
+# oidc.client_secret, alerting.webhook_url) that had never been covered at
+# all. This check derives the full list from applyEnvOverrides itself (rather
+# than a hand-maintained copy) so a NEW AEGIS_* field added later is caught
+# automatically if the matching blank isn't added to configmap.yaml in the
+# same change.
+echo "invariant: every AEGIS_*-sourced secret field is force-blanked in the Helm ConfigMap"
+CFG=internal/config/config.go
+CM=charts/aegis/templates/configmap.yaml
+# Map each AEGIS_* env var's assigned Go field to the YAML key it ultimately
+# serializes to (the field's own `yaml:"..."` tag) — e.g. cfg.OIDC.ClientSecret
+# assigns to a field named ClientSecret; find ClientSecret's yaml tag.
+while IFS= read -r goField; do
+  yamlKey=$(grep -oE "\\b${goField}\\b +\\S+ +\`yaml:\"[a-z0-9_]+\"" "$CFG" | grep -oE '"[a-z0-9_]+"' | tr -d '"' | head -1)
+  if [ -z "$yamlKey" ]; then
+    echo "ERROR: could not resolve the yaml tag for field $goField (assigned from an AEGIS_* env var in $CFG) — add it manually to this invariant"
+    fail=1
+    continue
+  fi
+  # configmap.yaml must contain a `set ... "<yamlKey>" ""` blank for it.
+  if ! grep -q "\"$yamlKey\" \"\"" "$CM"; then
+    echo "ERROR: $CM does not force-blank \"$yamlKey\" (Go field $goField, sourced from an AEGIS_* env var) — an operator setting it directly in values.yaml would leak it into the plaintext ConfigMap"
+    fail=1
+  fi
+done < <(grep -oE 'cfg\.[A-Za-z.]+ = v$' "$CFG" | sed -E 's/ = v$//; s/^.*\.//')
+
+# ── Invariant 4: every payload-inspection WAF rule covers REQUEST_URI (no
+#    path blindness) ──────────────────────────────────────────────────────────
+#
+# ARGS only covers query-string/body parameters — a REST path segment
+# (/api/orders/{payload}) is invisible to a rule that omits REQUEST_URI, so a
+# payload placed in the path bypasses detection entirely despite matching the
+# pattern everywhere else. This shipped as exactly this bug twice on the same
+# ruleset: once across SQLi/XSS/RCE/Log4Shell (fixed together), then again on
+# the SSRF rule (id:10007), which was missed in that same fix (2026-08-22
+# audit). Every built-in rule whose targets include ARGS or REQUEST_BODY —
+# i.e. it inspects request *content* for an injected payload, not a protocol/
+# header property — must also inspect REQUEST_URI. Exempt: XXE (id:10008, a
+# DTD only ever appears in the body, never the path), invalid-method/scanner
+# detection (id:10009/10010, protocol and User-Agent checks, not payload
+# targets), and request-smuggling (id:10012/10015, header-only by definition).
+echo "invariant: every ARGS/REQUEST_BODY WAF rule also covers REQUEST_URI"
+WAF=internal/middleware/waf.go
+exempt_ids='10008|10009|10010|10012|10015'
+hits=$(perl -0777 -ne '
+  my $exempt = qr/^(?:'"$exempt_ids"')$/;
+  while (/SecRule\s+(\S+)\s+"\@rx[^"]*"\s*\\\s*\n\s*"id:(\d+)/gs) {
+    my ($targets, $id) = ($1, $2);
+    next if $id =~ $exempt;
+    next unless $targets =~ /\bARGS\b|\bREQUEST_BODY\b/;
+    print "id:$id targets=$targets\n" unless $targets =~ /\bREQUEST_URI\b/;
+  }
+' "$WAF")
+if [ -n "$hits" ]; then
+  echo "ERROR: WAF rule inspects ARGS/REQUEST_BODY but not REQUEST_URI — a path-embedded payload silently bypasses it:"
+  echo "$hits"
+  fail=1
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo
   echo "lint-invariants: FAILED — a security invariant regressed (see above)."

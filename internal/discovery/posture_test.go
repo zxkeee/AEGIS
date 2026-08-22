@@ -140,3 +140,45 @@ func TestMatchRoute_SegmentBoundary(t *testing.T) {
 		}
 	}
 }
+
+// TestMatchRoute_CaseInsensitive is a regression test for a residual variant
+// of the same route-prefix bypass TestMatchRoute_SegmentBoundary covers: a
+// backend that routes case-insensitively lets a case-varied request path
+// ("/Admin", "/ADMIN") slip past a route override keyed on "/admin",
+// silently falling back to the (weaker) global posture instead of the
+// route's own. matchRoute/authExcluded must lower-case both sides of the
+// comparison, exactly like abuse.go's BFLA check already does.
+func TestMatchRoute_CaseInsensitive(t *testing.T) {
+	cfg := config.GatewayConfig{
+		Security: config.SecurityConfig{
+			Auth: config.AuthConfig{Enabled: false},
+			WAF:  config.WAFConfig{Enabled: true},
+		},
+		Routes: []config.RouteConfig{
+			{Path: "/Admin", RequireAuth: boolPtr(true), WAF: boolPtr(true)},
+		},
+	}
+	e := NewPostureEngine(cfg)
+
+	for _, p := range []string{"/Admin/users", "/admin/users", "/ADMIN/users"} {
+		c, matched := e.ControlsFor(p)
+		if !matched {
+			t.Fatalf("ControlsFor(%q): expected a route match regardless of case", p)
+		}
+		if !c.AuthRequired || !c.WAF {
+			t.Errorf("ControlsFor(%q) = %+v, want AuthRequired=true WAF=true (route override) — case variation defeated the override", p, c)
+		}
+	}
+
+	// authExcluded must be equally case-insensitive.
+	cfg2 := config.GatewayConfig{
+		Security: config.SecurityConfig{Auth: config.AuthConfig{Enabled: true, Exclude: []string{"/public"}}},
+	}
+	e2 := NewPostureEngine(cfg2)
+	for _, p := range []string{"/public/info", "/Public/info", "/PUBLIC/info"} {
+		c, _ := e2.ControlsFor(p)
+		if c.AuthRequired {
+			t.Errorf("ControlsFor(%q) = %+v, want AuthRequired=false (exclude match) — case variation defeated the exclude", p, c)
+		}
+	}
+}

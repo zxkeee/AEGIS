@@ -3,6 +3,7 @@ package middleware
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -123,7 +124,7 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 			// (/orders/{id}) and query-string IDs (?order_id={id}): the latter used
 			// to be a complete blind spot, since the value never appears in the path
 			// template extractObjectIDs looks at.
-			candidates := bolaTargets(r.Method, r.URL.Path, r.URL.Query())
+			candidates := bolaTargets(r.Method, r.URL.Path, r.URL.Query(), bodyObjectIDs(r))
 
 			blocked := false
 			for _, cand := range candidates {
@@ -510,15 +511,27 @@ type bolaCandidate struct {
 // used to be a complete blind spot — the value never appears in the path
 // template extractObjectIDs looks at, so it was never tracked, never counted
 // toward the enumeration threshold, and never protected by ownership checks.
-// Each qualifying parameter (single-valued, numeric- or UUID-shaped — bounding
-// false positives from free-text search/filter params) gets its own
-// endpoint/scope keyed by parameter name, so distinct parameters never share
-// one enumeration counter and a path-target and a query-target on the same
-// request are tracked independently.
+// Each qualifying parameter gets its own endpoint/scope keyed by parameter
+// name, so distinct parameters never share one enumeration counter and a
+// path-target and a query-target on the same request are tracked
+// independently. A parameter's values are split on comma AND every repeated
+// occurrence is inspected individually (?id=1&id=2&... and ?ids=1,2,3 both
+// track each qualifying value) — the original fix only accepted a single
+// scalar value and silently dropped the whole parameter otherwise, which let
+// an attacker batch an entire enumeration sweep into one request and evade
+// counting entirely while the identical sweep split across N requests would
+// have been caught.
+//
+// Body case: an endpoint that keys object access off a JSON body field
+// (PATCH /orders {"order_id":1002}, or a batch body {"ids":[1,2,3,...]}) was
+// a complete blind spot too — bodyObjectIDs (called by the middleware before
+// this) extracts id-shaped values from top-level/"data"-wrapped fields whose
+// name looks like an object reference, and each field is tracked as its own
+// endpoint/scope the same way a query parameter is.
 //
 // False positives across all targets are bounded by enum_threshold (default
 // 50), the per-consumer adaptive baseline, and the allowlist.
-func bolaTargets(method, rawPath string, query url.Values) []bolaCandidate {
+func bolaTargets(method, rawPath string, query url.Values, bodyIDs map[string][]string) []bolaCandidate {
 	var out []bolaCandidate
 
 	tmpl := discovery.NormalizePath(rawPath)
@@ -540,14 +553,138 @@ func bolaTargets(method, rawPath string, query url.Values) []bolaCandidate {
 	}
 
 	for name, vals := range query {
-		if len(vals) != 1 || !looksLikeObjectID(vals[0]) {
+		var ids []string
+		for _, v := range vals {
+			for _, part := range strings.Split(v, ",") {
+				if part = strings.TrimSpace(part); looksLikeObjectID(part) {
+					ids = append(ids, part)
+				}
+			}
+		}
+		if len(ids) == 0 {
 			continue
 		}
 		qScope := tmpl + "?" + name + "={id}"
-		out = append(out, bolaCandidate{endpoint: method + " " + qScope, scope: qScope, ids: []string{vals[0]}})
+		out = append(out, bolaCandidate{endpoint: method + " " + qScope, scope: qScope, ids: ids})
+	}
+
+	for name, ids := range bodyIDs {
+		if len(ids) == 0 {
+			continue
+		}
+		bScope := tmpl + ":body." + name
+		out = append(out, bolaCandidate{endpoint: method + " " + bScope, scope: bScope, ids: ids})
 	}
 
 	return out
+}
+
+// bodyIDCap bounds how much of a JSON request body is buffered for BOLA
+// object-ID extraction — same DoS-safety rationale as ownerBodyCap.
+const bodyIDCap = 64 * 1024
+
+// bodyObjectIDs peeks up to bodyIDCap bytes of a JSON request body and
+// returns, per field name, the id-shaped values of every top-level (or
+// "data"-wrapped) field whose name looks like an object reference ("id", or
+// ending in "_id"/"Id"). The body is rewound afterward (head + untouched
+// remainder) so WAF/DLP/the proxy still see the complete, unconsumed stream —
+// mirrors waf.go's screenXXE peek-and-rewind pattern. Returns nil for
+// non-JSON, empty, or unparsable bodies.
+func bodyObjectIDs(r *http.Request) map[string][]string {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil
+	}
+	ct := r.Header.Get("Content-Type")
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = ct[:i]
+	}
+	if !strings.EqualFold(strings.TrimSpace(ct), "application/json") {
+		return nil
+	}
+
+	head := make([]byte, bodyIDCap)
+	n, _ := io.ReadFull(r.Body, head)
+	head = head[:n]
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(head), r.Body), r.Body}
+	if n == 0 {
+		return nil
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(head))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
+		return nil
+	}
+
+	out := make(map[string][]string)
+	collectIDFields(m, out)
+	if d, ok := m["data"].(map[string]any); ok {
+		collectIDFields(d, out)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// collectIDFields scans a decoded JSON object's top-level fields for an
+// id-shaped key (an exact "id", or a name ending "_id"/"Id" — e.g. order_id,
+// userId) and appends every id-shaped value found under it (a scalar, or
+// each qualifying element of an array — covering a batch body like
+// {"ids":[1,2,3]}) into out, keyed by field name.
+func collectIDFields(m map[string]any, out map[string][]string) {
+	for k, v := range m {
+		if !looksLikeIDField(k) {
+			continue
+		}
+		out[k] = append(out[k], idShapedValues(v)...)
+	}
+}
+
+// looksLikeIDField reports whether a JSON field name looks like an object
+// reference: exactly "id"/"ids" (any case), or ending in "_id"/"_ids" or the
+// camelCase "Id"/"Ids" suffix (orderId, userIds) — the plural form covers a
+// batch-ID body ({"ids":[1,2,3]}). Deliberately narrower than a bare
+// HasSuffix(k, "id") check, which would also match ordinary words like
+// "valid" or "paid" — false positives are still bounded further by
+// idShapedValues only accepting numeric/UUID-shaped values.
+func looksLikeIDField(k string) bool {
+	lk := strings.ToLower(k)
+	if lk == "id" || lk == "ids" {
+		return true
+	}
+	if strings.HasSuffix(k, "Id") || strings.HasSuffix(k, "ID") ||
+		strings.HasSuffix(k, "Ids") || strings.HasSuffix(k, "IDs") {
+		return true
+	}
+	return strings.HasSuffix(lk, "_id") || strings.HasSuffix(lk, "_ids")
+}
+
+// idShapedValues returns the id-shaped values found in v: the value itself
+// if it is a qualifying scalar (string or JSON number), or the qualifying
+// elements of v if it is an array (batch-ID bodies like {"ids":[1,2,3]}).
+func idShapedValues(v any) []string {
+	switch t := v.(type) {
+	case string:
+		if looksLikeObjectID(t) {
+			return []string{t}
+		}
+	case json.Number:
+		if s := t.String(); looksLikeObjectID(s) {
+			return []string{s}
+		}
+	case []any:
+		var out []string
+		for _, e := range t {
+			out = append(out, idShapedValues(e)...)
+		}
+		return out
+	}
+	return nil
 }
 
 // objectIDNumericRE/objectIDUUIDRE bound looksLikeObjectID to values that are

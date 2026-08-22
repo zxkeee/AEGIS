@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"sort"
+	"strings"
 
 	"api-gateway/internal/config"
 )
@@ -55,9 +56,17 @@ func NewPostureEngine(cfg config.GatewayConfig) *PostureEngine {
 // resolver was the one place it was missed, and it feeds RouteGate for every
 // route-overridable control (ControlsFor / RateLimitFor below), so the gap
 // silently disabled those controls for any such adjacent path.
+//
+// Matching is case-insensitive (both path and route.Path are lowercased
+// before comparison) for the same reason middleware/abuse.go's BFLA check
+// already is: a backend that routes case-insensitively would otherwise let
+// "/Admin" or "/ADMIN" slip past a "/admin" route override and silently fall
+// back to the weaker global posture — a residual variant of the same
+// route-prefix bypass this resolver was already fixed for.
 func (e *PostureEngine) matchRoute(path string) *config.RouteConfig {
+	lpath := strings.ToLower(path)
 	for i := range e.routes {
-		if config.PathHasPrefix(path, e.routes[i].Path) {
+		if config.PathHasPrefix(lpath, strings.ToLower(e.routes[i].Path)) {
 			return &e.routes[i]
 		}
 	}
@@ -112,9 +121,12 @@ func (e *PostureEngine) RateLimitFor(path string) (cfg config.RateLimitConfig, r
 	return g, "", g.Enabled
 }
 
+// authExcluded is case-insensitive for the same reason matchRoute is: an
+// operator's exclude prefix must not be defeatable by a case-varied path.
 func (e *PostureEngine) authExcluded(path string) bool {
+	lpath := strings.ToLower(path)
 	for _, ex := range e.cfg.Security.Auth.Exclude {
-		if config.PathHasPrefix(path, ex) {
+		if config.PathHasPrefix(lpath, strings.ToLower(ex)) {
 			return true
 		}
 	}

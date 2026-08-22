@@ -159,9 +159,13 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 		SecRule ARGS|REQUEST_URI|REQUEST_BODY "@rx (?:(?:\.\./){2,}|/etc/(?:passwd|shadow)|/proc/self)" \
 			"id:10006,phase:2,deny,status:403,log,msg:'Path Traversal',tag:'lfi',severity:CRITICAL"
 
-		# SSRF
-		SecRule ARGS|REQUEST_BODY "@rx (?i)(?:(?:https?|ftp|file)://(?:127\.|10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.|localhost|\[::1\]|169\.254\.))" \
-			"id:10007,phase:2,deny,status:403,log,msg:'SSRF Attempt',tag:'ssrf',severity:CRITICAL"
+		# SSRF. REQUEST_URI is inspected too (t:urlDecodeUni, same reasoning as
+		# 10001-10005/10011): a path-embedded target (/api/proxy/http://169.254.169.254/...)
+		# was otherwise invisible to this rule despite matching the pattern, while the
+		# identical payload in a query string or body was already caught — a sibling
+		# instance of the "path blindness" bug class this rule set was fixed for.
+		SecRule ARGS|REQUEST_BODY|REQUEST_URI "@rx (?i)(?:(?:https?|ftp|file)://(?:127\.|10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.|localhost|\[::1\]|169\.254\.))" \
+			"id:10007,phase:2,t:urlDecodeUni,deny,status:403,log,msg:'SSRF Attempt',tag:'ssrf',severity:CRITICAL"
 
 		# XXE
 		SecRule REQUEST_BODY "@rx (?i)(?:<!(?:DOCTYPE|ENTITY)\s.*(?:SYSTEM|PUBLIC)\s)" \
