@@ -1,13 +1,14 @@
-import { Reveal, SectionHeader, Badge } from '../lib/ui.jsx'
+import { Reveal, SectionHeader, Badge, TextLink } from '../lib/ui.jsx'
 
 const DONE = [
   ['The full control chain', 'WAF, DLP, JWT identity, BOLA detection, passive discovery, multi-tenancy.'],
+  ['Schema enforcement', 'Rejects undocumented body fields against your OpenAPI contract — closes mass assignment.'],
   ['Adversarial testing', 'WAF-evasion fuzzing and dynamic scans against a running instance.'],
   ['Fails safe by design', 'Every control has a documented fail-open or fail-closed choice.'],
 ]
 const OPEN = [
   ['An external pentest', 'An independent audit before any production claim.'],
-  ['Deeper attack detection', 'Mass assignment, injection patterns, auth-velocity anomalies.'],
+  ['Deeper attack detection', 'Injection patterns, auth-velocity anomalies.'],
   ['Real deployments', 'On live traffic, which is where a design partner comes in.'],
 ]
 
@@ -40,6 +41,11 @@ export default function Status() {
         <div className="mt-10 grid gap-10 md:grid-cols-2 md:gap-14">
           <List label="Shipped" items={DONE} />
           <List label="Open" items={OPEN} />
+        </div>
+      </Reveal>
+      <Reveal delay={0.14}>
+        <div className="mt-10">
+          <TextLink href="/articles.html">Read our engineering writing</TextLink>
         </div>
       </Reveal>
     </section>

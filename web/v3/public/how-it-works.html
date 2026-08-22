@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>How AEGIS Works, End to End</title>
+<meta name="description" content="The full mechanism: the problem, the request lifecycle, infrastructure, multi-tenancy, the flagship detector, reliability posture, and how it's deployed." />
+<link rel="stylesheet" href="/articles/article.css" />
+<style>
+  .shell { max-width: 1080px; margin: 0 auto; padding: 0 6vw 100px; display: grid; grid-template-columns: 200px 1fr; gap: 56px; }
+  @media (max-width: 860px) { .shell { grid-template-columns: 1fr; gap: 8px; } }
+  .cover { max-width: 720px; margin: 0 auto; padding: 64px 6vw 40px; }
+
+  nav.toc { position: sticky; top: 32px; align-self: start; font-family: var(--font-mono); font-size: 12.5px; }
+  @media (max-width: 860px) { nav.toc { position: static; margin-bottom: 32px; columns: 2; } }
+  nav.toc .lab { text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent); font-size: 11px; margin-bottom: 12px; display: block; }
+  nav.toc a { display: block; color: var(--muted); text-decoration: none; padding: 4px 0; border-left: 2px solid transparent; padding-left: 10px; margin-left: -12px; }
+  nav.toc a:hover { color: var(--ink); border-left-color: var(--accent); }
+
+  main.wrap { max-width: 720px; padding: 0; margin: 0; }
+  section { margin-bottom: 56px; scroll-margin-top: 24px; }
+  h2 { scroll-margin-top: 24px; }
+  .sec-num { font-family: var(--font-mono); color: var(--accent); font-size: 15px; margin-right: 8px; }
+
+  .diagram-frame { background: var(--card); border: 1px solid var(--line-2); border-radius: 12px; padding: 24px; margin: 20px 0 8px; overflow-x: auto; }
+  svg { display: block; width: 100%; height: auto; }
+
+  .group-table { width: 100%; border-collapse: collapse; margin: 20px 0 8px; }
+  .group-table th { text-align: left; font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 500; padding: 8px 12px 8px 0; border-bottom: 1px solid var(--line-2); }
+  .group-table td { padding: 12px 12px 12px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; color: var(--ash); vertical-align: top; }
+  .group-table td.n { font-family: var(--font-mono); color: var(--faint); width: 24px; }
+  .group-table td.name { font-weight: 600; color: var(--ink); width: 140px; }
+
+  details.steps { margin: 20px 0 24px; border: 1px solid var(--line-2); border-radius: 10px; overflow: hidden; }
+  details.steps summary { cursor: pointer; padding: 14px 18px; font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); list-style: none; }
+  details.steps summary::-webkit-details-marker { display: none; }
+  details.steps summary::before { content: "+ "; color: var(--accent); }
+  details.steps[open] summary::before { content: "− "; }
+  .steps-list { padding: 4px 18px 18px; display: grid; grid-template-columns: 24px 1fr; gap: 4px 12px; }
+  .steps-list span.n { font-family: var(--font-mono); color: var(--faint); font-size: 12px; padding: 4px 0; }
+  .steps-list span.t { font-family: var(--font-mono); font-size: 12.5px; color: var(--ash); padding: 4px 0; border-bottom: 1px solid var(--line); }
+
+  .check-list { display: flex; flex-direction: column; border-top: 1px solid var(--line); margin: 16px 0; }
+  .check-row { display: grid; grid-template-columns: 20px 1fr; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+  .check-row .mark { font-family: var(--font-mono); font-size: 13px; }
+  .check-row .mark.ok { color: var(--accent); }
+  .check-row .mark.open { color: var(--faint); }
+  .check-row .t { font-size: 14px; color: var(--ink); font-weight: 600; }
+  .check-row .d { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+
+  .further { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line); padding-top: 16px; margin-top: 16px; }
+  .further a { display: block; font-size: 14.5px; }
+  .further a .d { display: block; font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/">AEGIS</a>
+  <a class="back" href="/">← home</a>
+</nav>
+
+<div class="cover">
+  <p class="eyebrow">Documentation</p>
+  <h1>How AEGIS Works, End to End</h1>
+  <p class="dek">Everything, in order: the problem, the request lifecycle, the infrastructure underneath it, multi-tenancy, the flagship detector, how it fails, and how it's deployed. No section assumes you've read another.</p>
+</div>
+
+<div class="shell">
+  <nav class="toc">
+    <span class="lab">Contents</span>
+    <a href="#problem">01 · The problem</a>
+    <a href="#why">02 · Why AEGIS</a>
+    <a href="#lifecycle">03 · Request lifecycle</a>
+    <a href="#infra">04 · Infrastructure</a>
+    <a href="#tenancy">05 · Multi-tenancy</a>
+    <a href="#flagship">06 · The flagship detector</a>
+    <a href="#reliability">07 · Reliability posture</a>
+    <a href="#deploy">08 · Deployment</a>
+    <a href="#status">09 · Where things stand</a>
+    <a href="#reading">Further reading</a>
+  </nav>
+
+  <main class="wrap">
+
+    <section id="problem">
+      <h2><span class="sec-num">01</span>The problem</h2>
+      <p>Modern APIs grow faster than anyone can keep track of by hand. Four structural gaps show up on almost every real system:</p>
+      <ul>
+        <li><strong>Forgotten endpoints.</strong> Shipped, never reviewed, never retired — nobody owns the decision.</li>
+        <li><strong>Inconsistent protection.</strong> Every team configures auth and rate limits differently; "protected" means something different per service.</li>
+        <li><strong>No consumer visibility.</strong> "Who calls this, and how much?" has no fast answer — the data is scattered across logs.</li>
+        <li><strong>Silent data exposure.</strong> PII and payment data leak in responses unnoticed until someone reports it from outside.</li>
+      </ul>
+      <p>AEGIS exists to be the one point that sees all of it, because all traffic passes through it.</p>
+    </section>
+
+    <section id="why">
+      <h2><span class="sec-num">02</span>Why AEGIS</h2>
+      <p>Normally this is three products from three vendors: an <strong>API Gateway</strong> (proxy, load balancing), a <strong>WAAP</strong> layer (firewall, rate limits, bot mitigation, DLP, identity), and an <strong>ASPM</strong> platform (catalog, risk, analytics). AEGIS is all three in one deployment — one place these three layers can't silently disagree with each other.</p>
+      <p>The differentiator isn't the firewall — everyone has a signature firewall. It's that AEGIS builds an <strong>API catalog and a "who calls what" graph</strong> from day one, and object-level leak detection is built directly on top of that graph (section 06). Most WAF-only competitors have no such foundation to build on.</p>
+      <p>AEGIS is <strong>self-hosted, no mandatory cloud</strong>. The only dependencies are Redis and PostgreSQL — infrastructure most companies already run. Nothing phones home.</p>
+    </section>
+
+    <section id="lifecycle">
+      <h2><span class="sec-num">03</span>The request lifecycle</h2>
+      <p>A request passes through eight grouped stages, in this exact order — outermost first, closest to your backend last:</p>
+
+      <table class="group-table">
+        <thead><tr><th>#</th><th>Stage</th><th>What runs here</th></tr></thead>
+        <tbody>
+          <tr><td class="n">01</td><td class="name">Resolve</td><td>TenantResolve, CleanHeaders — identity of the request itself, before anything downstream trusts it</td></tr>
+          <tr><td class="n">02</td><td class="name">Fingerprint</td><td>UpstreamFingerprint, TLSFingerprint — real ClientHello fingerprint, not a spoofable header</td></tr>
+          <tr><td class="n">03</td><td class="name">Harden</td><td>SecurityHeaders, RequestID, PathSanity, CORS</td></tr>
+          <tr><td class="n">04</td><td class="name">Filter</td><td>IPGuard, ThreatFeed, RateLimit, BotProtection, Challenge — is this an automated attacker?</td></tr>
+          <tr><td class="n">05</td><td class="name">Inspect</td><td>WAF — signature match against known attack patterns (OWASP CRS)</td></tr>
+          <tr><td class="n">06</td><td class="name">Discover</td><td>Passive catalog — only requests that cleared 04–05 are recorded</td></tr>
+          <tr><td class="n">07</td><td class="name">Authorize</td><td>JWT auth, schema validation against the documented contract</td></tr>
+          <tr><td class="n">08</td><td class="name">Detect &amp; redact</td><td>Authorization-abuse detection (BOLA/BFLA), data-leak redaction, behavioral scoring</td></tr>
+        </tbody>
+      </table>
+
+      <details class="steps">
+        <summary>Show all 20 individual middleware, in exact order (source-verified)</summary>
+        <div class="steps-list">
+          <span class="n">01</span><span class="t">TenantResolve</span>
+          <span class="n">02</span><span class="t">CleanHeaders</span>
+          <span class="n">03</span><span class="t">UpstreamFingerprint</span>
+          <span class="n">04</span><span class="t">TLSFingerprint</span>
+          <span class="n">05</span><span class="t">SecurityHeaders</span>
+          <span class="n">06</span><span class="t">RequestID</span>
+          <span class="n">07</span><span class="t">PathSanity</span>
+          <span class="n">08</span><span class="t">CORS</span>
+          <span class="n">09</span><span class="t">IPGuard</span>
+          <span class="n">10</span><span class="t">ThreatFeed</span>
+          <span class="n">11</span><span class="t">RateLimit</span>
+          <span class="n">12</span><span class="t">BotProtection</span>
+          <span class="n">13</span><span class="t">Challenge</span>
+          <span class="n">14</span><span class="t">WAF</span>
+          <span class="n">15</span><span class="t">Discovery</span>
+          <span class="n">16</span><span class="t">Auth</span>
+          <span class="n">17</span><span class="t">SchemaValidation</span>
+          <span class="n">18</span><span class="t">AbuseDetection</span>
+          <span class="n">19</span><span class="t">DLP</span>
+          <span class="n">20</span><span class="t">BehaviorAnalysis</span>
+        </div>
+      </details>
+      <p style="font-size:13px;color:var(--muted)">This exact order is pinned by a named-step test in CI — reordering it without meaning to fails the build. <a href="/articles/chain-order.html">Why the order itself is part of the contract →</a></p>
+    </section>
+
+    <section id="infra">
+      <h2><span class="sec-num">04</span>Infrastructure</h2>
+      <div class="check-list">
+        <div class="check-row"><span class="mark ok">•</span><div><div class="t">Two ports, one process</div><div class="d">Data plane for real traffic, admin plane for management — an attack on the first doesn't cut off the second.</div></div></div>
+        <div class="check-row"><span class="mark ok">•</span><div><div class="t">Redis</div><div class="d">Everything fast and short-lived: rate limits, IP blocklists, behavioral scores, sessions. Most keys carry a TTL.</div></div></div>
+        <div class="check-row"><span class="mark ok">•</span><div><div class="t">PostgreSQL — optional</div><div class="d">API catalog and forensic log, fully async and off the request path. Without it, AEGIS still runs; it just doesn't keep a long-term catalog.</div></div></div>
+        <div class="check-row"><span class="mark ok">•</span><div><div class="t">Config hot-reloads</div><div class="d">A rule change takes effect without a restart and without dropping in-flight connections.</div></div></div>
+      </div>
+    </section>
+
+    <section id="tenancy">
+      <h2><span class="sec-num">05</span>Multi-tenancy</h2>
+      <p>When several clients share one deployment, isolation runs on two layers, not one. Every Redis key is prefixed by tenant and every Postgres table carries <code>tenant_id</code> in a composite primary key — that's the layer that runs on every request. Underneath it, PostgreSQL itself enforces row-level security as a backstop, so a query that somehow forgets to scope by tenant gets zero rows back, not every tenant's rows.</p>
+      <p><a href="/articles/rls-backstop.html">Read: why the database-level backstop exists even though every query is already scoped →</a></p>
+    </section>
+
+    <section id="flagship">
+      <h2><span class="sec-num">06</span>The flagship detector</h2>
+      <p>A signature WAF cannot catch Broken Object Level Authorization (BOLA/IDOR) — a request for someone else's data by ID looks syntactically identical to a request for your own. AEGIS catches it two ways: bulk enumeration (many object IDs, fast, measured against a per-consumer learned baseline instead of one fixed number for everyone), and the harder case — a single wrong object ID with no volume pattern at all, caught by passively learning who owns what from real traffic and evaluating strictly after the response, on a 2xx only, so a backend's own 403/404 is never mistaken for a leak.</p>
+      <p>With a confirmed owner on record, a later cross-owner request to the same object is denied before it's forwarded — not just logged after the fact.</p>
+      <p><a href="/articles/bola-detection.html">Read: the full mechanism, with the actual detection code →</a><br />
+      <a href="/articles/adaptive-baseline.html">Read: why a fixed threshold is always wrong for someone →</a></p>
+    </section>
+
+    <section id="reliability">
+      <h2><span class="sec-num">07</span>Reliability posture</h2>
+      <p>Not every control fails the same way when its backing store is unreachable, and that's deliberate. Rate limiting and IP reputation can be configured to deny everything on a Redis outage (fail-closed) — a defensible choice for a high-assurance deployment. Behavioral scoring has no such option; it's always fail-open, because denying every IP on the gateway during an infrastructure blip is a worse outcome than a temporary gap in one scoring signal.</p>
+      <p>This was measured, not just reasoned about: with Redis fully killed under sustained load, the data plane held <strong>100% request success</strong>, latency bounded by fail-fast timeouts rather than hanging. Same result killing PostgreSQL under load — <strong>100% success, flat latency</strong> — because catalog/forensic writes are fully decoupled from the request path.</p>
+      <p><a href="/articles/fail-open-by-design.html">Read: the one control that has no fail-closed option →</a><br />
+      <a href="/articles/chaos-test.html">Read: the full chaos-test numbers, including a bug this run found and fixed →</a></p>
+    </section>
+
+    <section id="deploy">
+      <h2><span class="sec-num">08</span>Deployment</h2>
+      <p>Packaging is a single Docker image. <strong>Docker Compose</strong> for a demo or first pilot — one server, fast to validate on real traffic. <strong>Kubernetes + Helm</strong> for production — multiple replicas behind a load balancer, autoscaling, zero-downtime rolling updates.</p>
+      <p>Rollout is staged so a pilot can never break production traffic:</p>
+      <div class="check-list">
+        <div class="check-row"><span class="mark ok">01</span><div><div class="t">Observe</div><div class="d">Watches and records, blocks nothing. Builds the catalog, shows what would've been rejected.</div></div></div>
+        <div class="check-row"><span class="mark ok">02</span><div><div class="t">Tuning</div><div class="d">False positives removed from collected data, per-route rules defined.</div></div></div>
+        <div class="check-row"><span class="mark ok">03</span><div><div class="t">Enforcement</div><div class="d">Real blocking, tuned rate limits, auth turned on where required.</div></div></div>
+        <div class="check-row"><span class="mark ok">04</span><div><div class="t">Expansion</div><div class="d">Same pattern rolled out to the rest of the estate.</div></div></div>
+        <div class="check-row"><span class="mark ok">05</span><div><div class="t">Steady state</div><div class="d">Ongoing work against the posture report — coverage up, shadow endpoints down.</div></div></div>
+      </div>
+    </section>
+
+    <section id="status">
+      <h2><span class="sec-num">09</span>Where things stand</h2>
+      <p>Engineered and tested — and honest about what's still open, not smoothed over:</p>
+      <div class="check-list">
+        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Full control chain, source-verified</div><div class="d">WAF, DLP, JWT identity, BOLA/BFLA detection, passive discovery, multi-tenancy — every claim on this page checked against the actual code.</div></div></div>
+        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Chaos-tested, not just documented</div><div class="d">Redis and PostgreSQL killed live under sustained load — 100% success both times.</div></div></div>
+        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Schema enforcement</div><div class="d">Rejects undocumented body fields against your OpenAPI contract — closes mass assignment.</div></div></div>
+        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Fails safe by design</div><div class="d">Every control has a documented, deliberate fail-open or fail-closed choice — not a default nobody examined.</div></div></div>
+        <div class="check-row"><span class="mark open">—</span><div><div class="t">An external pentest</div><div class="d">Not yet done — an independent audit before any production claim.</div></div></div>
+        <div class="check-row"><span class="mark open">—</span><div><div class="t">Deeper attack detection</div><div class="d">Injection patterns, auth-velocity anomalies — still open.</div></div></div>
+        <div class="check-row"><span class="mark open">—</span><div><div class="t">Real deployments</div><div class="d">On live production traffic — which is where a design partner comes in.</div></div></div>
+      </div>
+    </section>
+
+    <section id="reading">
+      <h2>Further reading</h2>
+      <p style="margin-bottom:0">Every mechanism summarized above has a full technical writeup, checked against the code that ships:</p>
+      <div class="further">
+        <a href="/articles/bola-detection.html">Catching the IDOR a Signature WAF Can't See<span class="d">Passive object-ownership detection, evaluated after the response.</span></a>
+        <a href="/articles/adaptive-baseline.html">A Fixed Threshold Is Always Wrong for Someone<span class="d">Per-consumer learned baselines instead of one number for everyone.</span></a>
+        <a href="/articles/chain-order.html">The Order Is Load-Bearing<span class="d">Why the chain order is part of the contract — including a mistake we caught in our own diagram.</span></a>
+        <a href="/articles/rls-backstop.html">We Scope Every Query by Tenant. We Still Added a Database-Level Backstop<span class="d">Defense in depth for multi-tenant isolation.</span></a>
+        <a href="/articles/fail-open-by-design.html">The One Control That Has No Fail-Closed Option<span class="d">Why behavioral scoring is never configured to deny by default.</span></a>
+        <a href="/articles/chaos-test.html">We Killed Redis and Postgres Under Load, on Purpose<span class="d">Real numbers, plus a rolling-update bug this run found and fixed.</span></a>
+      </div>
+      <div class="cta" style="margin-top:32px">
+        <p>Want to see whether any of this catches something real on your own traffic — without touching production?</p>
+        <a class="btn" href="/#pilot">Request a pilot →</a>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<footer>AEGIS — inline API security gateway, built in Go.</footer>
+
+</body>
+</html>

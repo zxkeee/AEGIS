@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Writing — AEGIS</title>
+<meta name="description" content="Engineering writeups from the AEGIS team — verified against the actual code, including what we've gotten wrong and fixed." />
+<link rel="stylesheet" href="/articles/article.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/">AEGIS</a>
+  <a class="back" href="/">← home</a>
+</nav>
+
+<div class="wrap">
+  <p class="eyebrow">Writing</p>
+  <h1>Engineering notes</h1>
+  <p class="dek">How specific parts of AEGIS actually work, checked against the code that ships — including the one time our own diagram had the order wrong.</p>
+
+  <div class="article-list">
+    <a class="article-row" href="/articles/bola-detection.html">
+      <span class="tag">Detection</span>
+      <h3>Catching the IDOR a Signature WAF Can't See</h3>
+      <p>Passive, gateway-level object-ownership detection — and why "evaluate after the response" is the whole trick.</p>
+    </a>
+    <a class="article-row" href="/articles/adaptive-baseline.html">
+      <span class="tag">Detection</span>
+      <h3>A Fixed Threshold Is Always Wrong for Someone</h3>
+      <p>Why enumeration detection needs a per-consumer learned baseline instead of a single magic number.</p>
+    </a>
+    <a class="article-row" href="/articles/chain-order.html">
+      <span class="tag">Architecture</span>
+      <h3>The Order Is Load-Bearing</h3>
+      <p>Why the middleware chain order is part of the contract — and a diagram mistake we made ourselves and caught.</p>
+    </a>
+    <a class="article-row" href="/articles/rls-backstop.html">
+      <span class="tag">Multi-tenancy</span>
+      <h3>We Scope Every Query by Tenant. We Still Added a Database-Level Backstop</h3>
+      <p>Why application-level tenant scoping isn't enough on its own, and how PostgreSQL enforces the rest.</p>
+    </a>
+    <a class="article-row" href="/articles/fail-open-by-design.html">
+      <span class="tag">Reliability</span>
+      <h3>The One Control That Has No Fail-Closed Option</h3>
+      <p>Rate limiting can be configured to deny on outage. Behavioral scoring can't be — on purpose.</p>
+    </a>
+    <a class="article-row" href="/articles/chaos-test.html">
+      <span class="tag">Reliability</span>
+      <h3>We Killed Redis and Postgres Under Load, on Purpose</h3>
+      <p>Real numbers from pulling the plug on both backing stores mid-traffic, plus a rolling-update bug this run found and fixed.</p>
+    </a>
+  </div>
+</div>
+
+<footer>AEGIS — inline API security gateway, built in Go.</footer>
+
+</body>
+</html>

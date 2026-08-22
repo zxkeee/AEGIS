@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>We Killed Redis and Postgres Under Load, on Purpose — AEGIS</title>
+<meta name="description" content="Real numbers from killing the backing stores mid-traffic, plus what a rolling update actually does to in-flight connections without a drain grace." />
+<link rel="stylesheet" href="/articles/article.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/">AEGIS</a>
+  <a class="back" href="/articles.html">← all articles</a>
+</nav>
+
+<div class="wrap">
+  <p class="eyebrow">Engineering</p>
+  <h1>We Killed Redis and Postgres Under Load, on Purpose</h1>
+  <p class="dek">"Fails gracefully" is a claim. Here's what happened when we actually pulled the plug on both backing stores mid-traffic, with numbers, not adjectives.</p>
+
+  <p>Every security product's docs say some version of "designed for resilience." Almost none of them show the run where someone killed the database mid-request and recorded exactly what happened. This is that run, for both of AEGIS's backing stores, plus a rolling-update drain test that found a real bug and led to a real fix — which we're including because pretending the first attempt was clean would defeat the point of publishing this at all.</p>
+
+  <h2>Redis: 50 req/s, killed mid-run</h2>
+  <p>Redis backs rate limiting and IP reputation on the hot path. Both are configured fail-open by default (see the <a href="/articles/fail-open-by-design.html">companion post</a> on why that's a deliberate choice for some controls and not others). Redis was killed completely, mid-traffic, at 50 requests/sec sustained.</p>
+  <table>
+    <thead><tr><th>Condition</th><th>Success rate</th><th>p99 latency</th></tr></thead>
+    <tbody>
+      <tr><td>Redis up</td><td>100%</td><td>~tens of ms</td></tr>
+      <tr><td>Redis fully down</td><td><strong>100%</strong></td><td><strong>864 ms</strong>, max 1.30s</td></tr>
+      <tr><td>Recovered</td><td>100%</td><td>back to 42ms</td></tr>
+    </tbody>
+  </table>
+  <p>Zero failed requests through the entire outage. The elevated latency isn't the fail-open logic being slow — it's the Redis client hitting its own fail-fast timeouts (1s dial, 500ms read/write, one retry) before falling through, instead of hanging on the multi-second defaults an unconfigured client would sit on per request.</p>
+
+  <h2>PostgreSQL: 100 req/s, killed mid-run</h2>
+  <p>Postgres backs the API catalog and forensic log — reads and writes to it are meant to be off the request path entirely. This is the run that actually tests whether that's true rather than just documented.</p>
+  <table>
+    <thead><tr><th>Phase</th><th>Requests</th><th>Success</th><th>p50 / p95 / p99</th></tr></thead>
+    <tbody>
+      <tr><td>Before (PG up)</td><td>4498</td><td>100.0%</td><td>7 / 10 / 11 ms</td></tr>
+      <tr><td><strong>PG fully down</strong></td><td>2000</td><td><strong>100.0%</strong></td><td><strong>7 / 10 / 11 ms</strong></td></tr>
+      <tr><td>Recovered</td><td>2500</td><td>100.0%</td><td>7 / 10 / 11 ms</td></tr>
+    </tbody>
+  </table>
+  <p>The data plane genuinely does not notice. Latency doesn't even move — because the catalog worker and forensic sink are async by design, decoupled from the proxied request, not just documented as decoupled. The admin-side <code>GET /api/catalog</code> read (a separate, non-hot-path endpoint) did fail for the outage window and recovered the instant Postgres came back, with no operator action needed.</p>
+  <p><strong>What this run actually found, and the fix:</strong> during the outage, that admin catalog read was returning HTTP 500 instead of 503. That's a real bug this test surfaced — 500 reads as "this endpoint is broken," 503 correctly tells a load balancer or client "a dependency is down, back off and retry." Fixed by classifying connection-level errors and returning 503 specifically for backing-store unavailability across the admin read endpoints, with a regression test (<code>TestStoreUnavailable_Classifies</code>) so it can't quietly regress.</p>
+
+  <h2>Rolling updates: the first attempt shed a full burst of connection errors</h2>
+  <p>Separately from database failure: what happens to in-flight traffic during a normal, planned rolling deployment? 100 req/s, SIGTERM sent to the gateway mid-traffic, requests classified as ok / 5xx / connection error.</p>
+  <p><strong>Before a fix:</strong> Go's default <code>Shutdown</code> closes the listener immediately on SIGTERM. Zero requests came back as 5xx — but every single one of the 1200 requests sent during the drain window came back as a connection error, refused outright, because <code>/readyz</code> was still reporting healthy right up until the listener slammed shut. A real load balancer hasn't yet noticed the instance is going away and keeps routing to it anyway. <strong>Every rollout was shedding a full burst of connection errors</strong> — not a bug in the traditional sense, just the default behavior nobody had pointed a chaos test at yet.</p>
+  <p><strong>The fix</strong> — a lame-duck grace period: on SIGTERM, flip <code>/readyz</code> to 503 first, keep serving established connections for a configured grace window, <em>then</em> close the listener.</p>
+  <table>
+    <thead><tr><th>Phase</th><th>n</th><th>ok</th><th>5xx</th><th>conn errors</th></tr></thead>
+    <tbody>
+      <tr><td>Before fix — drain window</td><td>1200</td><td>0</td><td>0</td><td><strong>1200</strong></td></tr>
+      <tr><td>After fix — drain window</td><td>1200</td><td><strong>601</strong></td><td>0</td><td>599</td></tr>
+    </tbody>
+  </table>
+  <p>601 requests that would have been refused now complete instead, during the window a real load balancer needs to notice <code>/readyz</code> went unhealthy and stop routing new traffic. The remaining connection errors in that window are traffic sent <em>after</em> the grace period elapsed and the process actually exited — which a correctly readiness-gated load balancer wouldn't be sending by then. This is what "zero-downtime rollout" needs to actually mean: not zero errors in a vacuum, zero errors <em>given a load balancer that respects readiness</em>.</p>
+
+  <h2>The honesty part</h2>
+  <p>This run was on macOS with Docker Desktop — backing services in containers, gateway as a host binary. It validates <em>behavior</em> (does the data plane survive an outage, does the drain actually shed connection errors correctly) — it is explicitly <strong>not</strong> a capacity benchmark. The Docker Desktop VM adds scheduling overhead that makes absolute throughput numbers meaningless to publish. A dedicated-hardware run for real capacity numbers is separate, outstanding work — we'd rather say that plainly than let a behavior test quietly stand in for a capacity claim it was never designed to make.</p>
+
+  <div class="cta">
+    <p>The fail-open decision that made the Redis result possible — and why it's <em>not</em> the same decision for every control — has its own writeup.</p>
+    <a class="btn" href="/articles/fail-open-by-design.html">Read: The One Control That Has No Fail-Closed Option →</a>
+  </div>
+</div>
+
+<footer>AEGIS — inline API security gateway, built in Go.</footer>
+
+</body>
+</html>
