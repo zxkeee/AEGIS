@@ -221,7 +221,24 @@ func (h *handlers) getMetrics(w http.ResponseWriter, r *http.Request) {
 // ── Config ────────────────────────────────────────────────────────────────────
 
 func (h *handlers) getConfig(w http.ResponseWriter, r *http.Request) {
-	// Sanitize: never expose secrets
+	// Sanitize: never expose secrets. The "security" toggles below are
+	// GLOBAL (security.* applies to every tenant unless a route overrides
+	// it — ADR-001) and are not another tenant's data, so exposing them here
+	// is intentional, unlike routes_count: an unfiltered len(h.cfg.Routes)
+	// reveals the WHOLE deployment's route count across every tenant to any
+	// authenticated caller — deployment topology/scale a tenant B operator
+	// has no reason to learn about. Scoped the same way getRoutes already
+	// scopes the route list itself (audit finding, 2026-08-22).
+	routesCount := len(h.cfg.Routes)
+	if !iam.IsSuperAdmin(r.Context()) {
+		self := tenant.From(r.Context())
+		routesCount = 0
+		for _, rt := range h.cfg.Routes {
+			if rt.TenantID == "" || rt.TenantID == self {
+				routesCount++
+			}
+		}
+	}
 	safe := map[string]any{
 		"listen":       h.cfg.Listen,
 		"admin_listen": h.cfg.AdminListen,
@@ -239,7 +256,7 @@ func (h *handlers) getConfig(w http.ResponseWriter, r *http.Request) {
 			"api_inventory": h.cfg.Security.Inventory.Enabled,
 			"threat_feed":   h.cfg.Security.ThreatFeed.Enabled,
 		},
-		"routes_count": len(h.cfg.Routes),
+		"routes_count": routesCount,
 	}
 	writeJSON(w, http.StatusOK, safe)
 }

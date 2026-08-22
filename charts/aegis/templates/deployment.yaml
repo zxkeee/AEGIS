@@ -28,6 +28,14 @@ spec:
       # AEGIS never calls the Kubernetes API — don't hand a live cluster token
       # to a container that also terminates public-ish traffic.
       automountServiceAccountToken: false
+      securityContext:
+        # Pod-level seccompProfile: without it, the container gets the
+        # container-runtime's own default, which on some cluster
+        # configurations is Unconfined — a wider syscall surface than a Go
+        # static binary needs. RuntimeDefault applies the runtime's curated
+        # allowlist (available on all supported Kubernetes versions, 1.19+).
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: gateway
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

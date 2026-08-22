@@ -125,6 +125,11 @@ services:
     restart: unless-stopped
     networks:
       - aegis
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
 
   # ── Grafana (Dashboards) ─────────────────────────────────────────────────────
   grafana:

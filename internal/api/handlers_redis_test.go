@@ -130,6 +130,39 @@ func TestGetConfig_RedactsAndShapes(t *testing.T) {
 	}
 }
 
+// TestGetConfig_RoutesCountTenantScoped is a regression test: routes_count
+// used to be len(h.cfg.Routes) unconditionally — the WHOLE deployment's
+// route count across every tenant, unfiltered, unlike getRoutes (which
+// already scopes the route list itself). A tenant B admin could learn
+// tenant A's deployment scale/topology from a field that should mirror
+// getRoutes' own scoping. Only a super-admin sees the true total.
+func TestGetConfig_RoutesCountTenantScoped(t *testing.T) {
+	h, _ := redisHandlers(t)
+	h.cfg.Routes = []config.RouteConfig{
+		{Path: "/acme/", TenantID: "acme", Upstreams: []string{"http://acme-internal"}},
+		{Path: "/globex/", TenantID: "globex", Upstreams: []string{"http://globex-internal"}},
+		{Path: "/shared/", Upstreams: []string{"http://shared"}}, // TenantID == "" (single-tenant style)
+	}
+
+	// acme viewer: own route + tenant-agnostic shared route = 2, not 3.
+	rec, body := doReq(h.getConfig, http.MethodGet, "/api/config", ctxAs("acme", iam.RoleViewer, false), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("config = %d", rec.Code)
+	}
+	if got, _ := body["routes_count"].(float64); got != 2 {
+		t.Fatalf("acme session routes_count = %v, want 2 (acme's + shared, not globex's)", body["routes_count"])
+	}
+
+	// Super-admin sees the true total.
+	rec, body = doReq(h.getConfig, http.MethodGet, "/api/config", ctxAs("acme", iam.RoleAdmin, true), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("config = %d", rec.Code)
+	}
+	if got, _ := body["routes_count"].(float64); got != 3 {
+		t.Fatalf("super-admin routes_count = %v, want 3 (all routes)", body["routes_count"])
+	}
+}
+
 func TestGetRoutes_OK(t *testing.T) {
 	h, _ := redisHandlers(t)
 	rec := httptest.NewRecorder()
