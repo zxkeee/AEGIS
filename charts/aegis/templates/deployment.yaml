@@ -61,6 +61,46 @@ spec:
                   key: forensic-dsn
                   optional: true
             {{- end }}
+            {{- if or .Values.secrets.propagationSecret .Values.secrets.existingSecret }}
+            - name: AEGIS_PROPAGATION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: propagation-secret
+                  optional: true
+            {{- end }}
+            {{- if or .Values.secrets.sentinelPassword .Values.secrets.existingSecret }}
+            - name: AEGIS_REDIS_SENTINEL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: sentinel-password
+                  optional: true
+            {{- end }}
+            {{- if or .Values.secrets.oidcClientId .Values.secrets.existingSecret }}
+            - name: AEGIS_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: oidc-client-id
+                  optional: true
+            {{- end }}
+            {{- if or .Values.secrets.oidcClientSecret .Values.secrets.existingSecret }}
+            - name: AEGIS_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: oidc-client-secret
+                  optional: true
+            {{- end }}
+            {{- if or .Values.secrets.alertWebhookUrl .Values.secrets.existingSecret }}
+            - name: AEGIS_ALERT_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: alert-webhook-url
+                  optional: true
+            {{- end }}
           ports:
             - name: gateway
               containerPort: 8080

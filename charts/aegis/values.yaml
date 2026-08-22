@@ -57,7 +57,10 @@ autoscaling:
 #   helm install aegis . --set secrets.adminSecret=<value>
 secrets:
   # Name of an existing K8s Secret containing all required keys:
-  #   admin-secret, redis-password, jwt-secret (optional), forensic-dsn (optional)
+  #   admin-secret, redis-password, jwt-secret (optional), forensic-dsn (optional),
+  #   propagation-secret (optional), sentinel-password (optional),
+  #   oidc-client-id (optional), oidc-client-secret (optional),
+  #   alert-webhook-url (optional)
   # When set, the values below are ignored.
   existingSecret: ""
   # Direct values — only used if existingSecret is empty.
@@ -76,6 +79,27 @@ secrets:
   # template force-blanks that field, so a value set there is silently
   # dropped at render time rather than reaching the gateway at all.
   forensicDsn: ""
+  # propagationSecret is the HMAC key for X-Gateway-Signature (internal/config's
+  # AEGIS_PROPAGATION_SECRET). Falls back to jwtSecret when unset — see
+  # security.auth.propagation_secret in internal/config/config.go — so it's
+  # optional for a single-gateway deployment but should be set explicitly once
+  # backends verify the signature independently of the JWT secret.
+  propagationSecret: ""
+  # sentinelPassword authenticates to Redis Sentinel when redis.sentinel is in
+  # use (AEGIS_REDIS_SENTINEL_PASSWORD). Leave empty for a standalone Redis
+  # (the default — see the redis sub-chart below).
+  sentinelPassword: ""
+  # oidcClientId / oidcClientSecret configure OIDC/SSO console login
+  # (AEGIS_OIDC_CLIENT_ID / AEGIS_OIDC_CLIENT_SECRET, security.oidc.enabled).
+  # Both empty (the default) means OIDC login is not configured — the
+  # bootstrap secret / per-tenant password login paths still work.
+  oidcClientId: ""
+  oidcClientSecret: ""
+  # alertWebhookUrl is the HTTPS endpoint alerts are POSTed to
+  # (AEGIS_ALERT_WEBHOOK_URL). Routed through the Secret (not the ConfigMap)
+  # because a Slack/Teams/etc. webhook URL carries its own bearer token in the
+  # URL itself. Empty disables alerting.
+  alertWebhookUrl: ""
 
 # Gateway configuration (injected as ConfigMap — no secrets here)
 gateway:
