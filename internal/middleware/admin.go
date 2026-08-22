@@ -158,6 +158,25 @@ func serveAndAudit(aud audit.Recorder, next http.Handler, w http.ResponseWriter,
 		return
 	}
 	sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+	// A panic inside next.ServeHTTP unwinds straight past the aud.Record call
+	// below, past this function entirely, and is only recovered further down
+	// the stack by net/http's per-connection recovery — leaving a mutation
+	// that panicked partway through with no audit trail at all, contradicting
+	// the package's "durable trail for who did what" guarantee. Record it
+	// (status 500, detail "panic") before re-panicking, so net/http's own
+	// recovery/500-response behavior is unchanged — only the audit gap closes.
+	defer func() {
+		if p := recover(); p != nil {
+			actor.Action = "mutation"
+			actor.Method = r.Method
+			actor.Path = r.URL.Path
+			actor.Status = http.StatusInternalServerError
+			actor.IP = RealIP(r)
+			actor.Detail = "panic"
+			aud.Record(actor)
+			panic(p)
+		}
+	}()
 	next.ServeHTTP(sw, r)
 	actor.Action = "mutation"
 	actor.Method = r.Method

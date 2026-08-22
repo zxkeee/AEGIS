@@ -193,8 +193,16 @@ redis:
 # Cilium, etc.) — enable once you know your cluster supports it.
 networkPolicy:
   enabled: false
-  # Pods allowed to reach the admin Service (port 8081). Empty = only pods
-  # matching this selector in the SAME namespace as the release; combine with
+  # Pods allowed to reach the admin Service (port 8081), scoped by label
+  # within the SAME namespace as the release. WARNING: an empty podSelector
+  # ({}) in a Kubernetes NetworkPolicy `from` clause matches ALL pods in the
+  # namespace, not none — leaving both this and namespaceSelector unset when
+  # networkPolicy.enabled is true is a fail-closed error at render time (see
+  # networkpolicy.yaml), not a safe default. Set a real label, e.g.:
+  #   podSelector:
+  #     matchLabels:
+  #       aegis-admin-client: "true"
+  # (and label your operator/bastion/CI pods with it). Combine with
   # namespaceSelector below to also allow another namespace (e.g. an
   # operator/bastion namespace running kubectl port-forward or a VPN gateway).
   adminIngress:

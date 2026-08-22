@@ -78,6 +78,28 @@ func TestLogin_ValidSecret_SetsSessionAndCSRF(t *testing.T) {
 	}
 }
 
+// TestLogin_BootstrapSecretDisabled_ClosesJSONPathToo is a regression test:
+// AdminBootstrapSecretDisabled was enforced on the Bearer-header path
+// (middleware/admin.go) but the identical credential presented via
+// POST /api/login {"secret":...} was left ungated — a sibling instance of
+// the same bug class this branch has repeatedly had to fix (a control
+// applied to one entry point, forgotten on another presenting the same
+// privilege). Once disabled, the correct secret must be rejected exactly
+// like a wrong one — no session, no cookie.
+func TestLogin_BootstrapSecretDisabled_ClosesJSONPathToo(t *testing.T) {
+	h, _ := redisHandlers(t)
+	h.cfg.AdminAuth = true
+	h.cfg.AdminBootstrapSecretDisabled = true
+
+	rec := postLogin(h, map[string]string{"secret": h.cfg.AdminSecret})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bootstrap secret disabled: got %d, want 401 (correct secret must still be rejected)", rec.Code)
+	}
+	if cookieByName(rec, middleware.SessionCookie) != nil {
+		t.Fatal("session cookie set despite AdminBootstrapSecretDisabled")
+	}
+}
+
 func TestLogin_WrongSecret_NoSession(t *testing.T) {
 	h, _ := redisHandlers(t)
 	h.cfg.AdminAuth = true

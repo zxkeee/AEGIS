@@ -82,12 +82,13 @@ jobs:
             [ -n "$id" ] && EID_ARGS+=( -eid "$id" )
           done < tests/dynamic/nuclei-ignore.txt
 
-          # TODO(security-audit): pin by digest, e.g.:
-          #   docker pull projectdiscovery/nuclei:v3.11.0 && docker inspect --format='{{index .RepoDigests 0}}' projectdiscovery/nuclei:v3.11.0
-          # Left as a tag pin — resolving the digest needs registry/Docker
-          # daemon access this change was made without.
+          # Digest resolved via the registry API (no local Docker daemon needed):
+          #   TOKEN=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:projectdiscovery/nuclei:pull" | jq -r .token)
+          #   curl -sI -H "Authorization: Bearer $TOKEN" \
+          #     -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+          #     https://registry-1.docker.io/v2/projectdiscovery/nuclei/manifests/v3.11.0 | grep -i docker-content-digest
           docker run --rm --network host -v "$PWD/tests/dynamic:/work" \
-            projectdiscovery/nuclei:v3.11.0 \
+            projectdiscovery/nuclei:v3.11.0@sha256:e677842fb1f50f29747565ba274a1d35dcf8c684132a42b0cb406e71fccae9fc \
             -u http://127.0.0.1:8081 \
             -severity high,critical -ni -rl 80 -timeout 5 -retries 1 \
             "${EID_ARGS[@]}" \

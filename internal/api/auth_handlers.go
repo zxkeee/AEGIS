@@ -135,10 +135,28 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 	var sess iam.Session
 	switch {
 	case req.Secret != "":
+		// AdminBootstrapSecretDisabled must close this path exactly like it
+		// closes the Bearer-header path in middleware/admin.go: an operator
+		// who flips it (e.g. after suspecting AEGIS_ADMIN_SECRET leaked)
+		// believes the credential is dead everywhere. Checked BEFORE the
+		// compare — same "closed regardless of correctness" shape as the
+		// middleware gate — so this doesn't even leak a timing signal about
+		// whether a presented secret would otherwise have matched.
+		if h.cfg.AdminBootstrapSecretDisabled {
+			fail("secret", "")
+			return
+		}
 		if subtle.ConstantTimeCompare([]byte(req.Secret), []byte(h.cfg.AdminSecret)) != 1 {
 			fail("secret", "")
 			return
 		}
+		// Loud, unconditional log on every successful use — mirrors
+		// middleware/admin.go's Bearer-path log, so this always-super-admin,
+		// per-operator-unauditable credential's usage is equally visible to
+		// log-based alerting regardless of which entry point presented it.
+		h.log.Warn("admin_bootstrap_secret_used", map[string]any{
+			"path": r.URL.Path, "method": r.Method, "ip": ip,
+		})
 		// Bearer secret is the bootstrap super-admin: pinned to the default
 		// tenant, granted SuperAdmin so it can manage tenants/users when no
 		// real users exist yet.

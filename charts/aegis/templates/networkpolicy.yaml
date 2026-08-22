@@ -4,6 +4,9 @@
 # reaching it — this closes that gap. Opt-in (networkPolicy.enabled) because
 # it requires a CNI that enforces NetworkPolicy (Calico, Cilium, etc.).
 {{- if .Values.networkPolicy.enabled }}
+{{- if and (not .Values.networkPolicy.adminIngress.namespaceSelector) (not .Values.networkPolicy.adminIngress.podSelector) }}
+{{- fail "networkPolicy.enabled is true but neither networkPolicy.adminIngress.podSelector nor .namespaceSelector is set. An empty podSelector in a Kubernetes NetworkPolicy `from` clause matches ALL pods in the namespace — the opposite of the default-deny this policy exists to provide. Set adminIngress.podSelector to a label real admin clients carry (e.g. {aegis-admin-client: \"true\"}), or adminIngress.namespaceSelector to scope by namespace instead." }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
