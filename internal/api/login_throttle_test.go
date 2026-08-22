@@ -124,3 +124,47 @@ func TestLogin_ThrottleIsAtomicUnderConcurrency(t *testing.T) {
 		t.Fatalf("expected %d requests throttled, got %d", burst-loginBruteforceLimit, throttled)
 	}
 }
+
+// TestLogin_StoreOutage_FailOpenByDefault is a regression test for a gap the
+// per-IP/per-account brute-force gates had: unlike rate-limit/IPGuard (which
+// both expose FailClosed), a Redis outage silently disabled the login gate
+// entirely with no way to opt out of that. Default behaviour must still be
+// fail-open (an operator can log in during an outage) — this pins that the
+// request falls through to the real credential check (401 for a wrong
+// secret) rather than erroring, when the store is unreachable.
+func TestLogin_StoreOutage_FailOpenByDefault(t *testing.T) {
+	h, mr := redisHandlers(t)
+	h.cfg.AdminAuth = true
+	mr.Close() // simulate a Redis outage: IncrRate now errors
+
+	b, _ := json.Marshal(map[string]string{"secret": "wrong"})
+	r := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader(b))
+	r.RemoteAddr = "203.0.113.200:1"
+	rec := httptest.NewRecorder()
+	h.login(rec, r)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("store outage, AdminLoginFailClosed=false: got %d, want 401 (fail-open — gate skipped, credential check still ran)", rec.Code)
+	}
+}
+
+// TestLogin_StoreOutage_FailClosedWhenConfigured is the counterpart: with
+// AdminLoginFailClosed set, the same outage must deny the request instead of
+// silently leaving /api/login completely unthrottled for the outage's
+// duration.
+func TestLogin_StoreOutage_FailClosedWhenConfigured(t *testing.T) {
+	h, mr := redisHandlers(t)
+	h.cfg.AdminAuth = true
+	h.cfg.AdminLoginFailClosed = true
+	mr.Close()
+
+	b, _ := json.Marshal(map[string]string{"secret": "wrong"})
+	r := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader(b))
+	r.RemoteAddr = "203.0.113.201:1"
+	rec := httptest.NewRecorder()
+	h.login(rec, r)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("store outage, AdminLoginFailClosed=true: got %d, want 503 (deny — brute-force budget cannot be enforced)", rec.Code)
+	}
+}

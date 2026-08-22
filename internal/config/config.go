@@ -70,6 +70,16 @@ type GatewayConfig struct {
 	// console works over plain HTTP in local development. Never enable in
 	// production: the session cookie would be sent over unencrypted connections.
 	AdminCookieInsecure bool `yaml:"admin_cookie_insecure"`
+	// AdminLoginFailClosed denies /api/login when its Redis-backed brute-force
+	// counters (per-IP and per-account) are unavailable, instead of the default
+	// fail-open behaviour. Unlike rate-limit/IPGuard — where FailClosed already
+	// exists — the login gate had no such option at all, so a Redis outage
+	// silently left credential stuffing against /api/login completely
+	// unthrottled for its duration. Default false preserves availability
+	// (login still works during a Redis blip); set true for high-assurance
+	// deployments where that gap must not be permitted, mirroring
+	// RateLimitConfig.FailClosed / IPGuardConfig.FailClosed.
+	AdminLoginFailClosed bool `yaml:"admin_login_fail_closed"`
 	// AdminCORS is the CORS policy for the admin plane. The console is normally
 	// same-origin (served by the admin server itself), so this stays unset and
 	// the admin plane inherits security.cors. Set it when the console origins

@@ -84,7 +84,21 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 	// via DecrRate below, preserving "only failures spend budget."
 	ip := middleware.RealIP(r)
 	n, err := h.store.IncrRate(r.Context(), "loginfail:"+ip, loginBruteforceWindow)
-	if err == nil && n > int64(loginBruteforceLimit) {
+	if err != nil {
+		// Redis unavailable: the gate cannot enforce its budget. Default is
+		// fail-open (preserve availability — a legitimate operator can still
+		// log in during an outage); AdminLoginFailClosed denies instead, for
+		// deployments where an unthrottled /api/login during a Redis outage
+		// is not acceptable.
+		h.log.Error("login: brute-force store unavailable", map[string]any{
+			"error": err.Error(), "fail_closed": h.cfg.AdminLoginFailClosed,
+		})
+		if h.cfg.AdminLoginFailClosed {
+			h.store.IncrMetric(r.Context(), "blocked_admin_login_store_unavailable")
+			writeError(w, http.StatusServiceUnavailable, "login temporarily unavailable")
+			return
+		}
+	} else if n > int64(loginBruteforceLimit) {
 		h.store.IncrMetric(r.Context(), "blocked_admin_login_throttled")
 		w.Header().Set("Retry-After", strconv.Itoa(int(loginBruteforceWindow.Seconds())))
 		writeError(w, http.StatusTooManyRequests, "too many failed login attempts; try again later")
@@ -147,7 +161,19 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 		// budget, since it's keyed by (tenant, email) rather than IP.
 		acctKey := accountLoginKey(tid, req.Email)
 		an, aerr := h.store.IncrRate(r.Context(), acctKey, accountBruteforceWindow)
-		if aerr == nil && an > int64(accountBruteforceLimit) {
+		if aerr != nil {
+			// Same fail-open/fail-closed choice as the per-IP gate above — see
+			// its comment. A Redis outage must not silently drop BOTH gates
+			// when AdminLoginFailClosed asks for the stronger behaviour.
+			h.log.Error("login: account brute-force store unavailable", map[string]any{
+				"error": aerr.Error(), "fail_closed": h.cfg.AdminLoginFailClosed,
+			})
+			if h.cfg.AdminLoginFailClosed {
+				h.store.IncrMetric(r.Context(), "blocked_admin_login_store_unavailable")
+				writeError(w, http.StatusServiceUnavailable, "login temporarily unavailable")
+				return
+			}
+		} else if an > int64(accountBruteforceLimit) {
 			h.store.IncrMetric(r.Context(), "blocked_admin_login_throttled_account")
 			w.Header().Set("Retry-After", strconv.Itoa(int(accountBruteforceWindow.Seconds())))
 			writeError(w, http.StatusTooManyRequests, "too many failed login attempts for this account; try again later")
