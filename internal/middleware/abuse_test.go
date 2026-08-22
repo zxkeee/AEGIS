@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -147,6 +148,76 @@ func TestBOLAOwnership_BlockAllowsRealOwner(t *testing.T) {
 	rec := runAbuseBody(cfg, st, "/api/orders/12345", "alice", "user", http.StatusOK, `{"user_id":"alice"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("real owner must not be blocked: got %d", rec.Code)
+	}
+}
+
+// TestBOLAOwnership_StoreErrorFailOpenByDefault is a regression test:
+// ObjectOwnershipBlock is a proactive HARD DENY (blocks before forwarding),
+// unlike the rest of BOLA detection (detect-and-record). A GetObjectOwner
+// error (e.g. Redis outage) must not silently disable that guarantee without
+// a way to opt out — default is fail-open (request proceeds, matching
+// RateLimitConfig/IPGuardConfig's own fail-open default).
+func TestBOLAOwnership_StoreErrorFailOpenByDefault(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.ObjectOwnershipBlock = true
+	st := &fakeStore{getOwner: func() (string, bool, error) { return "", false, errors.New("redis: connection refused") }}
+	rec := runAbuseStatus(cfg, st, http.MethodGet, "/api/orders/12345", "bob", "user", http.StatusOK)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("store error, OwnershipFailClosed=false: got %d, want 200 (fail-open — candidate skipped, request proceeds)", rec.Code)
+	}
+}
+
+// TestBOLAOwnership_StoreErrorFailClosedWhenConfigured is the counterpart:
+// with OwnershipFailClosed set, the same store error must deny instead of
+// silently degrading the hard-block guarantee to record-only.
+func TestBOLAOwnership_StoreErrorFailClosedWhenConfigured(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.ObjectOwnershipBlock = true
+	cfg.OwnershipFailClosed = true
+	st := &fakeStore{getOwner: func() (string, bool, error) { return "", false, errors.New("redis: connection refused") }}
+	rec := runAbuseStatus(cfg, st, http.MethodGet, "/api/orders/12345", "bob", "user", http.StatusOK)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("store error, OwnershipFailClosed=true: got %d, want 503 (deny — cross-owner status cannot be confirmed)", rec.Code)
+	}
+}
+
+// TestIsJSONContentType_AcceptsPlusJSONVariants is a regression test: a
+// sibling instance of waf.go's own JSON-body detection gap. Coraza (and this
+// package's own jsonBodyDirectives) treats any "application/...+json" suffix
+// as JSON, not just the bare media type — bodyObjectIDs and
+// captureWriter.decide must agree, or a body sent as e.g.
+// application/vnd.api+json is fully JSON-parsed by the WAF but invisible to
+// BOLA body-ID extraction and confirmed-owner binding.
+func TestIsJSONContentType_AcceptsPlusJSONVariants(t *testing.T) {
+	accept := []string{
+		"application/json",
+		"application/json; charset=utf-8",
+		"application/vnd.api+json",
+		"application/merge-patch+json",
+		"application/hal+json",
+		"APPLICATION/JSON",
+	}
+	for _, ct := range accept {
+		if !isJSONContentType(ct) {
+			t.Errorf("isJSONContentType(%q) = false, want true", ct)
+		}
+	}
+	reject := []string{"", "text/plain", "application/xml", "application/x-www-form-urlencoded", "multipart/form-data"}
+	for _, ct := range reject {
+		if isJSONContentType(ct) {
+			t.Errorf("isJSONContentType(%q) = true, want false", ct)
+		}
+	}
+}
+
+// TestBodyObjectIDs_AcceptsPlusJSONContentType end-to-end: a body sent with a
+// +json media type must still have its object IDs extracted.
+func TestBodyObjectIDs_AcceptsPlusJSONContentType(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPatch, "/api/v1/orders", strings.NewReader(`{"order_id":1002}`))
+	r.Header.Set("Content-Type", "application/vnd.api+json")
+	got := bodyObjectIDs(r)
+	if len(got["order_id"]) != 1 || got["order_id"][0] != "1002" {
+		t.Fatalf("bodyObjectIDs with +json content-type: got %v, want order_id=[1002]", got)
 	}
 }
 

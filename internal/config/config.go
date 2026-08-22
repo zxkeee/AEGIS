@@ -581,6 +581,16 @@ type AbuseConfig struct {
 	// known and differs from the caller — preventing the leak instead of only
 	// recording it. Requires OwnerFields to populate owner bindings first.
 	ObjectOwnershipBlock bool `yaml:"object_ownership_block"`
+	// OwnershipFailClosed denies a request when ObjectOwnershipBlock's Redis
+	// owner lookup errors, instead of the default fail-open behaviour (the
+	// lookup is skipped and the request proceeds as if no owner conflict were
+	// known). ObjectOwnershipBlock is the one BOLA control that actually blocks
+	// traffic (the rest are detect-and-record); a Redis outage silently
+	// disabling it during an active IDOR sweep is the same gap class
+	// RateLimitConfig.FailClosed / IPGuardConfig.FailClosed / the login gate's
+	// AdminLoginFailClosed already close elsewhere. Default false preserves
+	// availability, matching those.
+	OwnershipFailClosed bool `yaml:"ownership_fail_closed"`
 	// OwnershipBypassRoles are roles allowed to access objects they do not own
 	// (support/admin views); a consumer holding any of them skips ownership
 	// detection and blocking entirely.

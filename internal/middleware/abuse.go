@@ -234,7 +234,21 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 						for _, id := range cand.ids {
 							owner, known, err := st.GetObjectOwner(r.Context(), cand.scope, id)
 							if err != nil {
-								log.Error("abuse: object-owner lookup failed", map[string]any{"error": err.Error()})
+								log.Error("abuse: object-owner lookup failed", map[string]any{
+									"error": err.Error(), "fail_closed": cfg.OwnershipFailClosed,
+								})
+								// ObjectOwnershipBlock is the one BOLA control that actually
+								// blocks traffic — the rest only detect-and-record. Default
+								// is fail-open (skip this candidate, keep checking the rest)
+								// to preserve availability; OwnershipFailClosed denies
+								// instead, so a Redis outage during an active IDOR sweep
+								// cannot silently disable the one control that blocks it.
+								if cfg.OwnershipFailClosed {
+									SecurityDeny(w, r, log, st, "bola_owner_store_unavailable", ip, http.StatusServiceUnavailable, map[string]any{
+										"consumer": consumer, "object_id": id, "endpoint": cand.endpoint,
+									})
+									return
+								}
 								continue
 							}
 							if known && owner != "" && owner != identity {
@@ -362,11 +376,33 @@ func (c *captureWriter) decide() {
 	if c.capture != 0 {
 		return
 	}
-	if strings.HasPrefix(c.Header().Get("Content-Type"), "application/json") {
+	if isJSONContentType(c.Header().Get("Content-Type")) {
 		c.capture = 1
 	} else {
 		c.capture = -1
 	}
+}
+
+// jsonContentTypeRE mirrors waf.go's JSON-body detection (id:10000/10013/10014
+// directives): Coraza treats any "application/...+json" suffix — not just the
+// exact "application/json" — as a JSON body (application/vnd.api+json,
+// application/merge-patch+json, application/hal+json, application/problem+json
+// are all common, legitimate REST content types). bodyObjectIDs and
+// captureWriter.decide originally only matched the bare "application/json"
+// media type, so a request/response using one of those +json variants was
+// fully parsed as JSON by the WAF but completely invisible to BOLA body-ID
+// extraction and confirmed-owner binding — a sibling instance of the same
+// "fix applied to some JSON-detection sites, not others" gap already closed
+// on waf.go's own rules.
+var jsonContentTypeRE = regexp.MustCompile(`(?i)^application/(?:[a-z0-9.+-]+\+)?json$`)
+
+// isJSONContentType reports whether a Content-Type header value (parameters,
+// e.g. "; charset=utf-8", stripped) denotes a JSON body.
+func isJSONContentType(ct string) bool {
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = ct[:i]
+	}
+	return jsonContentTypeRE.MatchString(strings.TrimSpace(ct))
 }
 
 func (c *captureWriter) Write(b []byte) (int, error) {
@@ -594,11 +630,7 @@ func bodyObjectIDs(r *http.Request) map[string][]string {
 	if r.Body == nil || r.Body == http.NoBody {
 		return nil
 	}
-	ct := r.Header.Get("Content-Type")
-	if i := strings.IndexByte(ct, ';'); i >= 0 {
-		ct = ct[:i]
-	}
-	if !strings.EqualFold(strings.TrimSpace(ct), "application/json") {
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
 		return nil
 	}
 
