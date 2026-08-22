@@ -612,7 +612,7 @@ func TestApplyObserveMode(t *testing.T) {
 		Observe: true,
 		Routes:  []RouteConfig{{Path: "/x", RateLimit: &RateLimitConfig{Enabled: true}}},
 		Security: SecurityConfig{
-			WAF:        WAFConfig{Enabled: true, BlockMode: true},
+			WAF:        WAFConfig{Enabled: true, BlockMode: true, FailClosed: true},
 			Schema:     SchemaConfig{Enabled: true, BlockMode: true},
 			Abuse:      AbuseConfig{Enabled: true, BlockMode: true, ObjectOwnershipBlock: true},
 			DLP:        DLPConfig{Enabled: true},
@@ -656,8 +656,11 @@ func TestApplyObserveMode(t *testing.T) {
 	if cfg.Routes[0].RateLimit != nil {
 		t.Error("per-route rate_limit override was not cleared")
 	}
-	// Never fail closed.
-	if s.RateLimit.FailClosed || s.IPGuard.FailClosed || s.Auth.RevocationFailClosed {
+	// Never fail closed. (VULN-903: s.WAF.FailClosed was added to
+	// ApplyObserveMode without corresponding test coverage — a pilot deployment
+	// must never 503 all data-plane traffic just because the WAF engine failed
+	// to build.)
+	if s.RateLimit.FailClosed || s.IPGuard.FailClosed || s.Auth.RevocationFailClosed || s.WAF.FailClosed {
 		t.Error("a fail_closed flag remained set")
 	}
 

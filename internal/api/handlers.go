@@ -45,6 +45,11 @@ type handlers struct {
 	// upstreams drain the gateway before it stops accepting connections. May be
 	// nil in unit tests that construct handlers directly.
 	draining *atomic.Bool
+	// licenseStatus points at the Server's atomic.Value holding the current
+	// license.Status (set via Server.SetLicenseStatus on boot/hot-reload). May
+	// be nil in unit tests that construct handlers directly; getLicense treats
+	// that the same as "no status recorded yet".
+	licenseStatus *atomic.Value
 }
 
 // auditCrossTenantRead records a super-admin GET that spans a tenant other

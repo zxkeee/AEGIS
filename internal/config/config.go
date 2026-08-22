@@ -105,7 +105,14 @@ type GatewayConfig struct {
 	// a first pilot on a partner's live traffic: the findings report is produced
 	// with zero risk to their production. ApplyObserveMode coerces the whole
 	// security config into this shape after load and on every hot-reload.
-	Observe        bool               `yaml:"observe"`
+	Observe bool `yaml:"observe"`
+	// LicensePath points at a signed license file (see internal/license,
+	// cmd/licensegen). main.go verifies it on startup AND on every hot-reload,
+	// as a hard gate: empty, missing, expired, or tampered all get the same
+	// treatment as a config.Validate rejection — startup refuses to boot; a
+	// hot-reload is rejected and the previous config keeps serving. There is
+	// no degraded free-run mode; see docs/licensing.md.
+	LicensePath    string             `yaml:"license_path"`
 	ForensicDSN    string             `yaml:"forensic_dsn"` // PostgreSQL DSN for persistent forensic logs
 	TrustedProxies []string           `yaml:"trusted_proxies"`
 	TLS            TLSConfig          `yaml:"tls"`
@@ -196,6 +203,7 @@ func (c *GatewayConfig) ApplyObserveMode() []string {
 	s.RateLimit.FailClosed = false
 	s.IPGuard.FailClosed = false
 	s.Auth.RevocationFailClosed = false
+	s.WAF.FailClosed = false
 
 	return changed
 }
@@ -432,6 +440,14 @@ type WAFConfig struct {
 	// interrupted. block_mode alone does not achieve this for the built-in rules,
 	// which carry inline `deny` actions and run under `SecRuleEngine On`.
 	Observe bool `yaml:"-"`
+	// FailClosed denies every request (503) when the Coraza engine fails to
+	// initialise (malformed RulesetPath / bad CRS directives), instead of
+	// silently degrading to passthrough. Same opt-in shape as
+	// RateLimitConfig.FailClosed / IPGuardConfig.FailClosed. Default false
+	// preserves the historical availability-over-strictness behaviour, but the
+	// failure is now always counted via the waf_init_failed metric regardless
+	// of this flag, so a bad ruleset deploy is no longer silent either way.
+	FailClosed bool `yaml:"fail_closed"`
 }
 
 type BotConfig struct {
@@ -744,6 +760,9 @@ func Load(path string) (GatewayConfig, error) {
 func applyEnvOverrides(cfg *GatewayConfig) {
 	if v := os.Getenv("AEGIS_ADMIN_SECRET"); v != "" {
 		cfg.AdminSecret = v
+	}
+	if v := os.Getenv("AEGIS_LICENSE_PATH"); v != "" {
+		cfg.LicensePath = v
 	}
 	if v := os.Getenv("AEGIS_PROPAGATION_SECRET"); v != "" {
 		cfg.Security.Auth.PropagationSecret = v

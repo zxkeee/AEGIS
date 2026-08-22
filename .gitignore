@@ -44,6 +44,9 @@ web/console/.vite/
 *.crt
 *.cer
 *.p12
+# Issued license files (internal/license, cmd/licensegen) — never a customer's
+# license artifact in this repo, only the issuing tool and public verify key.
+*.lic
 *.pfx
 # Redis dump (local dev)
 *.rdb

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"api-gateway/internal/forensic"
 	"api-gateway/internal/gateway"
 	"api-gateway/internal/iam"
+	"api-gateway/internal/license"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/middleware"
 	"api-gateway/internal/retention"
@@ -39,10 +41,23 @@ var (
 
 func main() {
 	cfgPath := flag.String("config", "config/gateway.yaml", "path to gateway config")
+	printFingerprint := flag.Bool("print-fingerprint", false,
+		"print this machine's license hardware fingerprint and exit (run this BEFORE requesting a license, "+
+			"on the box that will actually run the gateway — see docs/licensing.md)")
 	flag.Parse()
 
+	if *printFingerprint {
+		fp, err := license.Fingerprint()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "cannot compute fingerprint: "+err.Error())
+			os.Exit(1)
+		}
+		fmt.Println(fp)
+		return
+	}
+
 	// ── Load Configuration ────────────────────────────────────────────────────
-	cfg, trustedProxyNets, err := loadValidatedConfig(*cfgPath)
+	cfg, trustedProxyNets, licStatus, err := loadValidatedConfig(*cfgPath)
 	if err != nil {
 		panic("unsafe configuration: " + err.Error())
 	}
@@ -59,6 +74,7 @@ func main() {
 		"commit":       commit,
 		"build_time":   buildTime,
 	})
+	logLicenseStatus(log, licStatus)
 	if cfg.Observe {
 		log.Warn("OBSERVE MODE ACTIVE: passive pilot posture — the gateway inspects and records but blocks nothing, "+
 			"modifies no response body, and never fails closed. Discovery, findings, WAF-detection, DLP-classification "+
@@ -253,6 +269,7 @@ func main() {
 		ssoIface = ssoAuth
 	}
 	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog, iamStore, auditStore, ssoIface)
+	adminSrv.SetLicenseStatus(licStatus) // GET /api/license + console banner reflect this boot's outcome
 
 	// FIX SEC: Protect admin API against brute force and DDoS.
 	// This is a fixed-window counter (5 requests/second, enforced atomically
@@ -314,7 +331,7 @@ func main() {
 	}
 
 	// ── Hot Reload Watcher ────────────────────────────────────────────────────
-	go watchConfigFile(*cfgPath, &activeHandler, log, st, catalog)
+	go watchConfigFile(*cfgPath, &activeHandler, log, st, catalog, adminSrv)
 
 	// ── Start Servers ─────────────────────────────────────────────────────────
 	go func() {
@@ -394,13 +411,33 @@ func main() {
 // caller must call middleware.SetTrustedProxies with the returned set only
 // once the ENTIRE reload (including BuildHandlerChain) has succeeded; on
 // boot there is no prior chain to protect, so main() commits immediately.
-func loadValidatedConfig(path string) (config.GatewayConfig, []*net.IPNet, error) {
+func loadValidatedConfig(path string) (config.GatewayConfig, []*net.IPNet, license.Status, error) {
 	cfg, err := config.Load(path)
 	if err != nil {
-		return config.GatewayConfig{}, nil, err
+		return config.GatewayConfig{}, nil, license.Status{}, err
 	}
 	if err := config.Validate(cfg); err != nil {
-		return config.GatewayConfig{}, nil, err
+		return config.GatewayConfig{}, nil, license.Status{}, err
+	}
+	// License is a hard boot gate, not a soft degrade: no valid license means
+	// the gateway does not come up at all — same treatment as any other
+	// config.Validate rejection (main() panics; a hot-reload with an invalid
+	// license is rejected and the previous, already-running config stays
+	// active, exactly like any other rejected reload). This is deliberate:
+	// letting an unlicensed copy run for free in Observe mode still gives away
+	// the discovery/posture/findings value for nothing, which defeats the
+	// point. See docs/licensing.md for how to self-issue an internal license
+	// for your own dev/eval use — that is the supported free path, not "no
+	// license file at all."
+	//
+	// LoadWithGrace (not the plain Load) specifically so a hardware-lock
+	// mismatch — the customer migrated/rebuilt the host the gateway runs on —
+	// gets a bounded grace window instead of an immediate outage; see
+	// license.LoadWithGrace's doc comment and docs/licensing.md.
+	licStatus := license.LoadWithGrace(cfg.LicensePath, license.DefaultHardwareGrace)
+	if !licStatus.Valid {
+		return config.GatewayConfig{}, nil, licStatus, fmt.Errorf(
+			"no valid license: %s (see docs/licensing.md — issue one with cmd/licensegen)", licStatus.Reason)
 	}
 	// Observe/pilot mode coercion runs AFTER validation, so the returned config is
 	// already in its guaranteed non-disruptive shape before any chain is built —
@@ -408,9 +445,39 @@ func loadValidatedConfig(path string) (config.GatewayConfig, []*net.IPNet, error
 	cfg.ApplyObserveMode()
 	trustedProxyNets, err := middleware.ParseTrustedProxies(cfg.TrustedProxies)
 	if err != nil {
-		return config.GatewayConfig{}, nil, err
+		return config.GatewayConfig{}, nil, license.Status{}, err
 	}
-	return cfg, trustedProxyNets, nil
+	return cfg, trustedProxyNets, licStatus, nil
+}
+
+// logLicenseStatus reports a valid license's terms so licensee/tier/expiry
+// are visible in every boot's and every hot-reload's logs, not just at issue
+// time. loadValidatedConfig already turns an invalid license into a hard
+// error before this is called (see there), so st.Valid is expected true here;
+// the else branch is defensive only.
+func logLicenseStatus(log *logger.Logger, st license.Status) {
+	if !st.Valid {
+		log.Error("license: INVALID OR MISSING (unexpected — loadValidatedConfig should have rejected this "+
+			"before startup/hot-reload got this far)", map[string]any{"reason": st.Reason, "path": st.Path})
+		return
+	}
+	if st.Grace {
+		log.Warn("license: HARDWARE MISMATCH — running on a temporary grace period, NOT normally valid. "+
+			"This machine's fingerprint does not match the license; the gateway will refuse to start once the "+
+			"grace window ends. Contact the vendor for a free re-issue now — see docs/licensing.md.", map[string]any{
+			"licensee":            st.Claims.Licensee,
+			"tier":                st.Claims.Tier,
+			"grace_until":         st.GraceUntil.Format(time.RFC3339),
+			"current_fingerprint": st.CurrentFingerprint,
+		})
+		return
+	}
+	fields := map[string]any{"licensee": st.Claims.Licensee, "tier": st.Claims.Tier}
+	if !st.Claims.ExpiresAt.IsZero() {
+		fields["expires"] = st.Claims.ExpiresAt.Format("2006-01-02")
+		fields["days_left"] = st.DaysLeft
+	}
+	log.Info("license: valid", fields)
 }
 
 // loadConfigSpec loads the optional config-level OpenAPI spec (discovery.
@@ -441,7 +508,7 @@ func loadConfigSpec(cfg config.GatewayConfig, catalog *discovery.Catalog, log *l
 
 // watchConfigFile uses fsnotify for instant config hot-reload (zero-downtime).
 // Falls back to 5s polling if fsnotify setup fails.
-func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logger, st *store.Store, catalog *discovery.Catalog) {
+func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logger, st *store.Store, catalog *discovery.Catalog, adminSrv *api.Server) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		absPath = path
@@ -457,11 +524,13 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 		// doc comment); it only takes effect once BuildHandlerChain below also
 		// succeeds, so a later failure genuinely leaves the old chain's trust
 		// boundary untouched too, not just its routing.
-		newCfg, newTrustedProxyNets, err := loadValidatedConfig(absPath)
+		newCfg, newTrustedProxyNets, newLicStatus, err := loadValidatedConfig(absPath)
 		if err != nil {
 			log.Error("hot-reload: rejected, previous config stays active", map[string]any{"error": err.Error()})
 			return
 		}
+		logLicenseStatus(log, newLicStatus)
+		adminSrv.SetLicenseStatus(newLicStatus)
 		if newCfg.Observe {
 			log.Warn("hot-reload: OBSERVE MODE ACTIVE — controls coerced to passive (record-only, no blocking/redaction)", nil)
 		}

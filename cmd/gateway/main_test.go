@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,12 +14,38 @@ import (
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
 	"api-gateway/internal/gateway"
+	"api-gateway/internal/license"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/middleware"
 	"api-gateway/internal/store"
 
 	"github.com/alicebob/miniredis/v2"
 )
+
+// issueTestLicense sets up a throwaway Ed25519 keypair for the duration of
+// the test (via license.SetPublicKeyForTesting), signs a valid never-expiring
+// license, writes it to a temp file, and returns its path — for tests that
+// need loadValidatedConfig to pass the (now hard-required) license gate
+// without depending on a real release build's embedded key.
+func issueTestLicense(t *testing.T) string {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate test license key: %v", err)
+	}
+	restore := license.SetPublicKeyForTesting(base64.StdEncoding.EncodeToString(pub))
+	t.Cleanup(restore)
+
+	signed, err := license.Sign(priv, license.Claims{Licensee: "test", Tier: "internal"})
+	if err != nil {
+		t.Fatalf("sign test license: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "test.lic")
+	if err := os.WriteFile(path, []byte(signed), 0o600); err != nil {
+		t.Fatalf("write test license: %v", err)
+	}
+	return path
+}
 
 // TestChain_PostureMatchesEnforcement is the guard against the headline bug class:
 // the posture engine must never report protection the data plane does not deliver.
@@ -110,17 +138,19 @@ func TestLoadValidatedConfig_DoesNotCommitTrustedProxies(t *testing.T) {
 
 	dir := t.TempDir()
 	p := filepath.Join(dir, "trusted.yaml")
+	licPath := issueTestLicense(t)
 	body := `
 admin_auth: true
 admin_secret: "a-strong-admin-secret-32-characters!!"
 redis: {password: "redis-pass"}
 trusted_proxies: ["10.0.0.0/8"]
+license_path: "` + licPath + `"
 `
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	_, nets, err := loadValidatedConfig(p)
+	_, nets, _, err := loadValidatedConfig(p)
 	if err != nil {
 		t.Fatalf("loadValidatedConfig: %v", err)
 	}
@@ -145,6 +175,35 @@ trusted_proxies: ["10.0.0.0/8"]
 	}
 }
 
+// TestLoadValidatedConfig_NoLicenseFailsBoot is the licensing enforcement
+// boundary: a deployment with no valid license_path (the default — nothing
+// baked into a plain `go build`, nothing configured) must not come up at all,
+// on boot or on hot-reload — same treatment as any other config.Validate
+// rejection. A soft degrade (e.g. forcing Observe mode) would still give away
+// the discovery/posture/findings value for free, which defeats licensing
+// entirely.
+func TestLoadValidatedConfig_NoLicenseFailsBoot(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "gateway.yaml")
+	body := `
+admin_auth: true
+admin_secret: "a-strong-admin-secret-32-characters!!"
+redis: {password: "redis-pass"}
+observe: false
+`
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, licStatus, err := loadValidatedConfig(p)
+	if err == nil {
+		t.Fatal("expected loadValidatedConfig to reject a config with no valid license")
+	}
+	if licStatus.Valid {
+		t.Fatal("expected no license to be configured in this test env")
+	}
+}
+
 // loadValidatedConfig is the shared gate for startup AND hot-reload: a config
 // that fails Validate must be rejected in both paths (hot-reload used to skip
 // validation entirely, letting an unsafe edit go live).
@@ -159,14 +218,16 @@ func TestLoadValidatedConfig_RejectsUnsafeConfig(t *testing.T) {
 		return p
 	}
 
+	licPath := issueTestLicense(t)
 	good := write("good.yaml", `
 admin_auth: true
 admin_secret: "a-strong-admin-secret-32-characters!!"
 redis:
   password: "redis-pass"
 trusted_proxies: ["10.0.0.0/8"]
+license_path: "`+licPath+`"
 `)
-	if _, _, err := loadValidatedConfig(good); err != nil {
+	if _, _, _, err := loadValidatedConfig(good); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
 
@@ -194,7 +255,7 @@ routes:
 	}
 	for name, body := range cases {
 		p := write(strings.ReplaceAll(name, " ", "-")+".yaml", body)
-		if _, _, err := loadValidatedConfig(p); err == nil {
+		if _, _, _, err := loadValidatedConfig(p); err == nil {
 			t.Fatalf("%s: unsafe config accepted", name)
 		}
 	}
