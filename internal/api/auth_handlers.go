@@ -53,7 +53,7 @@ const (
 // secret's entropy) while giving realistic legitimate concurrent bootstrap
 // usage room to not trip it.
 const (
-	bootstrapSecretLoginKey         = "loginfail:acct:__bootstrap_secret__"
+	bootstrapSecretLoginKey         = "loginfail:acct:__bootstrap_secret__" // #nosec G101 -- a Redis counter key name, not a credential
 	bootstrapSecretBruteforceLimit  = 40
 	bootstrapSecretBruteforceWindow = 15 * time.Minute
 )

@@ -35,8 +35,44 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # internal/license (see docs/licensing.md) is a hard boot gate — the
+      # gateway now refuses to start without a validly-signed license file.
+      # Generates a THROWAWAY keypair for this CI run only (never a real
+      # product key), embeds its public half into this build via -ldflags,
+      # and issues a never-expiring internal license signed with the
+      # matching private half — mirroring the real release-build/licensegen
+      # flow docs/licensing.md describes, just fully automated and disposable.
+      - name: Generate throwaway CI license key + license file
+        run: |
+          cat > /tmp/genkey.go <<'EOF'
+          package main
+
+          import (
+          	"crypto/ed25519"
+          	"encoding/base64"
+          	"fmt"
+          	"os"
+          )
+
+          func main() {
+          	pub, priv, err := ed25519.GenerateKey(nil)
+          	if err != nil {
+          		panic(err)
+          	}
+          	if err := os.WriteFile("/tmp/ci-license.key", priv, 0o600); err != nil {
+          		panic(err)
+          	}
+          	fmt.Print(base64.StdEncoding.EncodeToString(pub))
+          }
+          EOF
+          PUB="$(go run /tmp/genkey.go)"
+          echo "CI_LICENSE_PUBKEY=$PUB" >> "$GITHUB_ENV"
+          go run ./cmd/licensegen -issue -key /tmp/ci-license.key \
+            -licensee "CI (Dynamic Security Scan)" -tier internal -days 0 \
+            -out /tmp/ci-license.lic
+
       - name: Build gateway
-        run: go build -o bin/gateway ./cmd/gateway
+        run: go build -ldflags "-X api-gateway/internal/license.publicKeyB64=$CI_LICENSE_PUBKEY" -o bin/gateway ./cmd/gateway
 
       # Redis must carry a password — config.Validate rejects an empty one. The
       # official image takes it via --requirepass.
@@ -54,6 +90,7 @@ jobs:
       - name: Launch AEGIS
         env:
           AEGIS_REDIS_PASSWORD: scanpass
+          AEGIS_LICENSE_PATH: /tmp/ci-license.lic
         run: |
           # Strong admin secret (config.Validate rejects placeholders/short keys).
           AEGIS_ADMIN_SECRET="$(openssl rand -hex 32)"

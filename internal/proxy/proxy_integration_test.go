@@ -214,6 +214,71 @@ func TestProxy_RetriesToHealthyUpstream(t *testing.T) {
 	}
 }
 
+// TestProxy_CircuitBreakerOpenSkipsUpstreamThenExhausts covers the two
+// branches New()'s registered handler has for a single, permanently-dead
+// upstream: once its circuit breaker trips (5 failures, the fixed
+// threshold), a further request must skip straight past the isOpen() check
+// (`continue`) rather than dialing a known-bad upstream again, and — with
+// only one upstream configured — immediately fall through to "All Upstreams
+// Down" once the retry budget is spent on that skip.
+func TestProxy_CircuitBreakerOpenSkipsUpstreamThenExhausts(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close() // now refuses connections
+
+	gw := testGW(t, []config.RouteConfig{{Path: "/", Upstreams: []string{deadURL}, RetryAttempts: 1}})
+
+	// Five failing requests trip the breaker (threshold is fixed at 5 in New()).
+	for i := 0; i < 5; i++ {
+		rec := httptest.NewRecorder()
+		gw.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("priming request %d: got %d, want 502 (dead upstream)", i, rec.Code)
+		}
+	}
+
+	// The breaker is now open. The only upstream configured is skipped via
+	// isOpen()->continue instead of being dialed again, and with a single
+	// upstream and RetryAttempts=1 that immediately exhausts the loop.
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("after breaker trips: got %d, want 503 (all upstreams down/skipped)", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "All Upstreams Down") {
+		t.Fatalf("body = %q, want the all-upstreams-exhausted message", rec.Body.String())
+	}
+}
+
+// TestProxy_StripPrefix_ExactRouteMatchBecomesRoot is a regression test for
+// the edge of stripPrefix's own edge-case handling: TrimPrefix(path,
+// routePrefix) is EMPTY (not "/") when the request path is an exact,
+// no-trailing-slash match of the route's own prefix — this only arises for
+// a route registered WITHOUT a trailing "/" (an exact-match ServeMux
+// pattern), since a subtree ("/x/") pattern's shortest possible match already
+// includes the boundary slash. Must still forward "/" to the backend, not "".
+func TestProxy_StripPrefix_ExactRouteMatchBecomesRoot(t *testing.T) {
+	var gotPath string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	gw := testGW(t, []config.RouteConfig{{
+		Path: "/api/orders", Upstreams: []string{backend.URL}, StripPrefix: true,
+	}})
+
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/orders", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gotPath != "/" {
+		t.Errorf("backend saw path %q, want / (empty trim must become root, not empty string)", gotPath)
+	}
+}
+
 func TestProxy_POSTNotRetried(t *testing.T) {
 	// A POST is non-idempotent: even with retries configured it must hit the
 	// backend at most once per request (no replay).

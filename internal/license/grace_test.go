@@ -166,3 +166,29 @@ func TestLoadWithGrace_NonHardwareInvalidityUnaffected(t *testing.T) {
 		t.Fatal("no grace file should be written for a non-hardware-mismatch invalidity")
 	}
 }
+
+// TestLoadWithGrace_CorruptGraceFileGrantsFreshWindow covers readGraceState's
+// "present but corrupt" path (audit finding, 2026-08-23 — the error message
+// now distinguishes this from "missing" for diagnostics). A corrupt grace
+// file must be treated the same as a missing one: grant a fresh window
+// rather than erroring the boot.
+func TestLoadWithGrace_CorruptGraceFileGrantsFreshWindow(t *testing.T) {
+	pub, priv := genKeys(t)
+	withEmbeddedKey(t, pub)
+	c := Claims{Licensee: "Acme Corp", Tier: "pilot", HardwareID: "some-other-machine"}
+	sig, err := Sign(priv, c)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	path := writeLicense(t, sig)
+
+	if err := os.WriteFile(path+graceSuffix, []byte("{not valid json"), 0o600); err != nil {
+		t.Fatalf("write corrupt grace file: %v", err)
+	}
+
+	st := LoadWithGrace(path, time.Hour)
+	if !st.Valid || !st.Grace {
+		t.Fatalf("a corrupt grace file must be treated as no prior state (fresh grace), got Valid=%v Grace=%v reason=%s",
+			st.Valid, st.Grace, st.Reason)
+	}
+}

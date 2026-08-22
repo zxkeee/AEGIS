@@ -123,7 +123,7 @@ func runIssue(keyPath, out, licensee, tier string, days int, featuresCSV string,
 
 	signed, err := license.Sign(priv, c)
 	must(err)
-	must(os.WriteFile(out, []byte(signed), 0o644)) // #nosec G306 -- license file is not secret material
+	must(os.WriteFile(out, []byte(signed), 0o644)) // #nosec G306,G703 -- operator-supplied -out path (offline CLI tool, not user input); license file is not secret material
 
 	fmt.Printf("Issued %s license for %q → %s", tier, licensee, out)
 	if days > 0 {
