@@ -5,6 +5,7 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"os"
 
@@ -35,7 +36,7 @@ type step struct {
 //   - AbuseDetection runs AFTER auth so it sees verified JWT roles.
 //
 // Read this before reordering anything.
-func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Store, cat middleware.Catalog, postureEng *discovery.PostureEngine, schemaSpec *discovery.Spec) []step {
+func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Store, cat middleware.Catalog, postureEng *discovery.PostureEngine, schemaSpecFor func(context.Context) *discovery.Spec) []step {
 	// effective resolves the merged controls (global security.* + per-route
 	// overrides) for a request path. The route-overridable controls below are
 	// built force-enabled and gated on these booleans, so a route can switch a
@@ -96,8 +97,8 @@ func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Stor
 		{"WAF", wafMW},
 		{"Discovery", middleware.Discovery(cfg.Security.Inventory, cat, log)}, // passive API discovery
 		{"Auth", authMW},
-		{"SchemaValidation", middleware.SchemaValidation(cfg.Security.Schema, schemaSpec, log, st)}, // positive security: validate against OpenAPI contract
-		{"AbuseDetection", middleware.AbuseDetection(cfg.Security.Abuse, log, st)},                  // BOLA/BFLA (needs verified roles)
+		{"SchemaValidation", middleware.SchemaValidation(cfg.Security.Schema, schemaSpecFor, log, st)}, // positive security: validate against OpenAPI contract
+		{"AbuseDetection", middleware.AbuseDetection(cfg.Security.Abuse, log, st)},                     // BOLA/BFLA (needs verified roles)
 		{"DLP", dlpMW},
 		{"BehaviorAnalysis", middleware.BehaviorAnalysis(cfg.Security.Behavior, log, st)},
 	}
@@ -125,7 +126,23 @@ func BuildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st middlewa
 		cat = catalog
 	}
 
-	steps := chainSteps(cfg, log, st, cat, postureEng, enforcementSpec(cfg, log))
+	// Schema enforcement's spec resolver: per-tenant-aware (a tenant's own
+	// PUT /api/discovery/spec upload takes precedence over the config
+	// fallback, via SpecForEnforcement's bounded-staleness cache) when a
+	// catalog is wired — Postgres is what actually stores per-tenant
+	// uploaded specs. Without a catalog (Postgres/discovery disabled), falls
+	// back to a fixed closure over the config-level spec only, matching the
+	// pre-fix single-spec behavior for that degraded mode. (Audit finding,
+	// 2026-08-22 — see SpecForEnforcement's doc comment for the full story.)
+	var schemaSpecFor func(context.Context) *discovery.Spec
+	if catalog != nil {
+		schemaSpecFor = catalog.SpecForEnforcement
+	} else {
+		spec := enforcementSpec(cfg, log)
+		schemaSpecFor = func(context.Context) *discovery.Spec { return spec }
+	}
+
+	steps := chainSteps(cfg, log, st, cat, postureEng, schemaSpecFor)
 	mws := make([]middleware.Middleware, len(steps))
 	for i, s := range steps {
 		mws[i] = s.mw

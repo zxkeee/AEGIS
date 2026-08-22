@@ -10,8 +10,15 @@ import (
 	"api-gateway/internal/config"
 )
 
+// challengeStore is ChallengeStore plus the metric sink needed to make a
+// store-outage fail-open visible to operators.
+type challengeStore interface {
+	ChallengeStore
+	MetricsSink
+}
+
 // Challenge presents a JavaScript challenge to suspicious clients.
-func Challenge(cfg config.ChallengeConfig, log Logger, st ChallengeStore) Middleware {
+func Challenge(cfg config.ChallengeConfig, log Logger, st challengeStore) Middleware {
 	if !cfg.Enabled {
 		return passthrough
 	}
@@ -25,8 +32,24 @@ func Challenge(cfg config.ChallengeConfig, log Logger, st ChallengeStore) Middle
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ip := RealIP(r)
 
-			// Check if already solved
-			solved, _ := st.IsChallengeSolved(r.Context(), ip)
+			// Check if already solved. A store error here has no safe
+			// fail-closed option (audit finding, 2026-08-22): the discarded
+			// error used to make `solved` default to false, falling through
+			// to IssueChallenge below — which ALSO hits the same down store,
+			// so the client can never solve its way out. Every request on
+			// every Challenge-enabled route would 403 forever until the
+			// store recovers. Challenge is a soft anti-bot friction control,
+			// not a hard block (its own doc comment: "not bot-proof by
+			// design"), so fail open here — matching Behavior/Bot/ThreatFeed's
+			// stance elsewhere in this codebase — and make the gap visible
+			// via a log line and metric rather than leaving it silent.
+			solved, err := st.IsChallengeSolved(r.Context(), ip)
+			if err != nil {
+				log.Warn("challenge: store unavailable, failing open", map[string]any{"error": err.Error(), "ip": ip})
+				st.IncrMetric(r.Context(), "challenge_store_unavailable")
+				next.ServeHTTP(w, r)
+				return
+			}
 			if solved {
 				next.ServeHTTP(w, r)
 				return

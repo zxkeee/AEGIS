@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -52,7 +53,7 @@ func schemaMW(t *testing.T, cfg config.SchemaConfig) (http.Handler, *bool) {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	h := SchemaValidation(cfg, spec, fakeLogger{}, &fakeStore{})(next)
+	h := SchemaValidation(cfg, func(context.Context) *discovery.Spec { return spec }, fakeLogger{}, &fakeStore{})(next)
 	return h, &reached
 }
 
@@ -111,7 +112,7 @@ func TestSchemaValidation_BodyRestoredForBackend(t *testing.T) {
 		got = string(b)
 		w.WriteHeader(http.StatusOK)
 	})
-	h := SchemaValidation(config.SchemaConfig{Enabled: true, BlockMode: true}, spec, fakeLogger{}, &fakeStore{})(next)
+	h := SchemaValidation(config.SchemaConfig{Enabled: true, BlockMode: true}, func(context.Context) *discovery.Spec { return spec }, fakeLogger{}, &fakeStore{})(next)
 
 	want := `{"email":"a@b.c","age":3}`
 	rec := httptest.NewRecorder()
@@ -136,7 +137,7 @@ func TestSchemaValidation_OversizedBodyBlocked(t *testing.T) {
 		reached = true
 		w.WriteHeader(http.StatusOK)
 	})
-	h := SchemaValidation(config.SchemaConfig{Enabled: true, BlockMode: true, MaxBodyBytes: 16}, spec, fakeLogger{}, &fakeStore{})(next)
+	h := SchemaValidation(config.SchemaConfig{Enabled: true, BlockMode: true, MaxBodyBytes: 16}, func(context.Context) *discovery.Spec { return spec }, fakeLogger{}, &fakeStore{})(next)
 
 	rec := httptest.NewRecorder()
 	body := `{"email":"a@b.c","age":3}` // > 16 bytes
@@ -166,7 +167,7 @@ func TestSchemaValidation_OversizedBodyMonitorPassesThroughWithSignal(t *testing
 		w.WriteHeader(http.StatusOK)
 	})
 	store := &fakeStore{}
-	h := SchemaValidation(config.SchemaConfig{Enabled: true, BlockMode: false, MaxBodyBytes: 16}, spec, fakeLogger{}, store)(next)
+	h := SchemaValidation(config.SchemaConfig{Enabled: true, BlockMode: false, MaxBodyBytes: 16}, func(context.Context) *discovery.Spec { return spec }, fakeLogger{}, store)(next)
 
 	rec := httptest.NewRecorder()
 	body := `{"email":"a@b.c","age":3}` // > 16 bytes

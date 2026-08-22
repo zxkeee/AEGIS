@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -41,10 +42,13 @@ func main() {
 	flag.Parse()
 
 	// ── Load Configuration ────────────────────────────────────────────────────
-	cfg, err := loadValidatedConfig(*cfgPath)
+	cfg, trustedProxyNets, err := loadValidatedConfig(*cfgPath)
 	if err != nil {
 		panic("unsafe configuration: " + err.Error())
 	}
+	// No prior chain to protect on boot — commit immediately (see
+	// loadValidatedConfig's doc comment for why hot-reload defers this).
+	middleware.SetTrustedProxies(trustedProxyNets)
 
 	// ── Logger ────────────────────────────────────────────────────────────────
 	log := logger.New(cfg.Logging.Level)
@@ -376,26 +380,37 @@ func main() {
 // loadValidatedConfig parses the config file and runs the SAME safety gate for
 // both startup and hot-reload: config.Validate (rejects insecure combinations
 // such as placeholder secrets, wildcard CORS with auth, non-HTTPS threat feeds)
-// and middleware.InitTrustedProxies (re-parses trusted_proxies so RealIP
-// resolution tracks the config). Hot-reload previously skipped both, which let
-// an unsafe edit go live and silently ignored trusted_proxies changes — the
-// setting every per-IP control depends on.
-func loadValidatedConfig(path string) (config.GatewayConfig, error) {
+// and trusted_proxies parsing (so RealIP resolution tracks the config). Hot-
+// reload previously skipped both, which let an unsafe edit go live and
+// silently ignored trusted_proxies changes — the setting every per-IP control
+// depends on.
+//
+// The parsed trusted-proxy set is returned rather than committed here
+// (audit finding, 2026-08-22): committing eagerly meant a hot-reload that
+// passed this gate but failed LATER — e.g. gateway.BuildHandlerChain
+// rejecting an empty route's upstreams — had already overwritten the global
+// RealIP trust boundary for the OLD, still-serving handler chain, silently
+// contradicting the "previous config stays active" guarantee on error. The
+// caller must call middleware.SetTrustedProxies with the returned set only
+// once the ENTIRE reload (including BuildHandlerChain) has succeeded; on
+// boot there is no prior chain to protect, so main() commits immediately.
+func loadValidatedConfig(path string) (config.GatewayConfig, []*net.IPNet, error) {
 	cfg, err := config.Load(path)
 	if err != nil {
-		return config.GatewayConfig{}, err
+		return config.GatewayConfig{}, nil, err
 	}
 	if err := config.Validate(cfg); err != nil {
-		return config.GatewayConfig{}, err
+		return config.GatewayConfig{}, nil, err
 	}
 	// Observe/pilot mode coercion runs AFTER validation, so the returned config is
 	// already in its guaranteed non-disruptive shape before any chain is built —
 	// on startup and on every hot-reload alike.
 	cfg.ApplyObserveMode()
-	if err := middleware.InitTrustedProxies(cfg.TrustedProxies); err != nil {
-		return config.GatewayConfig{}, err
+	trustedProxyNets, err := middleware.ParseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return config.GatewayConfig{}, nil, err
 	}
-	return cfg, nil
+	return cfg, trustedProxyNets, nil
 }
 
 // loadConfigSpec loads the optional config-level OpenAPI spec (discovery.
@@ -435,10 +450,14 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 	reload := func() {
 		log.Info("config change detected, hot-reloading...")
 
-		// The full startup gate (parse + Validate + trusted-proxy re-init) also
+		// The full startup gate (parse + Validate + trusted-proxy parsing) also
 		// guards hot-reload: an edit that would be rejected at boot must not go
-		// live either. On any error the previous configuration stays active.
-		newCfg, err := loadValidatedConfig(absPath)
+		// live either. On any error the previous configuration stays active —
+		// newTrustedProxyNets is NOT committed yet (see loadValidatedConfig's
+		// doc comment); it only takes effect once BuildHandlerChain below also
+		// succeeds, so a later failure genuinely leaves the old chain's trust
+		// boundary untouched too, not just its routing.
+		newCfg, newTrustedProxyNets, err := loadValidatedConfig(absPath)
 		if err != nil {
 			log.Error("hot-reload: rejected, previous config stays active", map[string]any{"error": err.Error()})
 			return
@@ -464,6 +483,9 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 			loadConfigSpec(newCfg, catalog, log)
 		}
 
+		// The ENTIRE reload has now succeeded — only now commit the new trust
+		// boundary, immediately alongside the handler swap it belongs with.
+		middleware.SetTrustedProxies(newTrustedProxyNets)
 		activeHandler.Store(newHandler)
 		// Only the data-plane chain is swapped. The admin server (admin_listen,
 		// admin_auth/secret, admin_cors, session TTL) is built once at startup —

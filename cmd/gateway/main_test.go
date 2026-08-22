@@ -95,6 +95,56 @@ func TestChain_PostureMatchesEnforcement(t *testing.T) {
 	}
 }
 
+// TestLoadValidatedConfig_DoesNotCommitTrustedProxies is a regression test:
+// loadValidatedConfig used to call middleware.InitTrustedProxies directly,
+// committing the parsed trusted_proxies to the global RealIP trust boundary
+// immediately — before the rest of a hot-reload (BuildHandlerChain) was known
+// to succeed. A reload that failed later left that new trust boundary live
+// under the OLD, still-serving handler chain, contradicting "previous config
+// stays active." loadValidatedConfig must now only PARSE and return the
+// trusted-proxy set; the caller commits via middleware.SetTrustedProxies only
+// once the entire reload has succeeded (see reload() in main.go).
+func TestLoadValidatedConfig_DoesNotCommitTrustedProxies(t *testing.T) {
+	middleware.SetTrustedProxies(nil) // baseline: no trusted proxies configured
+	t.Cleanup(func() { middleware.SetTrustedProxies(nil) })
+
+	dir := t.TempDir()
+	p := filepath.Join(dir, "trusted.yaml")
+	body := `
+admin_auth: true
+admin_secret: "a-strong-admin-secret-32-characters!!"
+redis: {password: "redis-pass"}
+trusted_proxies: ["10.0.0.0/8"]
+`
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, nets, err := loadValidatedConfig(p)
+	if err != nil {
+		t.Fatalf("loadValidatedConfig: %v", err)
+	}
+	if len(nets) != 1 {
+		t.Fatalf("parsed nets = %v, want 1 entry (10.0.0.0/8)", nets)
+	}
+
+	// The proxy at 10.0.0.1 must NOT be trusted yet — loadValidatedConfig only
+	// parsed the new set, it never committed it.
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "10.0.0.1:1"
+	r.Header.Set("X-Forwarded-For", "203.0.113.9")
+	if got := middleware.RealIP(r); got != "10.0.0.1" {
+		t.Fatalf("RealIP before commit = %q, want %q (10.0.0.0/8 must not be trusted until SetTrustedProxies is called)", got, "10.0.0.1")
+	}
+
+	// Only after the caller explicitly commits (mirroring reload() committing
+	// after BuildHandlerChain succeeds) does the new trust boundary apply.
+	middleware.SetTrustedProxies(nets)
+	if got := middleware.RealIP(r); got != "203.0.113.9" {
+		t.Fatalf("RealIP after commit = %q, want %q (10.0.0.0/8 should now be trusted)", got, "203.0.113.9")
+	}
+}
+
 // loadValidatedConfig is the shared gate for startup AND hot-reload: a config
 // that fails Validate must be rejected in both paths (hot-reload used to skip
 // validation entirely, letting an unsafe edit go live).
@@ -116,7 +166,7 @@ redis:
   password: "redis-pass"
 trusted_proxies: ["10.0.0.0/8"]
 `)
-	if _, err := loadValidatedConfig(good); err != nil {
+	if _, _, err := loadValidatedConfig(good); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
 
@@ -144,7 +194,7 @@ routes:
 	}
 	for name, body := range cases {
 		p := write(strings.ReplaceAll(name, " ", "-")+".yaml", body)
-		if _, err := loadValidatedConfig(p); err == nil {
+		if _, _, err := loadValidatedConfig(p); err == nil {
 			t.Fatalf("%s: unsafe config accepted", name)
 		}
 	}

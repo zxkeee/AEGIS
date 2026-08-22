@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -30,7 +31,9 @@ func TestChallengeAnswer_KnownVectors(t *testing.T) {
 // recordingChallengeStore captures what the middleware stores as the expected
 // token, plus the standard ChallengeStore behaviour needed by the flow.
 type recordingChallengeStore struct {
-	issued string
+	issued       string
+	solvedErr    error // when set, IsChallengeSolved returns this error
+	metricCounts map[string]int
 }
 
 func (r *recordingChallengeStore) IssueChallenge(_ context.Context, _, token string, _ time.Duration) error {
@@ -44,7 +47,42 @@ func (r *recordingChallengeStore) MarkChallengeSolved(context.Context, string, t
 	return nil
 }
 func (r *recordingChallengeStore) IsChallengeSolved(context.Context, string) (bool, error) {
+	if r.solvedErr != nil {
+		return false, r.solvedErr
+	}
 	return false, nil
+}
+func (r *recordingChallengeStore) IncrMetric(_ context.Context, name string) {
+	if r.metricCounts == nil {
+		r.metricCounts = map[string]int{}
+	}
+	r.metricCounts[name]++
+}
+
+// TestChallenge_StoreErrorFailsOpen is a regression test: IsChallengeSolved's
+// error used to be discarded, defaulting `solved` to false and falling
+// through to IssueChallenge — which ALSO hits the same down store, so a
+// client could never solve its way out. Every request on every
+// Challenge-enabled route would 403 forever until the store recovered.
+// Challenge must fail open on a store error, matching Behavior/Bot/
+// ThreatFeed's stance elsewhere, and surface the gap via a metric.
+func TestChallenge_StoreErrorFailsOpen(t *testing.T) {
+	_ = InitTrustedProxies(nil)
+	st := &recordingChallengeStore{solvedErr: errors.New("redis: connection refused")}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	h := Challenge(config.ChallengeConfig{Enabled: true}, fakeLogger{}, st)(next)
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "9.9.9.9:1000"
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("store error: got %d, want 200 (fail-open, not a permanent 403 loop)", rec.Code)
+	}
+	if st.metricCounts["challenge_store_unavailable"] != 1 {
+		t.Fatalf("expected challenge_store_unavailable metric, got %v", st.metricCounts)
+	}
 }
 
 var seedRe = regexp.MustCompile(`var seed = "([0-9a-f]{32})"`)
