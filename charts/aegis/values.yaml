@@ -113,6 +113,14 @@ gateway:
   # file directly would have no effect except leaking it into a plaintext
   # ConfigMap; use secrets.forensicDsn instead.
   forensic_dsn: ""
+  # Path to a signed license file (internal/license, cmd/licensegen) — see
+  # docs/licensing.md. Always "" here for the same reason as forensic_dsn
+  # above (force-blanked by the ConfigMap template regardless); populate via
+  # AEGIS_LICENSE_PATH. NOTE: this chart does not yet provide a mechanism to
+  # mount a .lic file into the pod (no volume/Secret wiring for it) — that is
+  # a deployment-capability gap to close separately, not a leak, since the
+  # field stays correctly blanked either way.
+  license_path: ""
 
   redis:
     addr: "aegis-redis:6379"

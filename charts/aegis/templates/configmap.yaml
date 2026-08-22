@@ -8,7 +8,7 @@ data:
   # Every gateway.* field with an AEGIS_* env-var override (internal/config's
   # applyEnvOverrides) is always sourced from that env var at runtime
   # (Secret-backed, see deployment.yaml + secret.yaml) and takes precedence
-  # over anything in this file. All nine are force-blanked below rather than
+  # over anything in this file. All ten are force-blanked below rather than
   # trusted to stay empty in .Values.gateway: an operator who follows the
   # natural values.yaml shape and sets a real value directly (instead of the
   # secrets.* fields) would otherwise get it persisted into this plaintext,
@@ -32,17 +32,23 @@ data:
   #   AEGIS_ALERT_WEBHOOK_URL          -> alerting.webhook_url (can carry an
   #                                       auth token in the URL itself, e.g. a
   #                                       Slack webhook — treated as sensitive)
+  #   AEGIS_LICENSE_PATH               -> license_path (not secret content
+  #                                       itself — the license file it points
+  #                                       at is separate — but a filesystem
+  #                                       path is still env-authoritative like
+  #                                       the rest, same consistency reason)
   #
-  # (Security audit, 2026-08-22: this fix originally covered only
-  # forensic_dsn/redis.password — the other seven are the identical bug class,
-  # just missed. See scripts/lint-invariants.sh, which now asserts every
-  # AEGIS_*-sourced field above stays force-blanked here.) When adding a new
-  # AEGIS_* env override to config.go, add its field here AND to that
-  # invariant in the same change.
+  # (Security audit, 2026-08-22/23: this fix originally covered only
+  # forensic_dsn/redis.password — the other eight are the identical bug class,
+  # just missed each time a new AEGIS_* field was added. See
+  # scripts/lint-invariants.sh, which now asserts every AEGIS_*-sourced field
+  # above stays force-blanked here.) When adding a new AEGIS_* env override to
+  # config.go, add its field here AND to that invariant in the same change.
   gateway.yaml: |
     {{- $gw := deepCopy .Values.gateway }}
     {{- $_ := set $gw "forensic_dsn" "" }}
     {{- $_ := set $gw "admin_secret" "" }}
+    {{- $_ := set $gw "license_path" "" }}
     {{- if hasKey $gw "redis" }}
     {{- $_ := set (index $gw "redis") "password" "" }}
     {{- if hasKey (index $gw "redis") "sentinel" }}

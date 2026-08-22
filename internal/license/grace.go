@@ -43,6 +43,21 @@ const graceSuffix = ".hwgrace"
 // technically-mismatched hardware — the deterrent value of node-locking is in
 // the eventual hard stop and the loud, unmissable warning in the meantime, not
 // in a zero-tolerance first instant.
+//
+// Known limitation (documented, not silently accepted — audit finding,
+// 2026-08-23): the grace state file has no integrity protection tying it to
+// the license bytes, so anyone with filesystem WRITE access to the license's
+// directory specifically (a materially narrower bar than "compromised the
+// host," but broader than "root only" on e.g. a shared volume) could delete
+// it before the window elapses to make the next boot look like a first-ever
+// mismatch and get a fresh window, indefinitely. This is consistent with the
+// package's stated "deterrent, not DRM" threat model (that level of access
+// already permits patching the binary or replacing publicKeyB64), but IS a
+// materially different bar than "patch a Go binary" — mitigated in practice
+// by cmd/gateway/main.go's licenseRecheckLoop, which re-logs a loud grace
+// warning on every re-check (default every 15 min) for as long as the
+// mismatch persists, rather than only once at boot — a repeatedly-reset
+// grace period is now a repeatedly-loud one, not a silent one.
 func LoadWithGrace(path string, graceWindow time.Duration) Status {
 	st := Load(path)
 
@@ -104,7 +119,7 @@ func readGraceState(path string) (graceState, error) {
 	}
 	var gs graceState
 	if err := json.Unmarshal(data, &gs); err != nil {
-		return graceState{}, err
+		return graceState{}, fmt.Errorf("grace state file is present but corrupt: %w", err)
 	}
 	return gs, nil
 }

@@ -39,6 +39,57 @@ func TestGetLicense_ValidLicense(t *testing.T) {
 	}
 }
 
+// TestGetLicense_LastDayStillReportsDaysLeft is a regression test: DaysLeft
+// used to be a plain `int` with `json:",omitempty"` — a license on its FINAL
+// day legitimately computes DaysLeft == 0, and omitempty silently drops a
+// zero value from the JSON response entirely, hiding the single most urgent
+// renewal-warning state from the console banner (every other day, 14 down to
+// 1, rendered correctly; day 0 vanished). DaysLeft is now a *int so the field
+// is present (0) here and only absent for a genuinely never-expiring license.
+func TestGetLicense_LastDayStillReportsDaysLeft(t *testing.T) {
+	h, _ := redisHandlers(t)
+	expires := time.Now().Add(2 * time.Hour) // < 24h left -> DaysLeft computes to 0
+	withLicenseStatus(h, license.Status{
+		Valid: true, DaysLeft: 0,
+		Claims: license.Claims{Licensee: "Acme Corp", Tier: "trial", ExpiresAt: expires},
+	})
+
+	rec, body := doReq(h.getLicense, http.MethodGet, "/api/license", ctxAs("acme", iam.RoleViewer, false), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("getLicense = %d, want 200", rec.Code)
+	}
+	got, ok := body["days_left"]
+	if !ok {
+		t.Fatal("days_left must be present (0) on the license's final day, not omitted")
+	}
+	if got != float64(0) {
+		t.Fatalf("days_left = %v, want 0", got)
+	}
+}
+
+// TestGetLicense_NeverExpiresOmitsDaysLeft is the counterpart: a license with
+// no ExpiresAt (internal/demo use) has no meaningful DaysLeft at all — this
+// must stay absent from the response (nil *int), not render as a false "0
+// days left" expiry warning.
+func TestGetLicense_NeverExpiresOmitsDaysLeft(t *testing.T) {
+	h, _ := redisHandlers(t)
+	withLicenseStatus(h, license.Status{
+		Valid:  true,
+		Claims: license.Claims{Licensee: "Internal", Tier: "internal"}, // ExpiresAt zero value
+	})
+
+	rec, body := doReq(h.getLicense, http.MethodGet, "/api/license", ctxAs("acme", iam.RoleViewer, false), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("getLicense = %d, want 200", rec.Code)
+	}
+	if _, ok := body["days_left"]; ok {
+		t.Fatalf("days_left should be omitted for a never-expiring license, got %v", body["days_left"])
+	}
+	if _, ok := body["expires_at"]; ok {
+		t.Fatalf("expires_at should also be omitted for a never-expiring license, got %v", body["expires_at"])
+	}
+}
+
 func TestGetLicense_GraceStillReportsLicenseeAndTier(t *testing.T) {
 	h, _ := redisHandlers(t)
 	until := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)

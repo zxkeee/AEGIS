@@ -17,6 +17,11 @@
 *.cer
 *.p12
 *.pfx
+# Issued license files / hardware-grace state (internal/license,
+# cmd/licensegen) — not key material, but customer-identifying (licensee,
+# hardware fingerprint); no reason to sit in a build-cache layer's history.
+*.lic
+*.hwgrace
 
 # Build artifacts / local state not needed to compile the gateway binary.
 *.test

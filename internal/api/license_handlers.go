@@ -13,12 +13,19 @@ import (
 // fields are safe to hand to a "viewer"-role session later if that ever
 // changes.
 type licenseResp struct {
-	Valid      bool   `json:"valid"`
-	Grace      bool   `json:"grace"`
-	Licensee   string `json:"licensee,omitempty"`
-	Tier       string `json:"tier,omitempty"`
+	Valid    bool   `json:"valid"`
+	Grace    bool   `json:"grace"`
+	Licensee string `json:"licensee,omitempty"`
+	Tier     string `json:"tier,omitempty"`
+	// DaysLeft is a *int, not a plain int: a license on its FINAL day
+	// legitimately computes DaysLeft == 0, and `int` with `omitempty` drops a
+	// zero value from the JSON entirely — silently hiding the single most
+	// urgent renewal-warning state (the one the console banner most needs to
+	// show) while every other day (14, 13, ..., 1) rendered correctly.
+	// A *int with omitempty is only dropped when nil (never-expires license),
+	// distinguishing "no expiry" from "expires today" — audit finding, 2026-08-23.
+	DaysLeft   *int   `json:"days_left,omitempty"`
 	ExpiresAt  string `json:"expires_at,omitempty"`
-	DaysLeft   int    `json:"days_left,omitempty"`
 	GraceUntil string `json:"grace_until,omitempty"`
 	Reason     string `json:"reason,omitempty"`
 }
@@ -48,7 +55,8 @@ func (h *handlers) getLicense(w http.ResponseWriter, r *http.Request) {
 		resp.Tier = st.Claims.Tier
 		if !st.Claims.ExpiresAt.IsZero() {
 			resp.ExpiresAt = st.Claims.ExpiresAt.Format("2006-01-02")
-			resp.DaysLeft = st.DaysLeft
+			days := st.DaysLeft
+			resp.DaysLeft = &days
 		}
 	}
 	if st.Grace {

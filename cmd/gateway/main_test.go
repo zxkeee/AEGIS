@@ -3,14 +3,17 @@ package main
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"api-gateway/internal/api"
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
 	"api-gateway/internal/gateway"
@@ -172,6 +175,45 @@ license_path: "` + licPath + `"
 	middleware.SetTrustedProxies(nets)
 	if got := middleware.RealIP(r); got != "203.0.113.9" {
 		t.Fatalf("RealIP after commit = %q, want %q (10.0.0.0/8 should now be trusted)", got, "203.0.113.9")
+	}
+}
+
+// TestRunLicenseRecheck_UpdatesStatusIndependentlyOfConfigReload is a
+// regression test for the licensing "continuous enforcement" gap (audit
+// finding, 2026-08-23): watchConfigFile only re-validates the license as a
+// side effect of a gateway.yaml edit, so a long-lived process whose config
+// is never touched again — the steady-state case — would keep serving on a
+// stale license status (and, worse, an actually-expired license) forever.
+// runLicenseRecheck is licenseRecheckLoop's per-tick body; this proves it
+// updates the Server's published license status on its own, without any
+// config file ever changing.
+func TestRunLicenseRecheck_UpdatesStatusIndependentlyOfConfigReload(t *testing.T) {
+	adminSrv := api.NewServer(nil, logger.New("error"), config.GatewayConfig{}, nil, nil, nil, nil, nil, nil)
+
+	var currentLicensePath atomic.Value
+	currentLicensePath.Store("") // nothing configured yet -> reports invalid
+
+	getLicenseValid := func() any {
+		rec := httptest.NewRecorder()
+		adminSrv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/license", nil))
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("unmarshal /api/license body: %v", err)
+		}
+		return body["valid"]
+	}
+
+	runLicenseRecheck(&currentLicensePath, logger.New("error"), adminSrv)
+	if got := getLicenseValid(); got != false {
+		t.Fatalf("before a license is configured: /api/license valid = %v, want false", got)
+	}
+
+	// Point at a real, valid license and re-run the check — the published
+	// status must update WITHOUT any config-file hot-reload happening at all.
+	currentLicensePath.Store(issueTestLicense(t))
+	runLicenseRecheck(&currentLicensePath, logger.New("error"), adminSrv)
+	if got := getLicenseValid(); got != true {
+		t.Fatalf("after runLicenseRecheck picked up a newly-valid license: /api/license valid = %v, want true", got)
 	}
 }
 

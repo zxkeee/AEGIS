@@ -234,6 +234,12 @@ func main() {
 	}
 	activeHandler.Store(handler)
 
+	// currentLicensePath tracks cfg.LicensePath across hot-reloads (a reload
+	// can change it), read by licenseRecheckLoop below. See that function's
+	// doc comment for why this exists.
+	var currentLicensePath atomic.Value
+	currentLicensePath.Store(cfg.LicensePath)
+
 	// ── Gateway Server (Hot Reload via atomic swap) ───────────────────────────
 	// fpRegistry captures a real TLS fingerprint from each ClientHello when the
 	// gateway terminates TLS, replacing the spoofable X-JA3-Fingerprint header.
@@ -331,7 +337,15 @@ func main() {
 	}
 
 	// ── Hot Reload Watcher ────────────────────────────────────────────────────
-	go watchConfigFile(*cfgPath, &activeHandler, log, st, catalog, adminSrv)
+	go watchConfigFile(*cfgPath, &activeHandler, log, st, catalog, adminSrv, &currentLicensePath)
+
+	// ── License Re-check ──────────────────────────────────────────────────────
+	// See licenseRecheckLoop's doc comment: the hot-reload watcher above only
+	// re-validates the license as a side effect of a gateway.yaml edit, so
+	// without this a long-lived process (nobody touches its config — the
+	// steady-state case) would keep serving on an expired license
+	// indefinitely (audit finding, 2026-08-23).
+	go licenseRecheckLoop(&currentLicensePath, log, adminSrv)
 
 	// ── Start Servers ─────────────────────────────────────────────────────────
 	go func() {
@@ -480,6 +494,64 @@ func logLicenseStatus(log *logger.Logger, st license.Status) {
 	log.Info("license: valid", fields)
 }
 
+// licenseRecheckInterval bounds how stale a running gateway's license status
+// can get without a config-file edit or restart. Short enough that "the
+// trial clock is real" (docs/licensing.md) holds within a bounded window
+// rather than only "at the next incidental config touch or restart"; long
+// enough that it is not itself a meaningful load source.
+const licenseRecheckInterval = 15 * time.Minute
+
+// licenseRecheckLoop independently re-validates the license on a fixed
+// schedule, closing a gap watchConfigFile leaves open: that watcher only
+// re-runs loadValidatedConfig (and therefore re-checks the license) as a
+// side effect of a gateway.yaml change, so a long-lived process whose config
+// is never edited again — the steady-state case for a production proxy —
+// would otherwise keep serving on an expired or newly-hardware-mismatched
+// license indefinitely, with `/api/license`/the console banner reporting a
+// frozen boot-time snapshot the entire time (audit finding, 2026-08-23).
+//
+// This does NOT tear down the running chain or refuse traffic on its own
+// when the license goes invalid mid-run: docs/licensing.md deliberately
+// treats a same-minute production outage over licensing as a worse outcome
+// than a bounded window of non-compliance (the same reasoning
+// LoadWithGrace's hardware-grace period already applies to node-lock
+// mismatches). It only makes the status LOUD and CURRENT — a fresh
+// Load/LoadWithGrace result is logged and pushed to SetLicenseStatus every
+// tick, so the console/API never lag boot-or-last-reload by more than
+// licenseRecheckInterval, and an operator or log-based alerting sees the
+// same "license: INVALID" signal a restart would have produced, without
+// needing one.
+func licenseRecheckLoop(currentLicensePath *atomic.Value, log *logger.Logger, adminSrv *api.Server) {
+	ticker := time.NewTicker(licenseRecheckInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		runLicenseRecheck(currentLicensePath, log, adminSrv)
+	}
+}
+
+// runLicenseRecheck is licenseRecheckLoop's per-tick body, split out so a
+// test can exercise one check deterministically without waiting on a real
+// ticker.
+func runLicenseRecheck(currentLicensePath *atomic.Value, log *logger.Logger, adminSrv *api.Server) {
+	path, _ := currentLicensePath.Load().(string)
+	st := license.LoadWithGrace(path, license.DefaultHardwareGrace)
+	if !st.Valid {
+		// Deliberately NOT logLicenseStatus here: its !Valid branch says
+		// "unexpected — loadValidatedConfig should have rejected this
+		// before startup/hot-reload got this far," which is wrong in this
+		// context — this IS the expected place a mid-run expiry first
+		// surfaces, not a bug.
+		log.Error("license: periodic re-check found the running license NO LONGER VALID — "+
+			"traffic keeps flowing (see docs/licensing.md's mid-run-expiry design note), but this is "+
+			"now a licensing breach; renew and hot-reload (or restart) to clear it", map[string]any{
+			"reason": st.Reason, "path": path,
+		})
+	} else {
+		logLicenseStatus(log, st)
+	}
+	adminSrv.SetLicenseStatus(st)
+}
+
 // loadConfigSpec loads the optional config-level OpenAPI spec (discovery.
 // spec_path) and installs it as the catalog's fallback for drift detection. A
 // missing path clears the fallback; a read/parse error is logged and leaves the
@@ -508,7 +580,7 @@ func loadConfigSpec(cfg config.GatewayConfig, catalog *discovery.Catalog, log *l
 
 // watchConfigFile uses fsnotify for instant config hot-reload (zero-downtime).
 // Falls back to 5s polling if fsnotify setup fails.
-func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logger, st *store.Store, catalog *discovery.Catalog, adminSrv *api.Server) {
+func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logger, st *store.Store, catalog *discovery.Catalog, adminSrv *api.Server, currentLicensePath *atomic.Value) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		absPath = path
@@ -531,6 +603,7 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 		}
 		logLicenseStatus(log, newLicStatus)
 		adminSrv.SetLicenseStatus(newLicStatus)
+		currentLicensePath.Store(newCfg.LicensePath)
 		if newCfg.Observe {
 			log.Warn("hot-reload: OBSERVE MODE ACTIVE — controls coerced to passive (record-only, no blocking/redaction)", nil)
 		}

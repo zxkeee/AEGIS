@@ -47,6 +47,11 @@ web/console/.vite/
 # Issued license files (internal/license, cmd/licensegen) — never a customer's
 # license artifact in this repo, only the issuing tool and public verify key.
 *.lic
+# Hardware-lock grace-period state (internal/license/grace.go) — persisted next
+# to a .lic file as "<license_path>.hwgrace"; contains a customer machine's
+# hardware fingerprint. Low-sensitivity (not key material) but no reason to
+# ever land in git — same reasoning as the *.lic rule above.
+*.hwgrace
 *.pfx
 # Redis dump (local dev)
 *.rdb
