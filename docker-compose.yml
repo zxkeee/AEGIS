@@ -1,7 +1,8 @@
 services:
   # ── API Security Gateway ─────────────────────────────────────────────────────
   # Required env vars (copy .env.example → .env and fill in values):
-  #   AEGIS_ADMIN_SECRET, AEGIS_REDIS_PASSWORD, AEGIS_JWT_SECRET (if auth.enabled)
+  #   AEGIS_ADMIN_SECRET, AEGIS_REDIS_PASSWORD, POSTGRES_PASSWORD,
+  #   AEGIS_JWT_SECRET (if auth.enabled)
   gateway:
     build: .
     # Use the compose-specific config (redis:6379, postgres, http cookie).
@@ -26,16 +27,25 @@ services:
       # Default the forensic/catalog/iam/audit DSN to the bundled PostgreSQL so
       # discovery, multi-tenancy, the audit log, SSO and retention work out of the
       # box. Override AEGIS_FORENSIC_DSN to point at an external database.
-      - AEGIS_FORENSIC_DSN=${AEGIS_FORENSIC_DSN:-postgres://aegis:${POSTGRES_PASSWORD:-aegis}@postgres:5432/aegis?sslmode=disable}
+      - AEGIS_FORENSIC_DSN=${AEGIS_FORENSIC_DSN:-postgres://aegis:${POSTGRES_PASSWORD}@postgres:5432/aegis?sslmode=disable}
       - AEGIS_OIDC_CLIENT_ID=${AEGIS_OIDC_CLIENT_ID:-}
       - AEGIS_OIDC_CLIENT_SECRET=${AEGIS_OIDC_CLIENT_SECRET:-}
     restart: unless-stopped
     networks:
       - aegis
+    # A compromised or WAF-bypassed request storm hitting this container alone
+    # must not be able to starve Redis/Postgres/Prometheus/Grafana sharing the
+    # same Docker host. Mirrors the limits already set in charts/aegis's Helm
+    # deployment for the same reason.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
 
   # ── Redis (State Store) ──────────────────────────────────────────────────────
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:9702d01c1f10c3ea9f48211b4362e44f154ff02d063e6f7268eba804059f53bf
     # Redis port is NOT exposed to the host — only reachable inside the aegis network.
     volumes:
       - redis_data:/data
@@ -53,18 +63,25 @@ services:
     restart: unless-stopped
     networks:
       - aegis
+    deploy:
+      resources:
+        # --maxmemory above already caps Redis's own data usage at 256mb; this
+        # is the container-level ceiling (process + overhead), set a bit above it.
+        limits:
+          cpus: "0.5"
+          memory: 384M
 
   # ── PostgreSQL (durable catalog, forensics, IAM, audit) ──────────────────────
   # Not exposed to the host — only reachable inside the aegis network. Enables the
   # discovery catalog, multi-tenancy, admin audit log, OIDC SSO and retention.
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:7a396fd264a2067788b6551122b50f162bf6136312c7fc9d74381cb92c648382
     volumes:
       - postgres_data:/var/lib/postgresql/data
     environment:
       - POSTGRES_DB=aegis
       - POSTGRES_USER=aegis
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-aegis}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set — see .env.example}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U aegis -d aegis"]
       interval: 5s
@@ -73,11 +90,19 @@ services:
     restart: unless-stopped
     networks:
       - aegis
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
 
   # ── Prometheus (Metrics Collection) ──────────────────────────────────────────
   # Prometheus is NOT exposed to the host — access via Grafana or kubectl port-forward.
   prometheus:
-    image: prom/prometheus:v2.52.0
+    # Digest resolved from the Docker Hub v2 API (multi-arch manifest list) for
+    # prom/prometheus:v2.52.0. Re-pin the same way if the tag is ever bumped:
+    #   docker pull prom/prometheus:vX.Y.Z && docker inspect --format='{{index .RepoDigests 0}}' prom/prometheus:vX.Y.Z
+    image: prom/prometheus:v2.52.0@sha256:5c435642ca4d8427ca26f4901c11114023004709037880cd7860d5b7176aa731
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -100,10 +125,18 @@ services:
     restart: unless-stopped
     networks:
       - aegis
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
 
   # ── Grafana (Dashboards) ─────────────────────────────────────────────────────
   grafana:
-    image: grafana/grafana:10.4.3
+    # Digest resolved from the Docker Hub v2 API (multi-arch manifest list) for
+    # grafana/grafana:10.4.3. Re-pin the same way if the tag is ever bumped
+    # (see the matching comment on the prometheus service above).
+    image: grafana/grafana:10.4.3@sha256:b7fcb534f7b3512801bb3f4e658238846435804deb479d105b5cdc680847c272
     ports:
       - "127.0.0.1:3000:3000"   # localhost only — do not expose publicly
     volumes:
@@ -114,6 +147,11 @@ services:
     restart: unless-stopped
     networks:
       - aegis
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
 
 volumes:
   redis_data:

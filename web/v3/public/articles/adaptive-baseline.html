@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>A Fixed Threshold Is Always Wrong for Someone — AEGIS</title>
+<meta name="description" content="Why enumeration detection needs a per-consumer learned baseline instead of a single magic number, and how a 0.05 EWMA does it in one Lua script." />
+<link rel="stylesheet" href="/articles/article.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/">AEGIS</a>
+  <a class="back" href="/articles.html">← all articles</a>
+</nav>
+
+<div class="wrap">
+  <p class="eyebrow">Engineering</p>
+  <h1>A Fixed Threshold Is Always Wrong for Someone</h1>
+  <p class="dek">Why "more than 50 requests a minute is suspicious" breaks on real traffic, and how a per-consumer learned baseline fixes both directions of the problem at once.</p>
+
+  <p>Enumeration detection — flagging a consumer who's iterating through object IDs faster than a normal user would — sounds simple until you try to pick the number. Set the threshold low, and your busiest legitimate integration partner trips it every morning. Set it high enough that the power user stops tripping it, and a patient attacker enumerating just under your line sails through undetected. There is no single number that's correct for every consumer on a real system, because "normal" isn't one number — it's a distribution across very different callers.</p>
+
+  <h2>The two failure directions, concretely</h2>
+  <table>
+    <thead><tr><th>Scenario</th><th>Fixed threshold (e.g. 50/min)</th></tr></thead>
+    <tbody>
+      <tr><td>Internal batch job, normally 200 req/min</td><td>False positive, every run</td></tr>
+      <tr><td>Attacker enumerating at 40 req/min</td><td>False negative, never flagged</td></tr>
+    </tbody>
+  </table>
+  <p>Both consumers are on the same gateway, hitting the same endpoint. One fixed number cannot be right for both — the whole premise of a single global threshold is that "normal" is a constant, and it isn't.</p>
+
+  <h2>What we do instead: learn each consumer's own norm</h2>
+  <p>Rather than a global constant, AEGIS keeps a per-consumer, per-endpoint <strong>exponentially weighted moving average</strong> of distinct-object access counts, and flags a request only when the current window is an outlier <em>relative to that specific consumer's own history</em> — not relative to everyone else's.</p>
+
+  <pre><code><span class="cmt">-- folds the current observation into the stored baseline with a small
+-- alpha, so the baseline drifts slowly toward the consumer's real norm
+-- instead of being knocked around by any single window</span>
+local alpha = 0.05
+local nb = alpha * cur + (1 - alpha) * b</code></pre>
+
+  <p>0.05 means each new window moves the baseline about 5% of the way toward whatever just happened. A single unusual burst barely nudges the long-run average; a sustained change in behavior — the consumer genuinely growing its usage — gets absorbed over time instead of being permanently flagged. And critically: the internal batch job's baseline settles near 200, and 200 is normal <em>for it</em>. Someone else with a baseline near 5 gets flagged for a jump to 30, which the batch job would never trigger on at all.</p>
+
+  <h2>The part that keeps the baseline honest: don't learn from an attack</h2>
+  <p>An EWMA that learns from every observation, unconditionally, has an obvious hole: an attacker who ramps up slowly enough trains the detector to think the attack is normal. So learning is conditional — a window is only folded into the baseline when it <em>doesn't</em> breach the hard absolute ceiling that exists independent of the adaptive logic:</p>
+
+  <pre><code>b, err := st.TrackBaseline(ctx, consumer, endpoint, maxCount, !overCeiling, baselineTTL)</code></pre>
+
+  <p><code>!overCeiling</code> is the whole safeguard in four characters: learn only when this window didn't already blow through the hard ceiling. A clear attack gets flagged by the ceiling and never gets to poison the baseline it would otherwise be measured against next time.</p>
+
+  <h2>One more failure mode: the empty-history floor</h2>
+  <p>A brand-new consumer with almost no history has a baseline near zero — which means almost <em>anything</em> looks like a huge multiple of "normal" and would trigger constantly on day one. There's a floor for this reason: the adaptive check only applies once a consumer has accumulated a minimum number of observed objects, so a cold-start consumer isn't judged against a baseline that hasn't had time to mean anything yet.</p>
+
+  <h2>What this doesn't do</h2>
+  <ul>
+    <li><strong>It's still per-endpoint, not cross-endpoint.</strong> An attacker enumerating low-and-slow across many different endpoints, each individually under its own baseline, isn't correlated by this mechanism alone.</li>
+    <li><strong>It's a multiplier on a learned norm, not a percentile model.</strong> A true percentile-based model would react differently to skewed distributions; the EWMA-multiple approach is simpler and cheaper to run atomically in Redis, at the cost of some precision.</li>
+    <li><strong>There's still a hard absolute ceiling underneath it</strong> — the adaptive layer sits on top of, not instead of, a fixed maximum nobody should ever exceed regardless of their personal baseline.</li>
+  </ul>
+
+  <div class="cta">
+    <p>This baseline logic runs alongside the same object-ownership detector that catches single-object leaks — see the companion post on how that half works.</p>
+    <a class="btn" href="/articles/bola-detection.html">Read: Catching the IDOR a Signature WAF Can't See →</a>
+  </div>
+</div>
+
+<footer>AEGIS — inline API security gateway, built in Go.</footer>
+
+</body>
+</html>

@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"time"
 
 	"api-gateway/internal/tenant"
 )
@@ -18,8 +19,12 @@ func (c *Catalog) SetConfigSpec(s *Spec) {
 // specFor resolves the effective spec for the request's tenant: a per-tenant
 // uploaded spec (cached, invalidated by uploaded_at) takes precedence over the
 // config fallback. Returns nil when neither is present (drift is then a no-op).
+// Always does a real Postgres read (via pg.getSpec) — safe for on-demand
+// callers like Drift() where a synchronous DB round trip is acceptable, but
+// NOT for the hot request path; see SpecForEnforcement for that.
 func (c *Catalog) specFor(ctx context.Context) *Spec {
 	tnt := tenant.From(ctx)
+	now := time.Now()
 
 	raw, meta, found, err := c.pg.getSpec(ctx, tnt)
 	if err != nil {
@@ -27,6 +32,12 @@ func (c *Catalog) specFor(ctx context.Context) *Spec {
 		return c.configSpec()
 	}
 	if !found {
+		// Cache the negative result too (with a checkedAt stamp), so
+		// SpecForEnforcement's TTL check can skip Postgres for the common
+		// case of a tenant relying purely on the config fallback.
+		c.specMu.Lock()
+		c.specCache[tnt] = specCacheEntry{checkedAt: now}
+		c.specMu.Unlock()
 		return c.configSpec()
 	}
 
@@ -34,7 +45,11 @@ func (c *Catalog) specFor(ctx context.Context) *Spec {
 	c.specMu.RLock()
 	ce, ok := c.specCache[tnt]
 	c.specMu.RUnlock()
-	if ok && ce.uploadedAt.Equal(meta.UploadedAt) {
+	if ok && ce.spec != nil && ce.uploadedAt.Equal(meta.UploadedAt) {
+		ce.checkedAt = now
+		c.specMu.Lock()
+		c.specCache[tnt] = ce
+		c.specMu.Unlock()
 		return ce.spec
 	}
 
@@ -46,9 +61,47 @@ func (c *Catalog) specFor(ctx context.Context) *Spec {
 		return c.configSpec()
 	}
 	c.specMu.Lock()
-	c.specCache[tnt] = specCacheEntry{uploadedAt: meta.UploadedAt, spec: spec}
+	c.specCache[tnt] = specCacheEntry{uploadedAt: meta.UploadedAt, spec: spec, checkedAt: now}
 	c.specMu.Unlock()
 	return spec
+}
+
+// specEnforcementCacheTTL bounds how often SpecForEnforcement re-checks
+// Postgres for a given tenant. Without it, wiring per-tenant spec
+// enforcement into the request hot path would add a synchronous Postgres
+// round trip to EVERY request when schema enforcement is enabled — this
+// caps that to at most one check per tenant per TTL.
+const specEnforcementCacheTTL = 30 * time.Second
+
+// SpecForEnforcement resolves the effective spec for hot-path request
+// validation (middleware.SchemaValidation) — same precedence as specFor
+// (per-tenant upload over config fallback), but served from the cache
+// without a Postgres round trip when the cache entry is still within
+// specEnforcementCacheTTL. A newly uploaded/deleted spec (SetSpec/DeleteSpec)
+// still invalidates the cache immediately, so this only bounds the staleness
+// window for a tenant nobody has just touched, not a permanent lag.
+//
+// (Audit finding, 2026-08-22: schema enforcement previously used ONLY the
+// single config-level spec — internal/gateway/chain.go's enforcementSpec —
+// for every tenant, unconditionally. A tenant's own uploaded spec (PUT
+// /api/discovery/spec, correctly tenant-scoped in Postgres) was fed to the
+// drift report but never to enforcement itself: an operator who uploaded a
+// contract reasonably believed it was now blocking non-conforming requests;
+// it was not, for any tenant, ever. This resolves the spec the same way
+// specFor/Drift() do, so upload now actually enforces.)
+func (c *Catalog) SpecForEnforcement(ctx context.Context) *Spec {
+	tnt := tenant.From(ctx)
+
+	c.specMu.RLock()
+	ce, ok := c.specCache[tnt]
+	c.specMu.RUnlock()
+	if ok && time.Since(ce.checkedAt) < specEnforcementCacheTTL {
+		if ce.spec != nil {
+			return ce.spec
+		}
+		return c.configSpec()
+	}
+	return c.specFor(ctx)
 }
 
 func (c *Catalog) configSpec() *Spec {

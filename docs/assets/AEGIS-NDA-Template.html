@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AEGIS — NDA Template</title>
+<style>
+@page { size: A4; margin: 28mm 25mm 20mm 25mm; }
+body {
+  font-family: "Times New Roman", Times, serif;
+  font-size: 12pt;
+  line-height: 1.55;
+  color: #000;
+  max-width: 100%;
+}
+.confidential {
+  text-align: right;
+  font-size: 9pt;
+  letter-spacing: 0.08em;
+  margin-bottom: 10mm;
+}
+h1 {
+  font-size: 15pt;
+  text-align: center;
+  letter-spacing: 0.03em;
+  margin: 0 0 2mm 0;
+}
+.doc-sub {
+  text-align: center;
+  font-size: 10.5pt;
+  margin-bottom: 9mm;
+}
+.note {
+  font-style: italic;
+  font-size: 10.5pt;
+  margin-bottom: 8mm;
+  padding-bottom: 4mm;
+  border-bottom: 1px solid #000;
+}
+p { margin: 0 0 3mm 0; text-align: justify; }
+p.recital { margin-bottom: 2.5mm; }
+h2.article {
+  font-size: 12pt;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  text-align: center;
+  margin: 8mm 0 4mm 0;
+}
+.clause {
+  display: flex;
+  margin-bottom: 3mm;
+  text-align: justify;
+}
+.clause > .n {
+  flex: 0 0 12mm;
+  font-weight: normal;
+}
+.clause > .t {
+  flex: 1 1 auto;
+}
+.clause .clause {
+  margin-bottom: 2mm;
+  margin-top: 2mm;
+}
+.clause .clause > .n {
+  flex: 0 0 9mm;
+}
+.sig-title {
+  font-size: 11pt;
+  font-weight: bold;
+  text-transform: uppercase;
+  margin-top: 10mm;
+  margin-bottom: 3mm;
+  text-align: center;
+}
+.sig-party {
+  margin-top: 8mm;
+}
+.sig-party .name {
+  font-weight: bold;
+  margin-bottom: 6mm;
+}
+.sig-line {
+  border-top: 1px solid #000;
+  width: 70mm;
+  margin-top: 12mm;
+  padding-top: 1.5mm;
+  font-size: 10pt;
+}
+.sig-field {
+  margin-top: 2mm;
+  font-size: 11pt;
+}
+</style>
+</head>
+<body>
+
+<div class="confidential">CONFIDENTIAL — DRAFT TEMPLATE</div>
+
+<h1>MUTUAL NON-DISCLOSURE AGREEMENT</h1>
+<div class="doc-sub">AEGIS API Security Gateway</div>
+
+<p class="note">This is a template for internal use, not a document ready for
+signature. Bracketed fields must be completed, and the agreement reviewed by
+qualified counsel, before execution — particularly the governing-law,
+penalty provisions in Article 5, and the governing-law provision in
+Article 6.</p>
+
+<p class="recital">This Mutual Non-Disclosure Agreement (this "<b>Agreement</b>")
+is entered into as of [DATE] (the "<b>Effective Date</b>") by and between:</p>
+
+<p class="recital">[AEGIS legal entity name], a company organized under the laws
+of [jurisdiction], with its principal place of business at [address] and
+registration number [number] ("<b>AEGIS</b>"); and</p>
+
+<p class="recital">[Counterparty legal entity name], a company organized under
+the laws of [jurisdiction], with its principal place of business at [address]
+and registration number [number] ("<b>Counterparty</b>"),</p>
+
+<p class="recital">each individually a "<b>Party</b>" and together the
+"<b>Parties</b>."</p>
+
+<p class="recital"><b>WHEREAS</b>, the Parties wish to engage in discussions,
+demonstrations, a pilot deployment, or other business cooperation relating to
+the AEGIS API Security Gateway software product and related materials (the
+"<b>Purpose</b>"); and</p>
+
+<p class="recital"><b>WHEREAS</b>, in the course of the Purpose each Party may
+disclose to the other certain confidential and proprietary information;</p>
+
+<p class="recital"><b>NOW, THEREFORE</b>, in consideration of the mutual
+covenants set forth herein, the Parties agree as follows:</p>
+
+<h2 class="article">Article 1 — Definition of Confidential Information</h2>
+
+<div class="clause"><div class="n">1.1</div><div class="t">"Confidential
+Information" means any information disclosed by either Party (the
+"<b>Disclosing Party</b>") to the other (the "<b>Receiving Party</b>"), whether
+orally, in writing, electronically, or by demonstration, that is designated as
+confidential or that would reasonably be understood to be confidential given
+its nature or the circumstances of disclosure, including without
+limitation:</div></div>
+
+<div class="clause"><div class="n">(a)</div><div class="t">source code,
+architecture, technical documentation, diagrams, threat-detection algorithms,
+risk-scoring models, and other technical materials of AEGIS;</div></div>
+<div class="clause"><div class="n">(b)</div><div class="t">pricing, licensing
+terms, product roadmap, test results (including load and penetration testing),
+and development plans;</div></div>
+<div class="clause"><div class="n">(c)</div><div class="t">Counterparty's
+business information provided for purposes of a pilot, including traffic
+volumes, infrastructure architecture, and customer data; and</div></div>
+<div class="clause"><div class="n">(d)</div><div class="t">the content of
+negotiations, presentations, demo access, and screen-share sessions.</div></div>
+
+<h2 class="article">Article 2 — Exclusions</h2>
+
+<div class="clause"><div class="n">2.1</div><div class="t">Confidential
+Information does not include information that:</div></div>
+
+<div class="clause"><div class="n">(a)</div><div class="t">was publicly
+available at the time of disclosure through no fault of the Receiving
+Party;</div></div>
+<div class="clause"><div class="n">(b)</div><div class="t">becomes publicly
+available after disclosure through no fault of the Receiving Party;</div></div>
+<div class="clause"><div class="n">(c)</div><div class="t">was lawfully known
+to the Receiving Party prior to disclosure, as shown by written
+records;</div></div>
+<div class="clause"><div class="n">(d)</div><div class="t">is received from a
+third party without breach of any confidentiality obligation;</div></div>
+<div class="clause"><div class="n">(e)</div><div class="t">is independently
+developed by the Receiving Party without use of the Disclosing Party's
+Confidential Information; or</div></div>
+<div class="clause"><div class="n">(f)</div><div class="t">is required to be
+disclosed by law, regulation, or court order, provided the Receiving Party
+gives the Disclosing Party prompt written notice (where legally permitted) so
+it may seek a protective order.</div></div>
+
+<h2 class="article">Article 3 — Obligations of the Receiving Party</h2>
+
+<div class="clause"><div class="n">3.1</div><div class="t">Each Party, in its
+capacity as a Receiving Party, agrees to:</div></div>
+
+<div class="clause"><div class="n">(a)</div><div class="t">use the Disclosing
+Party's Confidential Information solely for the Purpose, and not for developing
+a competing product or service;</div></div>
+<div class="clause"><div class="n">(b)</div><div class="t">not disclose
+Confidential Information to any third party without the Disclosing Party's
+prior written consent, except to employees or contractors who need it for the
+Purpose and are bound by confidentiality obligations at least as protective as
+those in this Agreement;</div></div>
+<div class="clause"><div class="n">(c)</div><div class="t">protect Confidential
+Information using at least the same degree of care used to protect its own
+confidential information of a similar nature, and in no event less than
+reasonable care;</div></div>
+<div class="clause"><div class="n">(d)</div><div class="t">not reverse-engineer,
+decompile, or disassemble any AEGIS software provided or demonstrated in
+connection with a pilot or demonstration, except to the extent such
+restriction is prohibited by applicable law; and</div></div>
+<div class="clause"><div class="n">(e)</div><div class="t">upon the Disclosing
+Party's written request, return or destroy all materials containing
+Confidential Information within ten (10) business days and confirm such return
+or destruction in writing.</div></div>
+
+<h2 class="article">Article 4 — Term</h2>
+
+<div class="clause"><div class="n">4.1</div><div class="t">This Agreement
+takes effect on the Effective Date and remains in effect for two (2) years
+unless earlier terminated by either Party upon thirty (30) days' written
+notice.</div></div>
+<div class="clause"><div class="n">4.2</div><div class="t">The obligations of
+confidentiality in Article 3 survive for three (3) years from the date of
+disclosure of the relevant information, regardless of any earlier termination
+of this Agreement, except that obligations relating to AEGIS source code and
+technical architecture survive indefinitely until such information falls
+within an exclusion under Article 2.</div></div>
+
+<h2 class="article">Article 5 — Remedies, Liquidated Damages, and Penalty</h2>
+
+<div class="clause"><div class="n">5.1</div><div class="t">Each Party
+acknowledges that unauthorized use or disclosure of Confidential Information
+may cause irreparable harm for which monetary damages would be an inadequate
+remedy, and that the Disclosing Party is entitled to seek injunctive relief in
+addition to any other remedies available at law or in equity.</div></div>
+
+<div class="clause"><div class="n">5.2</div><div class="t">In addition to
+injunctive relief, a Party that breaches Article 3 of this Agreement shall pay
+the non-breaching Party a penalty (liquidated damages) of EUR 20,000 (twenty
+thousand euro) per proven breach, payable within ten (10) business days of
+written demand. This penalty is due regardless of whether the non-breaching
+Party can demonstrate actual monetary loss, and does not require proof of
+damages as a precondition to payment.</div></div>
+
+<div class="clause"><div class="n">5.3</div><div class="t">Payment of the
+penalty under Section 5.2 does not release the breaching Party from its
+underlying confidentiality obligations, does not limit or replace the
+non-breaching Party's right to injunctive relief under Section 5.1, and does
+not preclude a separate claim for actual damages to the extent they exceed the
+penalty amount already paid. The Parties agree that the amount set out in
+Section 5.2 is a genuine pre-estimate of the harm likely to result from a
+breach, and not a punitive sum, in order to support enforceability under
+governing laws that distinguish liquidated damages from a punitive
+penalty.</div></div>
+
+<div class="clause"><div class="n">5.4</div><div class="t"><i>Drafting note:
+a fixed penalty/liquidated-damages clause is routinely enforceable under
+civil-law systems (e.g. as a "штраф"/"неустойка"), but common-law courts (e.g.
+England &amp; Wales, most U.S. states) will strike down such a clause as an
+unenforceable "penalty" if it is not a genuine pre-estimate of loss and is
+instead punitive or grossly disproportionate to likely harm. Confirm the
+amount and its enforceability with counsel in the actual governing
+jurisdiction before use.</i></div></div>
+
+<h2 class="article">Article 6 — General Provisions</h2>
+
+<div class="clause"><div class="n">6.1</div><div class="t">This Agreement is
+governed by, and construed in accordance with, the laws of [jurisdiction],
+without regard to its conflict-of-laws principles. Any dispute arising under
+or in connection with this Agreement shall be resolved in [court / arbitral
+body].</div></div>
+<div class="clause"><div class="n">6.2</div><div class="t">Nothing in this
+Agreement obligates either Party to enter into any further agreement, and
+nothing in this Agreement creates a partnership, joint venture, or agency
+relationship between the Parties.</div></div>
+<div class="clause"><div class="n">6.3</div><div class="t">This Agreement
+constitutes the entire agreement between the Parties with respect to its
+subject matter and supersedes all prior discussions and agreements, written or
+oral, relating to that subject matter.</div></div>
+<div class="clause"><div class="n">6.4</div><div class="t">This Agreement may
+be executed in counterparts, including by electronic signature, each of which
+is deemed an original and all of which together constitute one instrument.</div></div>
+<div class="clause"><div class="n">6.5</div><div class="t">No amendment to
+this Agreement is effective unless made in writing and signed by an authorized
+representative of each Party.</div></div>
+
+<p style="margin-top:8mm">IN WITNESS WHEREOF, the Parties have caused this
+Agreement to be executed by their duly authorized representatives as of the
+Effective Date.</p>
+
+<div class="sig-party">
+  <div class="name">AEGIS</div>
+  <div class="sig-line">Signature</div>
+  <div class="sig-field">Name: _______________________________</div>
+  <div class="sig-field">Title: _______________________________</div>
+  <div class="sig-field">Date: _______________________________</div>
+</div>
+
+<div class="sig-party">
+  <div class="name">COUNTERPARTY</div>
+  <div class="sig-line">Signature</div>
+  <div class="sig-field">Name: _______________________________</div>
+  <div class="sig-field">Title: _______________________________</div>
+  <div class="sig-field">Date: _______________________________</div>
+</div>
+
+</body>
+</html>

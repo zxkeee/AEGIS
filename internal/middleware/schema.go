@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -22,11 +23,16 @@ const defaultSchemaMaxBody = 1 << 20 // 1 MiB
 // confusion, missing required parameters — by allowing only what the contract
 // permits. See docs/design/schema-enforcement.md.
 //
-// The contract is the config-level spec captured at chain-build time (refreshed
-// on hot-reload). An undocumented operation is not enforced (fail-open): unknown
-// endpoints are the drift/findings layer's concern, not this one.
-func SchemaValidation(cfg config.SchemaConfig, spec *discovery.Spec, log Logger, st DenySink) Middleware {
-	if !cfg.Enabled || spec == nil {
+// The contract is resolved per request via specFor: a per-tenant uploaded
+// spec (PUT /api/discovery/spec) takes precedence over the config-level spec
+// (discovery.spec_path) when a catalog is wired, so a tenant's own uploaded
+// contract is actually enforced and not just fed to the drift report
+// (audit finding, 2026-08-22). Without a catalog, specFor is a fixed closure
+// returning the config-level spec, matching the pre-fix behavior. An
+// undocumented operation is not enforced (fail-open): unknown endpoints are
+// the drift/findings layer's concern, not this one.
+func SchemaValidation(cfg config.SchemaConfig, specFor func(context.Context) *discovery.Spec, log Logger, st DenySink) Middleware {
+	if !cfg.Enabled || specFor == nil {
 		return passthrough
 	}
 	maxBody := cfg.MaxBodyBytes
@@ -36,6 +42,11 @@ func SchemaValidation(cfg config.SchemaConfig, spec *discovery.Spec, log Logger,
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			spec := specFor(r.Context())
+			if spec == nil {
+				next.ServeHTTP(w, r) // no spec for this tenant (or none configured): not enforced
+				return
+			}
 			template := discovery.NormalizePath(r.URL.Path)
 			op := spec.LookupOp(r.Method, template)
 			if op == nil {
@@ -44,12 +55,37 @@ func SchemaValidation(cfg config.SchemaConfig, spec *discovery.Spec, log Logger,
 			}
 
 			// Buffer the body (bounded) only when the operation documents one, then
-			// restore it for the proxy. A body over the cap streams through
-			// unvalidated rather than risking OOM.
+			// restore it for the proxy. A body over the cap cannot be validated
+			// without risking OOM: in BlockMode this is a fail-closed reject (an
+			// attacker cannot defeat positive-security enforcement by padding the
+			// body past the cap); in monitor mode it passes through but is still
+			// recorded, so operators can see the enforcement-coverage gap.
 			var body []byte
 			if r.Body != nil && op.Body != nil {
 				buf, tooBig, rest := readBounded(r.Body, maxBody)
 				if tooBig {
+					ip := RealIP(r)
+					extra := map[string]any{"template": template, "max_body_bytes": maxBody}
+
+					if cfg.BlockMode {
+						log.BlockEvent("schema_skipped_oversized", ip, r.URL.Path, r.Method, extra)
+						st.IncrMetric(r.Context(), "schema_skipped_oversized")
+						st.PushForensic(r.Context(), secevent.Entry{
+							Tenant: tenant.From(r.Context()), Timestamp: time.Now().UTC(),
+							IP: ip, Path: r.URL.Path, Method: r.Method,
+							Reason: "schema_skipped_oversized", Code: http.StatusRequestEntityTooLarge, Extra: extra,
+						})
+						http.Error(w, "request body exceeds schema validation limit", http.StatusRequestEntityTooLarge)
+						return
+					}
+
+					log.BlockEvent("schema_skipped_oversized_monitor", ip, r.URL.Path, r.Method, extra)
+					st.IncrMetric(r.Context(), "schema_skipped_oversized")
+					st.PushForensic(r.Context(), secevent.Entry{
+						Tenant: tenant.From(r.Context()), Timestamp: time.Now().UTC(),
+						IP: ip, Path: r.URL.Path, Method: r.Method,
+						Reason: "schema_skipped_oversized_monitor", Code: http.StatusOK, Extra: extra,
+					})
 					r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), rest))
 					next.ServeHTTP(w, r)
 					return

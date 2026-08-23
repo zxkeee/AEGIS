@@ -39,6 +39,110 @@ func TestNew_InvalidUpstream_Error(t *testing.T) {
 	}
 }
 
+// TestProxy_MethodsEnforced is a regression test: route.Methods was declared
+// in config and documented as an ACL but silently never checked anywhere in
+// the request path — every method reached the backend regardless of what was
+// configured (audit finding 2026-08-23).
+func TestProxy_MethodsEnforced(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	gw := testGW(t, []config.RouteConfig{{
+		Path: "/", Upstreams: []string{backend.URL}, Methods: []string{"GET", "POST"},
+	}})
+
+	for _, m := range []string{http.MethodGet, http.MethodPost} {
+		rec := httptest.NewRecorder()
+		gw.ServeHTTP(rec, httptest.NewRequest(m, "/x", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: allowed method got %d, want 200", m, rec.Code)
+		}
+	}
+
+	for _, m := range []string{http.MethodPatch, http.MethodDelete, http.MethodPut} {
+		rec := httptest.NewRecorder()
+		gw.ServeHTTP(rec, httptest.NewRequest(m, "/x", nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s: disallowed method got %d, want 405 (this is the ACL bypass the finding described)", m, rec.Code)
+		}
+		if allow := rec.Header().Get("Allow"); allow == "" {
+			t.Errorf("%s: 405 response missing Allow header", m)
+		}
+	}
+}
+
+// An empty/unset route.Methods must remain unrestricted (the documented
+// default) — the enforcement must not become a default-deny.
+func TestProxy_MethodsUnset_Unrestricted(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	gw := testGW(t, []config.RouteConfig{{Path: "/", Upstreams: []string{backend.URL}}})
+	for _, m := range []string{http.MethodGet, http.MethodPatch, http.MethodDelete} {
+		rec := httptest.NewRecorder()
+		gw.ServeHTTP(rec, httptest.NewRequest(m, "/x", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: unrestricted route got %d, want 200", m, rec.Code)
+		}
+	}
+}
+
+// TestProxy_StripPrefix is a regression test: route.StripPrefix was also
+// declared and documented but never applied — the backend always received the
+// full incoming path, defeating the documented "mount a backend under its own
+// root" use case and risking misrouting for any backend that assumes its own
+// paths start at "/".
+func TestProxy_StripPrefix(t *testing.T) {
+	var gotPath string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	// Route paths are subtree patterns (trailing "/"), matching the convention
+	// in config/gateway.yaml's own routes example.
+	gw := testGW(t, []config.RouteConfig{{
+		Path: "/api/orders/", Upstreams: []string{backend.URL}, StripPrefix: true,
+	}})
+
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/orders/42", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gotPath != "/42" {
+		t.Errorf("backend saw path %q, want /42 (prefix not stripped)", gotPath)
+	}
+
+	rec = httptest.NewRecorder()
+	gw.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/orders/", nil))
+	if gotPath != "/" {
+		t.Errorf("backend saw path %q for the bare route path, want /", gotPath)
+	}
+}
+
+// Without StripPrefix (the default), the backend must keep seeing the full path.
+func TestProxy_StripPrefix_DefaultOff(t *testing.T) {
+	var gotPath string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	gw := testGW(t, []config.RouteConfig{{Path: "/api/orders/", Upstreams: []string{backend.URL}}})
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/orders/42", nil))
+	if rec.Code != http.StatusOK || gotPath != "/api/orders/42" {
+		t.Errorf("got path %q code %d, want /api/orders/42 200 (strip_prefix defaults off)", gotPath, rec.Code)
+	}
+}
+
 func TestProxy_ForwardsToBackend(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Backend", "1")
@@ -107,6 +211,71 @@ func TestProxy_RetriesToHealthyUpstream(t *testing.T) {
 	}
 	if !got200 || atomic.LoadInt32(&healthyHits) == 0 {
 		t.Fatalf("failover did not reach healthy upstream (hits=%d)", healthyHits)
+	}
+}
+
+// TestProxy_CircuitBreakerOpenSkipsUpstreamThenExhausts covers the two
+// branches New()'s registered handler has for a single, permanently-dead
+// upstream: once its circuit breaker trips (5 failures, the fixed
+// threshold), a further request must skip straight past the isOpen() check
+// (`continue`) rather than dialing a known-bad upstream again, and — with
+// only one upstream configured — immediately fall through to "All Upstreams
+// Down" once the retry budget is spent on that skip.
+func TestProxy_CircuitBreakerOpenSkipsUpstreamThenExhausts(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close() // now refuses connections
+
+	gw := testGW(t, []config.RouteConfig{{Path: "/", Upstreams: []string{deadURL}, RetryAttempts: 1}})
+
+	// Five failing requests trip the breaker (threshold is fixed at 5 in New()).
+	for i := 0; i < 5; i++ {
+		rec := httptest.NewRecorder()
+		gw.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("priming request %d: got %d, want 502 (dead upstream)", i, rec.Code)
+		}
+	}
+
+	// The breaker is now open. The only upstream configured is skipped via
+	// isOpen()->continue instead of being dialed again, and with a single
+	// upstream and RetryAttempts=1 that immediately exhausts the loop.
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("after breaker trips: got %d, want 503 (all upstreams down/skipped)", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "All Upstreams Down") {
+		t.Fatalf("body = %q, want the all-upstreams-exhausted message", rec.Body.String())
+	}
+}
+
+// TestProxy_StripPrefix_ExactRouteMatchBecomesRoot is a regression test for
+// the edge of stripPrefix's own edge-case handling: TrimPrefix(path,
+// routePrefix) is EMPTY (not "/") when the request path is an exact,
+// no-trailing-slash match of the route's own prefix — this only arises for
+// a route registered WITHOUT a trailing "/" (an exact-match ServeMux
+// pattern), since a subtree ("/x/") pattern's shortest possible match already
+// includes the boundary slash. Must still forward "/" to the backend, not "".
+func TestProxy_StripPrefix_ExactRouteMatchBecomesRoot(t *testing.T) {
+	var gotPath string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	gw := testGW(t, []config.RouteConfig{{
+		Path: "/api/orders", Upstreams: []string{backend.URL}, StripPrefix: true,
+	}})
+
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/orders", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gotPath != "/" {
+		t.Errorf("backend saw path %q, want / (empty trim must become root, not empty string)", gotPath)
 	}
 }
 

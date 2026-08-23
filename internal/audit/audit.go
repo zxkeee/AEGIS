@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // Logger is the minimal logging interface the store needs.
@@ -90,7 +90,7 @@ type Store struct {
 // New connects, migrates, and starts the background writer. It reuses the same
 // PostgreSQL instance as the forensic/catalog stores (forensic_dsn).
 func New(dsn string, log Logger) (*Store, error) {
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("audit: pg connect: %w", err)
 	}

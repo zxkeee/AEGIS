@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker loadgen check-binaries lint-invariants hooks console console-dev
+.PHONY: build run test clean docker loadgen check-binaries check-secrets check-image-pins lint-invariants hooks console console-dev
 
 build:
 	go build -ldflags="-s -w" -o bin/gateway ./cmd/gateway
@@ -39,7 +39,19 @@ test:
 clean:
 	rm -rf bin/
 
-docker:
+# AEGIS_REDIS_PASSWORD/POSTGRES_PASSWORD/GRAFANA_ADMIN_PASSWORD are consumed
+# directly by docker-compose.yml, never through internal/config, so
+# config.Validate's placeholder rejection can't see them. Check separately.
+check-secrets:
+	./scripts/check-weak-secrets.sh
+
+# Catches a docker-compose.yml image reference that regressed to tag-only
+# pinning (or a newly added one that was never pinned), unless explicitly
+# tracked with a "TODO(security-audit): pin by digest" comment.
+check-image-pins:
+	./scripts/check-image-pins.sh
+
+docker: check-secrets
 	docker compose up -d --build
 
 docker-down:

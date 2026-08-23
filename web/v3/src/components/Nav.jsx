@@ -6,6 +6,7 @@ const NAV = [
   ['Architecture', '#how'],
   ['Controls', '#controls'],
   ['Compliance', '#compliance'],
+  ['Status', '#status'],
 ]
 
 export default function Nav() {

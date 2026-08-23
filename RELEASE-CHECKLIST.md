@@ -69,6 +69,111 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
 - [x] **Threat-feed redirect safety.** Feed fetches follow only HTTPS redirects to
       non-private hosts, closing a blind-SSRF path (redirect to `http://` or an
       internal address such as cloud metadata).
+- [x] **CIDR-aware IPGuard.** Whitelist/blacklist used to match only exact IP
+      strings, so a configured subnet (`10.0.0.0/8`) silently matched nothing;
+      now parses IPs/CIDRs and matches by containment, and `config.Validate`
+      rejects malformed entries at startup instead of failing silently at
+      request time.
+- [x] **Per-account brute-force gate.** Login throttling was keyed only by
+      source IP, so a distributed attacker (fresh IP per attempt) could grind
+      one known account forever without tripping it. An independent
+      per-(tenant,email) gate now runs alongside the per-IP one (same
+      atomic-reserve-then-refund pattern).
+- [x] **Admin bootstrap-secret can be permanently disabled.**
+      `admin_bootstrap_secret_disabled` closes the always-super-admin,
+      per-operator-unauditable `AEGIS_ADMIN_SECRET` bearer path once real IAM
+      users are provisioned; every successful bearer use (not just failures)
+      now logs unconditionally so its usage is visible to log-based alerting
+      even before it's disabled.
+- [~] **Cross-IP bootstrap-secret brute-force is now both visible and slowed
+      (VULN-802/901/902/904, security audit 2026-08-22).** The bootstrap path
+      has no per-account key to gate on (`AEGIS_ADMIN_SECRET` is one secret for
+      the whole deployment), so a blocking gate on a shared/global key was
+      rejected — it would let any unauthenticated caller lock every admin out
+      with a handful of requests, trading the brute-force gap for a trivial
+      unauthenticated DoS. Instead: a cross-IP failure counter fires one alert
+      per window past a threshold sized for a global/shared key (not copied
+      from the per-account budget, which false-positived on ordinary
+      multi-source legitimate traffic), correctly refunded on a successful
+      login (an earlier version of this fix double-counted successes as
+      failures — caught by 3 independent reviewer passes before it shipped),
+      *plus* a ramping response delay (0 / 200ms / 1s / capped 3s) ahead of
+      that same threshold that multiplies a sustained/distributed guesser's
+      wall-clock cost by orders of magnitude without ever refusing a correct
+      secret or becoming a timing side-channel on correctness. Operators who
+      want the gap fully closed rather than slowed should still disable the
+      bootstrap path (`admin_bootstrap_secret_disabled`, above) once real IAM
+      users exist — recommended default posture, not just a fallback.
+
+      **Update (same-day follow-up audit):** the first version of the delay
+      only taxed each request's own latency — by Little's Law
+      (throughput ≈ concurrency / latency), an attacker who simply opens more
+      concurrent connections routes around a fixed per-request delay for
+      free; a botnet at high concurrency saw effectively the same
+      guesses/sec through the ladder as with no delay at all. A bounded
+      semaphore (capacity 64) now gates entry to the delay itself, and a
+      caller that can't get a slot immediately **waits** for one rather than
+      skipping through untouched (an even earlier draft of this exact fix
+      made that skip-on-saturation mistake — caught before shipping). This
+      makes capacity/holdTime (~64/3s ≈ 21 req/s) an actual ceiling on
+      aggregate throughput through the bootstrap-secret path, independent of
+      attacker concurrency — not just a per-request latency tax. Still fails
+      open on a Redis outage (consistent with every other gate in this
+      handler); the secret's entropy, separately enforced by
+      `config.Validate`, remains the real backstop against a guesser this
+      throttle can't outright stop, only slow to a bounded rate.
+
+      **Second follow-up audit (still same day):** the blocking semaphore
+      above traded the concurrency-bypass gap for a new one — a legitimate
+      operator's CORRECT secret shares the same queue as attacker traffic,
+      with no priority or fairness, so a sustained flood could queue a real
+      login behind however many attacker slots preceded it, bounded in
+      practice only by the admin server's own 30s connection timeout. That is
+      a denial, not a delay, aimed at exactly the moment (active
+      incident/attack) this bootstrap credential exists for — this is why the
+      item above is marked partial rather than done. Two bounds now cap that:
+      `bootstrapSecretMaxQueueWait` (3s) — a caller that can't get a slot in
+      time gives up and proceeds unthrottled rather than queuing further —
+      and `bootstrapSecretQueueAdmission` (512) — bounds how many callers may
+      be waiting at all, independent of how many are holding a slot, so
+      concurrency can't pile up an unbounded number of goroutines/sockets in
+      front of the gate either. (A related robustness gap was fixed
+      alongside these: the semaphore slot is now released via `defer`, so a
+      panic mid-hold can no longer leak a slot permanently.) Net effect: this
+      throttle no longer has an unbounded-wait failure mode, but it is still
+      an inherently shared, unprioritized resource between attacker and
+      operator traffic by design (the same reasoning that ruled out a hard
+      per-secret block applies here too) — a legitimate operator can still
+      see up to ~3s of added latency during an active flood, just never an
+      unbounded hang or a silent connection-timeout failure. Whether that
+      residual latency is acceptable for incident-response access, versus
+      e.g. an allowlisted bypass for known operator source ranges, is a
+      product decision this fix intentionally leaves open rather than
+      deciding unilaterally.
+- [x] **Cross-tenant super-admin reads are now audited.** Tenant list, cross-
+      tenant/`?all=true` user and audit-log reads were unrecorded (`serveAndAudit`
+      only covered mutations); `auditCrossTenantRead` closes that blind spot.
+- [x] **Dead/unwired config now rejected instead of silently doing nothing.**
+      `registry.enabled: true` (ServiceAuth is not wired into the request
+      chain; no real `RegistryProvider` exists) is rejected by
+      `config.Validate` rather than giving an operator false confidence.
+      `RateLimitConfig.BurstLimit` (declared everywhere, never read by the
+      fixed-window limiter) removed rather than left as a misleading knob.
+- [x] **Helm ConfigMap secret leak.** `gateway.forensic_dsn` /
+      `gateway.redis.password` could leak into the plaintext ConfigMap if an
+      operator filled them directly instead of `secrets.forensicDsn` /
+      `secrets.redisPassword`. The template now force-blanks both regardless
+      of `.Values.gateway`; `forensic_dsn` gets a proper Secret-backed env var
+      (`AEGIS_FORENSIC_DSN`), matching the existing admin-secret/redis-password
+      pattern.
+- [x] **docker-compose resource limits + supply-chain CI gates.** Per-container
+      CPU/memory limits (gateway/redis/postgres/grafana), mirroring the Helm
+      chart. Two new CI-wired checks: `check-image-pins.sh` (fails on a
+      tag-only-pinned image without a tracked exception) and
+      `check-weak-secrets.sh` (rejects weak/default `AEGIS_REDIS_PASSWORD` /
+      `POSTGRES_PASSWORD` / `GRAFANA_ADMIN_PASSWORD` — these feed
+      docker-compose directly and never pass through `config.Validate`).
+      `helm lint` also wired into `lint.yml`.
 
 ### P0 — release blockers
 - [x] **Real console authentication.** Static bearer in `sessionStorage` replaced
@@ -99,7 +204,10 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       4 warnings, all pre-existing and already-documented tradeoffs (CSP
       style-src, COEP). Not wired into CI (one-off run, see the report for why).
       Still open (external, cannot be self-certified): an **independent manual
-      pentest** by a third party.
+      pentest** by a third party. Scope and rules of engagement are now
+      written up (`docs/security/external-pentest-scope.md`) so an external
+      team can start from the frontier of internal testing rather than from
+      zero — the doc itself is not a substitute for the engagement.
 - [x] **TLS mandatory in production.** `require_tls` makes startup fail without
       gateway TLS; the gateway now actually terminates TLS
       (`ListenAndServeTLS`) when `tls.enabled`, not just plaintext; a loud
@@ -122,18 +230,41 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       IP-guard `fail_closed` done (denies on Redis outage); behavioural scoring
       intentionally stays fail-open (a scoring gap is safer than blocking all
       traffic) — documented in `store`.
+- [ ] **Known trade-off, deliberately not changed (CHAIN-801, security audit
+      2026-08-22):** the admin-plane rate limit, the per-IP `/api/login` gate,
+      and the per-account `/api/login` gate all default `fail_closed: false`
+      independently. Each is individually documented and correct on its own,
+      but a single Redis outage drops all three at once, leaving only
+      `subtle.ConstantTimeCompare` on the credential — an unthrottled login
+      window during any Redis disruption, not just a targeted attack. Decision
+      (2026-08-22): keep the fail-open default — this is a self-hosted product
+      and an operator locked out of their own admin console by a Redis blip is
+      worse than the narrow brute-force window, given `AEGIS_ADMIN_SECRET`
+      strength is already enforced by `config.Validate`. Deployments that want
+      the stricter behaviour can set `admin_login_fail_closed: true` (and the
+      matching `rate_limit`/`ip_guard` flags) today — no code change needed.
+      Revisit if a managed/hosted offering ships, where an SRE on-call can
+      absorb a fail-closed lockout that a self-hosted operator cannot.
 - [x] Security headers / CSP tightened: nonce-based `script-src`/`style-src`,
       no more `unsafe-inline`; nonce rotates per response; added `base-uri`,
       `form-action`, kept `frame-ancestors 'none'`. Validated live on stand.
 - [x] Per-IP brute-force rate limit on `/api/login`: 8 failures / 5 min →
       `429 Retry-After`. Counter only consumes budget on failure (successful
       operators never throttle). Validated live: 8× 401 → 9th request 429.
-- [ ] Migrate `github.com/lib/pq` → `github.com/jackc/pgx/v5`. `lib/pq` has
-      been in maintenance-only mode for years (security fixes only; its own
-      README recommends `pgx` for new projects). Not urgent — no known CVE,
-      `govulncheck` stays clean — but a shrinking bus factor for the component
-      talking to the catalog/forensic/iam PostgreSQL database. Do opportunistically,
-      not as a release blocker.
+- [x] Migrate `github.com/lib/pq` → `github.com/jackc/pgx/v5`. All 6 call sites
+      (audit, discovery catalog, forensic sink, iam, retention, pgtest) now open
+      via `sql.Open("pgx", dsn)` through `github.com/jackc/pgx/v5/stdlib`.
+      `pq.Array()` binding was dropped — pgx's `database/sql` compat layer binds
+      plain Go slices (`[]string`, `[]int`) against `text[]`/`ANY($n)` natively;
+      scanning an array column back still needs an adapter, done via
+      `pgtype.NewMap().SQLScanner(&dest)` (verified empirically against a live
+      DB: plain-slice scan target errors, the adapter round-trips correctly).
+      `pq.QuoteIdentifier` → `pgx.Identifier{...}.Sanitize()` in `pgtest`. Bumped
+      `golang.org/x/text` v0.38.0→v0.39.0 along the way — pulled in transitively
+      by pgx, and govulncheck flagged a real, reachable CVE (GO-2026-5970) in the
+      old version via `audit.New`. Verified: full test suite incl. PG/Redis
+      integration tests + `-race`, coverage-gate (no package regressed),
+      govulncheck/gosec/golangci-lint clean, static (`CGO_ENABLED=0`) build.
 
 ---
 
@@ -228,7 +359,34 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       rows into summaries, backups/PITR (ops), batching for very large deletes.
 - [ ] Out-of-band deployment (traffic mirroring) in addition to inline.
 - [ ] Compliance report templates (PCI-DSS, HIPAA, GDPR).
-- [ ] Licensing / metering.
+- [~] **Licensing / metering.** Done: repo relicensed MIT → **BUSL 1.1**
+      (`LICENSE`) — production use now requires a commercial license or
+      written agreement, converting to Apache 2.0 four years after each
+      release. `internal/license` + offline `cmd/licensegen` issue signed
+      Ed25519 license files (licensee/tier/expiry/features/max_rps/hardware_id);
+      the gateway verifies on boot and every hot-reload as a **hard gate** —
+      missing/expired/tampered/wrong-hardware license gets the same treatment
+      as any other `config.Validate` rejection (boot refuses to start; a
+      hot-reload is rejected and the previous config keeps serving). No free
+      degraded mode: an unlicensed copy does not run at all, so it can't give
+      away discovery/posture/findings for free. **Node-locking**: `gateway
+      -print-fingerprint` derives a deterministic fingerprint from the
+      machine's network hardware (SHA-256 of non-loopback MAC addresses); the
+      customer reports it before issuance, `licensegen -hardware-id` binds the
+      license to it. A hardware change doesn't hard-fail immediately: the
+      first time a mismatch is seen it grants a persisted 72h grace window
+      (`license.LoadWithGrace`/`DefaultHardwareGrace`) — fully functional,
+      loud `WARN` in logs and in the console banner — then hard-fails once the
+      window elapses if not re-issued (free of charge, for the remaining
+      term — a manual process today). See `docs/licensing.md` for the
+      workflow and the Docker/k8s container-MAC caveat. **`GET /api/license`
+      + console banner**: `Server.SetLicenseStatus` records the outcome from
+      every boot/hot-reload; the console (`LicenseBanner.tsx`) polls it and
+      shows nothing when healthy, a warning ~14 days before expiry, and a hard
+      warning during a hardware-grace window or an invalid status — so an
+      operator doesn't have to read gateway logs to know. Remaining: real
+      usage metering, tier/feature enforcement beyond validity+expiry+
+      hardware, revocation, self-service re-issuance.
 
 ---
 
@@ -245,6 +403,12 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       middleware 82%, retention 81%, audit 80%, **api 76%** (the catalog/posture
       handlers are now exercised through a seeded live catalog, plus requireAuth
       and the store error paths). The `api` floor was ratcheted 60→70.
+      **Gap found in this audit pass, not previously flagged:** `internal/forensic`
+      (the PostgreSQL forensic-log sink, 279 lines, wired from `cmd/gateway/main.go`)
+      has **zero test files** and no entry in `scripts/coverage-gate.sh` — it sits
+      outside the "every critical package" claim above rather than meeting it.
+      Needs an integration test against `pgtest` before this bullet can honestly
+      say "every critical package."
 - [~] **Load and latency benchmarks.** k6 scripts + guide under `tests/load/`
       (single-tenant + multi-tenant + attack-mix scenarios, CI-able
       thresholds). First on-hardware run in `tests/load/results-2026-06-21.md`:

@@ -17,7 +17,7 @@ jobs:
 
     services:
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:9702d01c1f10c3ea9f48211b4362e44f154ff02d063e6f7268eba804059f53bf
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -27,7 +27,7 @@ jobs:
           - 6379:6379
 
       postgres:
-        image: postgres:15-alpine
+        image: postgres:15-alpine@sha256:cae15a3b718f23497a60b7cafdcf205216d7949680972da0584db00fb68bf3e6
         env:
           POSTGRES_DB: aegis
           POSTGRES_USER: postgres

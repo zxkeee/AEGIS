@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"regexp"
@@ -56,12 +57,29 @@ type GatewayConfig struct {
 	AdminListen string `yaml:"admin_listen"`
 	AdminAuth   bool   `yaml:"admin_auth"`
 	AdminSecret string `yaml:"admin_secret"`
+	// AdminBootstrapSecretDisabled turns off the AEGIS_ADMIN_SECRET bearer-token
+	// admin auth path once real per-tenant IAM operators have been provisioned.
+	// The bearer path is an always-super-admin, un-auditable-per-operator,
+	// single-shared-credential bootstrap mechanism; it exists so a fresh
+	// install has a way in before any IAM user exists, not as a long-term
+	// credential. Set true after provisioning real users to close that path.
+	AdminBootstrapSecretDisabled bool `yaml:"admin_bootstrap_secret_disabled"`
 	// AdminSessionTTL is how long a console login session stays valid. Default 8h.
 	AdminSessionTTL time.Duration `yaml:"admin_session_ttl"`
 	// AdminCookieInsecure drops the Secure flag on the session cookie so the
 	// console works over plain HTTP in local development. Never enable in
 	// production: the session cookie would be sent over unencrypted connections.
 	AdminCookieInsecure bool `yaml:"admin_cookie_insecure"`
+	// AdminLoginFailClosed denies /api/login when its Redis-backed brute-force
+	// counters (per-IP and per-account) are unavailable, instead of the default
+	// fail-open behaviour. Unlike rate-limit/IPGuard — where FailClosed already
+	// exists — the login gate had no such option at all, so a Redis outage
+	// silently left credential stuffing against /api/login completely
+	// unthrottled for its duration. Default false preserves availability
+	// (login still works during a Redis blip); set true for high-assurance
+	// deployments where that gap must not be permitted, mirroring
+	// RateLimitConfig.FailClosed / IPGuardConfig.FailClosed.
+	AdminLoginFailClosed bool `yaml:"admin_login_fail_closed"`
 	// AdminCORS is the CORS policy for the admin plane. The console is normally
 	// same-origin (served by the admin server itself), so this stays unset and
 	// the admin plane inherits security.cors. Set it when the console origins
@@ -87,7 +105,14 @@ type GatewayConfig struct {
 	// a first pilot on a partner's live traffic: the findings report is produced
 	// with zero risk to their production. ApplyObserveMode coerces the whole
 	// security config into this shape after load and on every hot-reload.
-	Observe        bool               `yaml:"observe"`
+	Observe bool `yaml:"observe"`
+	// LicensePath points at a signed license file (see internal/license,
+	// cmd/licensegen). main.go verifies it on startup AND on every hot-reload,
+	// as a hard gate: empty, missing, expired, or tampered all get the same
+	// treatment as a config.Validate rejection — startup refuses to boot; a
+	// hot-reload is rejected and the previous config keeps serving. There is
+	// no degraded free-run mode; see docs/licensing.md.
+	LicensePath    string             `yaml:"license_path"`
 	ForensicDSN    string             `yaml:"forensic_dsn"` // PostgreSQL DSN for persistent forensic logs
 	TrustedProxies []string           `yaml:"trusted_proxies"`
 	TLS            TLSConfig          `yaml:"tls"`
@@ -178,6 +203,7 @@ func (c *GatewayConfig) ApplyObserveMode() []string {
 	s.RateLimit.FailClosed = false
 	s.IPGuard.FailClosed = false
 	s.Auth.RevocationFailClosed = false
+	s.WAF.FailClosed = false
 
 	return changed
 }
@@ -345,10 +371,9 @@ type SchemaConfig struct {
 }
 
 type RateLimitConfig struct {
-	Enabled    bool          `yaml:"enabled"`
-	Requests   int           `yaml:"requests"`
-	Window     time.Duration `yaml:"window"`
-	BurstLimit int           `yaml:"burst_limit"`
+	Enabled  bool          `yaml:"enabled"`
+	Requests int           `yaml:"requests"`
+	Window   time.Duration `yaml:"window"`
 	// FailClosed denies requests when the rate-limit backing store (Redis) is
 	// unavailable. Default false preserves availability (fail open); set true for
 	// high-assurance deployments where a Redis outage must not drop enforcement.
@@ -415,6 +440,14 @@ type WAFConfig struct {
 	// interrupted. block_mode alone does not achieve this for the built-in rules,
 	// which carry inline `deny` actions and run under `SecRuleEngine On`.
 	Observe bool `yaml:"-"`
+	// FailClosed denies every request (503) when the Coraza engine fails to
+	// initialise (malformed RulesetPath / bad CRS directives), instead of
+	// silently degrading to passthrough. Same opt-in shape as
+	// RateLimitConfig.FailClosed / IPGuardConfig.FailClosed. Default false
+	// preserves the historical availability-over-strictness behaviour, but the
+	// failure is now always counted via the waf_init_failed metric regardless
+	// of this flag, so a bad ruleset deploy is no longer silent either way.
+	FailClosed bool `yaml:"fail_closed"`
 }
 
 type BotConfig struct {
@@ -564,6 +597,16 @@ type AbuseConfig struct {
 	// known and differs from the caller — preventing the leak instead of only
 	// recording it. Requires OwnerFields to populate owner bindings first.
 	ObjectOwnershipBlock bool `yaml:"object_ownership_block"`
+	// OwnershipFailClosed denies a request when ObjectOwnershipBlock's Redis
+	// owner lookup errors, instead of the default fail-open behaviour (the
+	// lookup is skipped and the request proceeds as if no owner conflict were
+	// known). ObjectOwnershipBlock is the one BOLA control that actually blocks
+	// traffic (the rest are detect-and-record); a Redis outage silently
+	// disabling it during an active IDOR sweep is the same gap class
+	// RateLimitConfig.FailClosed / IPGuardConfig.FailClosed / the login gate's
+	// AdminLoginFailClosed already close elsewhere. Default false preserves
+	// availability, matching those.
+	OwnershipFailClosed bool `yaml:"ownership_fail_closed"`
 	// OwnershipBypassRoles are roles allowed to access objects they do not own
 	// (support/admin views); a consumer holding any of them skips ownership
 	// detection and blocking entirely.
@@ -597,8 +640,22 @@ type RouteConfig struct {
 	RateLimit   *RateLimitConfig `yaml:"rate_limit"`
 }
 
+// RegistryConfig is EXPERIMENTAL / NOT YET WIRED INTO THE REQUEST PATH.
+// middleware.ServiceAuth (the HMAC service-to-service auth control this
+// config feeds) is never called from internal/gateway.chainSteps, and no
+// RegistryProvider implementation exists outside test fakes — there is no
+// real registry backend to look services up against. Setting Enabled: true
+// is rejected by config.Validate (see validateRegistry) specifically so an
+// operator can never believe this control is protecting live traffic when it
+// structurally cannot be. Remove that rejection only once ServiceAuth is
+// actually wired into the chain AND a real RegistryProvider is implemented.
 type RegistryConfig struct {
-	Enabled      bool   `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
+	// DSN is currently unwired: nothing in the codebase reads it yet — only
+	// SignatureFreshnessSecs below is consulted (by ServiceAuth). Whoever
+	// wires up the service registry's own datastore MUST route this DSN
+	// through applyEnvOverrides (config.go) with an AEGIS_* env var, the same
+	// way ForensicDSN is handled, so it never has to live in a YAML file.
 	DSN          string `yaml:"dsn"`
 	CacheTTLSecs int    `yaml:"cache_ttl_secs"`
 	RotationDays int    `yaml:"rotation_days"`
@@ -704,11 +761,17 @@ func applyEnvOverrides(cfg *GatewayConfig) {
 	if v := os.Getenv("AEGIS_ADMIN_SECRET"); v != "" {
 		cfg.AdminSecret = v
 	}
+	if v := os.Getenv("AEGIS_LICENSE_PATH"); v != "" {
+		cfg.LicensePath = v
+	}
 	if v := os.Getenv("AEGIS_PROPAGATION_SECRET"); v != "" {
 		cfg.Security.Auth.PropagationSecret = v
 	}
 	if v := os.Getenv("AEGIS_REDIS_PASSWORD"); v != "" {
 		cfg.Redis.Password = v
+	}
+	if v := os.Getenv("AEGIS_REDIS_SENTINEL_PASSWORD"); v != "" {
+		cfg.Redis.Sentinel.SentinelPassword = v
 	}
 	if v := os.Getenv("AEGIS_JWT_SECRET"); v != "" {
 		cfg.Security.Auth.Secret = v
@@ -765,7 +828,16 @@ func Validate(cfg GatewayConfig) error {
 	if err := validateJWT(cfg); err != nil {
 		return err
 	}
+	if err := validatePropagationSecret(cfg); err != nil {
+		return err
+	}
 	if err := validateTrustedProxies(cfg); err != nil {
+		return err
+	}
+	if err := validateIPGuard(cfg); err != nil {
+		return err
+	}
+	if err := validateRegistry(cfg); err != nil {
 		return err
 	}
 	if err := validateThreatFeed(cfg); err != nil {
@@ -949,6 +1021,40 @@ func validateAlerting(cfg GatewayConfig) error {
 	return nil
 }
 
+// looksLowEntropy reports whether a secret is unlikely to be a strong random
+// value even though it passes the length floor and matches no literal in
+// insecurePlaceholders. The literal-list check alone lets a long-but-predictable
+// value through — e.g. "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" or
+// "abcdefghijklmnopqrstuvwxyzabcdef" (both 32 chars) — because it can only ever
+// catch values someone thought to enumerate in advance.
+//
+// Two independent signals, either of which flags the secret:
+//   - Fewer than 8 distinct characters: a real random hex/base64/alphanumeric
+//     secret of 32+ characters draws from a wide alphabet; this few distinct
+//     characters is a strong repetition signal on its own.
+//   - Shannon entropy below 3 bits/character: random hex sits around 4
+//     bits/char, base64 around 6; patterned or low-diversity strings (runs,
+//     short repeating cycles, mostly-one-character values) sit well below 3.
+func looksLowEntropy(s string) bool {
+	if s == "" {
+		return true
+	}
+	counts := make(map[rune]int)
+	for _, r := range s {
+		counts[r]++
+	}
+	if len(counts) < 8 {
+		return true
+	}
+	var entropy float64
+	n := float64(len([]rune(s)))
+	for _, c := range counts {
+		p := float64(c) / n
+		entropy -= p * math.Log2(p)
+	}
+	return entropy < 3.0
+}
+
 func validateAdminSecret(cfg GatewayConfig) error {
 	if !cfg.AdminAuth {
 		return nil
@@ -963,6 +1069,10 @@ func validateAdminSecret(cfg GatewayConfig) error {
 	}
 	if len(cfg.AdminSecret) < 32 {
 		return errors.New("admin_secret is too short; minimum 32 characters required")
+	}
+	if looksLowEntropy(cfg.AdminSecret) {
+		return errors.New("admin_secret does not look random (too few distinct characters or a repeating pattern); " +
+			"set AEGIS_ADMIN_SECRET to a strong random secret (e.g. openssl rand -hex 32)")
 	}
 	return nil
 }
@@ -1003,6 +1113,34 @@ func validateJWT(cfg GatewayConfig) error {
 	if len(cfg.Security.Auth.Secret) < 32 {
 		return errors.New("auth.secret is too short; minimum 32 characters required for HMAC-SHA256")
 	}
+	if looksLowEntropy(cfg.Security.Auth.Secret) {
+		return errors.New("auth.secret does not look random (too few distinct characters or a repeating pattern); " +
+			"set AEGIS_JWT_SECRET to a strong random value (e.g. openssl rand -hex 32)")
+	}
+	return nil
+}
+
+// validatePropagationSecret checks auth.propagation_secret — the HMAC key that
+// signs the X-Gateway-Signature identity header backends trust via
+// sdk/gatewayverify — with the same strength rules as admin_secret/auth.secret.
+// It falls back to auth.secret when unset (see jwt.go), so it is only
+// validated when explicitly configured.
+func validatePropagationSecret(cfg GatewayConfig) error {
+	secret := cfg.Security.Auth.PropagationSecret
+	if secret == "" {
+		return nil
+	}
+	if slices.Contains(insecurePlaceholders, secret) {
+		return errors.New("auth.propagation_secret contains an insecure placeholder; " +
+			"set AEGIS_PROPAGATION_SECRET to a strong random value (e.g. openssl rand -hex 32)")
+	}
+	if len(secret) < 32 {
+		return errors.New("auth.propagation_secret is too short; minimum 32 characters required for HMAC-SHA256")
+	}
+	if looksLowEntropy(secret) {
+		return errors.New("auth.propagation_secret does not look random (too few distinct characters or a repeating pattern); " +
+			"set AEGIS_PROPAGATION_SECRET to a strong random value (e.g. openssl rand -hex 32)")
+	}
 	return nil
 }
 
@@ -1015,6 +1153,40 @@ func validateTrustedProxies(cfg GatewayConfig) error {
 		}
 	}
 	return nil
+}
+
+// validateRegistry rejects registry.enabled: true outright: see RegistryConfig's
+// doc comment — ServiceAuth is never wired into the request chain and no real
+// RegistryProvider exists, so this control would silently do nothing to
+// requests while giving an operator false confidence it's enforcing anything.
+func validateRegistry(cfg GatewayConfig) error {
+	if cfg.Registry.Enabled {
+		return errors.New("registry.enabled: true is rejected — the service-registry/ServiceAuth " +
+			"feature is not wired into the request path yet (see RegistryConfig's doc comment in " +
+			"internal/config/config.go); enabling it would give no actual protection")
+	}
+	return nil
+}
+
+// validateIPGuard rejects malformed whitelist/blacklist entries at startup
+// rather than letting IPGuard silently drop them at request time (a
+// misconfigured "10.0.0.0/8" entry used to just never match anything).
+func validateIPGuard(cfg GatewayConfig) error {
+	check := func(field string, entries []string) error {
+		for _, s := range entries {
+			if net.ParseIP(s) != nil {
+				continue
+			}
+			if _, _, err := net.ParseCIDR(s); err != nil {
+				return fmt.Errorf("ip_guard.%s: %q is not a valid IP address or CIDR", field, s)
+			}
+		}
+		return nil
+	}
+	if err := check("whitelist", cfg.Security.IPGuard.Whitelist); err != nil {
+		return err
+	}
+	return check("blacklist", cfg.Security.IPGuard.Blacklist)
 }
 
 func validateThreatFeed(cfg GatewayConfig) error {

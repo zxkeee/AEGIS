@@ -267,8 +267,8 @@ A request to the data plane proceeds as follows:
 
 ### 4.3 The Middleware Chain
 
-The data-plane chain is defined once, in `buildHandlerChain` in
-`cmd/gateway/main.go`. The order is significant. The list below is the exact
+The data-plane chain is defined once, in `BuildHandlerChain` (via
+`chainSteps`) in `internal/gateway/chain.go`. The order is significant. The list below is the exact
 execution order, outermost (runs first on the way in) to innermost (closest to
 the backend):
 

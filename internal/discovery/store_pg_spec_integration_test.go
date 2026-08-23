@@ -116,6 +116,65 @@ func TestPG_SpecCatalogResolution(t *testing.T) {
 	}
 }
 
+// TestPG_SpecForEnforcement_MatchesSpecFor is a regression test for the
+// schema-enforcement tenant-isolation gap (audit finding, 2026-08-22):
+// enforcement previously used only the single config-level spec for every
+// tenant — a per-tenant uploaded spec fed the drift report but was never
+// enforced. SpecForEnforcement must resolve the same precedence specFor does
+// (per-tenant upload over config fallback), including through its bounded
+// staleness cache, and an upload/delete must still take effect immediately
+// (the cache is invalidated on write, not just time-bound).
+func TestPG_SpecForEnforcement_MatchesSpecFor(t *testing.T) {
+	dsn := pgDSN(t)
+	_ = freshStore(t) // also truncates api_specs
+
+	cat, err := NewCatalog(dsn, NewPostureEngine(config.GatewayConfig{}), nopLogger{})
+	if err != nil {
+		t.Fatalf("NewCatalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	cfgSpec, _ := ParseSpec([]byte("openapi: 3.0.0\npaths:\n  /cfg:\n    get: {}\n"))
+	cat.SetConfigSpec(cfgSpec)
+
+	acme := tenant.With(context.Background(), "acme")
+
+	// No uploaded spec -> config fallback, same as specFor.
+	got := cat.SpecForEnforcement(acme)
+	if got == nil || !got.HasOp("GET", "/cfg") {
+		t.Fatalf("SpecForEnforcement without upload = %+v, want config fallback", got)
+	}
+
+	// Upload a per-tenant spec -> SpecForEnforcement must reflect it
+	// immediately (cache invalidated on write, not just time-bound), exactly
+	// like specFor does. This is the core of the fix: schema enforcement
+	// (which calls SpecForEnforcement, not specFor) must actually see it.
+	if _, err := cat.SetSpec(acme, []byte("openapi: 3.0.0\npaths:\n  /acme:\n    get: {}\n")); err != nil {
+		t.Fatalf("SetSpec: %v", err)
+	}
+	got = cat.SpecForEnforcement(acme)
+	if got == nil || !got.HasOp("GET", "/acme") || got.HasOp("GET", "/cfg") {
+		t.Fatalf("SpecForEnforcement after upload = %+v, want the uploaded spec to override the config fallback", got)
+	}
+
+	// A different tenant must still see only the config fallback — no
+	// cross-tenant leak through the enforcement path either.
+	other := tenant.With(context.Background(), "other-tenant")
+	got = cat.SpecForEnforcement(other)
+	if got == nil || got.HasOp("GET", "/acme") || !got.HasOp("GET", "/cfg") {
+		t.Fatalf("SpecForEnforcement for a different tenant = %+v, want config fallback only (no cross-tenant leak)", got)
+	}
+
+	// Delete -> falls back to config again immediately.
+	if ok, err := cat.DeleteSpec(acme); err != nil || !ok {
+		t.Fatalf("DeleteSpec: ok=%v err=%v", ok, err)
+	}
+	got = cat.SpecForEnforcement(acme)
+	if got == nil || got.HasOp("GET", "/acme") || !got.HasOp("GET", "/cfg") {
+		t.Fatalf("SpecForEnforcement after delete = %+v, want config fallback again", got)
+	}
+}
+
 func mustUpsert(t *testing.T, s *pgStore, a *epAgg) {
 	t.Helper()
 	if a.statusDist == nil {

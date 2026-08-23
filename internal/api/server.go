@@ -9,6 +9,7 @@ import (
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
 	"api-gateway/internal/iam"
+	"api-gateway/internal/license"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/proxy"
 	"api-gateway/internal/store"
@@ -29,12 +30,21 @@ type Server struct {
 	// draining is set on shutdown so /readyz reports 503 (lame-duck) while the
 	// gateway is still serving established connections — see cmd/gateway drain grace.
 	draining atomic.Bool
+	// licenseStatus holds the most recent license.Status computed by main.go's
+	// loadValidatedConfig (boot, and every hot-reload — see SetLicenseStatus).
+	// atomic.Value so a concurrent GET /api/license never races a reload.
+	licenseStatus atomic.Value
 }
 
 // SetDraining flips the readiness state. When true, /readyz returns 503 so a
 // load balancer / k8s readiness probe stops routing new traffic before the
 // gateway actually stops accepting connections.
 func (s *Server) SetDraining(v bool) { s.draining.Store(v) }
+
+// SetLicenseStatus records the license outcome from the most recent boot or
+// hot-reload, so GET /api/license and the console banner reflect it without
+// reading gateway logs. Called from cmd/gateway/main.go.
+func (s *Server) SetLicenseStatus(st license.Status) { s.licenseStatus.Store(st) }
 
 // NewServer creates a new admin API server. users / auditStore may be nil if
 // forensic_dsn is unset — in that case only the legacy bearer/secret login is
@@ -58,7 +68,7 @@ func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw
 }
 
 func (s *Server) registerRoutes() {
-	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog, users: s.users, audit: s.audit, oidc: s.oidc, draining: &s.draining}
+	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog, users: s.users, audit: s.audit, oidc: s.oidc, draining: &s.draining, licenseStatus: &s.licenseStatus}
 	// Assign the spec interface only for a real catalog, so a nil *discovery.
 	// Catalog does not become a non-nil interface holding a typed-nil pointer.
 	if s.catalog != nil {
@@ -86,6 +96,7 @@ func (s *Server) registerRoutes() {
 
 	// Admin endpoints (protected by AdminAuth middleware)
 	s.mux.HandleFunc("GET /api/session", h.getSession)
+	s.mux.HandleFunc("GET /api/license", h.getLicense)
 	s.mux.HandleFunc("GET /api/metrics", h.getMetrics)
 	s.mux.HandleFunc("GET /metrics", h.prometheus) // Prometheus-native exposition
 	s.mux.HandleFunc("GET /api/config", h.getConfig)

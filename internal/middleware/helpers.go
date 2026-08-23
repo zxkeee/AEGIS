@@ -42,6 +42,24 @@ var trustedProxyNets atomic.Pointer[[]*net.IPNet]
 // hot-reload, so trusted_proxies changes take effect without a restart. Bare
 // IPs are normalised to /32 (IPv4) or /128 (IPv6) host routes.
 func InitTrustedProxies(cidrs []string) error {
+	nets, err := ParseTrustedProxies(cidrs)
+	if err != nil {
+		return err
+	}
+	SetTrustedProxies(nets)
+	return nil
+}
+
+// ParseTrustedProxies parses CIDR strings (or bare IPs) WITHOUT committing
+// them to the global trust set — a pure validation step. Split out of
+// InitTrustedProxies (audit finding, 2026-08-22) so a config hot-reload can
+// validate a candidate trusted_proxies list before the rest of the reload
+// (BuildHandlerChain) is known to succeed, and only commit via
+// SetTrustedProxies once the whole reload has. Committing early let a reload
+// that failed LATER (e.g. an empty route's upstreams) leave the new,
+// unvalidated-as-a-whole trust boundary live under the OLD, still-serving
+// handler chain — silently contradicting "previous config stays active."
+func ParseTrustedProxies(cidrs []string) ([]*net.IPNet, error) {
 	nets := make([]*net.IPNet, 0, len(cidrs))
 	for _, s := range cidrs {
 		// Accept bare IPs as well as CIDRs.
@@ -54,12 +72,18 @@ func InitTrustedProxies(cidrs []string) error {
 		}
 		_, ipNet, err := net.ParseCIDR(s)
 		if err != nil {
-			return fmt.Errorf("trusted_proxies: invalid CIDR %q: %w", s, err)
+			return nil, fmt.Errorf("trusted_proxies: invalid CIDR %q: %w", s, err)
 		}
 		nets = append(nets, ipNet)
 	}
+	return nets, nil
+}
+
+// SetTrustedProxies commits an already-parsed CIDR set (see
+// ParseTrustedProxies) to the global trust boundary RealIP reads. Safe to
+// call concurrently with request handling (atomic pointer swap).
+func SetTrustedProxies(nets []*net.IPNet) {
 	trustedProxyNets.Store(&nets)
-	return nil
 }
 
 // loadTrustedProxyNets returns the current immutable CIDR slice (nil when

@@ -95,3 +95,90 @@ func TestRateLimitFor_RouteOverrideReplacesGlobal(t *testing.T) {
 		t.Fatal("/off: route disabled rate limit, want on=false")
 	}
 }
+
+// TestMatchRoute_SegmentBoundary is a regression test for a critical bypass:
+// matchRoute used to compare paths with a raw strings.HasPrefix, so a
+// permissive route like "/api/public" (no trailing slash) would incorrectly
+// "cover" an unrelated, longer path like "/api/publicdata/42" that merely
+// starts with the same characters — silently handing it the permissive
+// route's auth/WAF/DLP/rate-limit posture instead of the global (protected)
+// defaults. matchRoute must use config.PathHasPrefix, which requires a "/"
+// boundary, exactly like tenant.go and jwt.go's Exclude matching already do.
+func TestMatchRoute_SegmentBoundary(t *testing.T) {
+	cfg := config.GatewayConfig{
+		Security: config.SecurityConfig{
+			Auth: config.AuthConfig{Enabled: true},
+			WAF:  config.WAFConfig{Enabled: true},
+		},
+		Routes: []config.RouteConfig{
+			{Path: "/api/public", RequireAuth: boolPtr(false), WAF: boolPtr(false)},
+		},
+	}
+	e := NewPostureEngine(cfg)
+
+	// Exact match and true sub-path: the override legitimately applies.
+	for _, p := range []string{"/api/public", "/api/public/info"} {
+		c, matched := e.ControlsFor(p)
+		if !matched {
+			t.Fatalf("ControlsFor(%q): expected a route match", p)
+		}
+		if c.AuthRequired || c.WAF {
+			t.Errorf("ControlsFor(%q) = %+v, want AuthRequired=false WAF=false (route override)", p, c)
+		}
+	}
+
+	// Adjacent path sharing only a string prefix, no "/" boundary: must NOT
+	// inherit /api/public's override. It has no dedicated route, so it falls
+	// through to the global (protected) defaults.
+	for _, p := range []string{"/api/publicdata/42", "/api/publicity"} {
+		c, matched := e.ControlsFor(p)
+		if matched {
+			t.Errorf("ControlsFor(%q): matched /api/public by raw prefix (segment-boundary regression); want no route match", p)
+		}
+		if !c.AuthRequired || !c.WAF {
+			t.Errorf("ControlsFor(%q) = %+v, want global defaults AuthRequired=true WAF=true — /api/public leaked its override", p, c)
+		}
+	}
+}
+
+// TestMatchRoute_CaseInsensitive is a regression test for a residual variant
+// of the same route-prefix bypass TestMatchRoute_SegmentBoundary covers: a
+// backend that routes case-insensitively lets a case-varied request path
+// ("/Admin", "/ADMIN") slip past a route override keyed on "/admin",
+// silently falling back to the (weaker) global posture instead of the
+// route's own. matchRoute/authExcluded must lower-case both sides of the
+// comparison, exactly like abuse.go's BFLA check already does.
+func TestMatchRoute_CaseInsensitive(t *testing.T) {
+	cfg := config.GatewayConfig{
+		Security: config.SecurityConfig{
+			Auth: config.AuthConfig{Enabled: false},
+			WAF:  config.WAFConfig{Enabled: true},
+		},
+		Routes: []config.RouteConfig{
+			{Path: "/Admin", RequireAuth: boolPtr(true), WAF: boolPtr(true)},
+		},
+	}
+	e := NewPostureEngine(cfg)
+
+	for _, p := range []string{"/Admin/users", "/admin/users", "/ADMIN/users"} {
+		c, matched := e.ControlsFor(p)
+		if !matched {
+			t.Fatalf("ControlsFor(%q): expected a route match regardless of case", p)
+		}
+		if !c.AuthRequired || !c.WAF {
+			t.Errorf("ControlsFor(%q) = %+v, want AuthRequired=true WAF=true (route override) — case variation defeated the override", p, c)
+		}
+	}
+
+	// authExcluded must be equally case-insensitive.
+	cfg2 := config.GatewayConfig{
+		Security: config.SecurityConfig{Auth: config.AuthConfig{Enabled: true, Exclude: []string{"/public"}}},
+	}
+	e2 := NewPostureEngine(cfg2)
+	for _, p := range []string{"/public/info", "/Public/info", "/PUBLIC/info"} {
+		c, _ := e2.ControlsFor(p)
+		if c.AuthRequired {
+			t.Errorf("ControlsFor(%q) = %+v, want AuthRequired=false (exclude match) — case variation defeated the exclude", p, c)
+		}
+	}
+}

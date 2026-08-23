@@ -17,7 +17,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // DSN returns POSTGRES_DSN rewritten so every connection this package opens
@@ -33,12 +34,12 @@ func DSN(t *testing.T, schema string) string {
 		t.Skip("POSTGRES_DSN not set; skipping PostgreSQL integration test")
 	}
 
-	admin, err := sql.Open("postgres", base)
+	admin, err := sql.Open("pgx", base)
 	if err != nil {
 		t.Fatalf("pgtest: open base DSN: %v", err)
 	}
 	defer func() { _ = admin.Close() }()
-	q := pq.QuoteIdentifier(schema)
+	q := pgx.Identifier{schema}.Sanitize()
 	// Fresh schema per run: drops any tables a previous run left with an older
 	// column set, so schema-migrating DDL in the stores starts from clean.
 	if _, err := admin.Exec("DROP SCHEMA IF EXISTS " + q + " CASCADE"); err != nil {
@@ -48,7 +49,7 @@ func DSN(t *testing.T, schema string) string {
 		t.Fatalf("pgtest: create schema %s: %v", schema, err)
 	}
 	t.Cleanup(func() {
-		db, err := sql.Open("postgres", base)
+		db, err := sql.Open("pgx", base)
 		if err != nil {
 			return
 		}
@@ -59,7 +60,7 @@ func DSN(t *testing.T, schema string) string {
 	return withSearchPath(t, base, schema)
 }
 
-// withSearchPath adds `search_path=<schema>` to the DSN. lib/pq forwards it as a
+// withSearchPath adds `search_path=<schema>` to the DSN. pgx forwards it as a
 // startup parameter, so every pooled connection lands in the schema. Handles
 // both URL DSNs (postgres://…) and libpq keyword/value DSNs.
 func withSearchPath(t *testing.T, base, schema string) string {

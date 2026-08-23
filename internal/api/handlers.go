@@ -45,6 +45,34 @@ type handlers struct {
 	// upstreams drain the gateway before it stops accepting connections. May be
 	// nil in unit tests that construct handlers directly.
 	draining *atomic.Bool
+	// licenseStatus points at the Server's atomic.Value holding the current
+	// license.Status (set via Server.SetLicenseStatus on boot/hot-reload). May
+	// be nil in unit tests that construct handlers directly; getLicense treats
+	// that the same as "no status recorded yet".
+	licenseStatus *atomic.Value
+}
+
+// auditCrossTenantRead records a super-admin GET that spans a tenant other
+// than the operator's own (or spans every tenant). Regular mutating requests
+// are already recorded by serveAndAudit; GETs are deliberately NOT recorded
+// there to keep the audit log signal-rich, but a super-admin browsing another
+// tenant's users/audit-trail/tenant list is exactly the "who looked at tenant
+// B's data" question an auditor asks, so this narrow class of read is logged
+// explicitly instead. h.audit is nil-safe (Store.Record no-ops on a nil
+// receiver), so this is safe to call unconditionally.
+func (h *handlers) auditCrossTenantRead(r *http.Request, action, targetTenant string) {
+	h.audit.Record(audit.Entry{
+		TenantID:   tenant.From(r.Context()),
+		ActorID:    iam.UserID(r.Context()),
+		Role:       string(iam.FromContext(r.Context())),
+		SuperAdmin: true,
+		Action:     action,
+		Method:     r.Method,
+		Path:       r.URL.Path,
+		Status:     http.StatusOK,
+		IP:         middleware.RealIP(r),
+		Detail:     "target_tenant=" + targetTenant,
+	})
 }
 
 // requireAuth is a defence-in-depth check called directly inside mutating
@@ -198,7 +226,24 @@ func (h *handlers) getMetrics(w http.ResponseWriter, r *http.Request) {
 // ── Config ────────────────────────────────────────────────────────────────────
 
 func (h *handlers) getConfig(w http.ResponseWriter, r *http.Request) {
-	// Sanitize: never expose secrets
+	// Sanitize: never expose secrets. The "security" toggles below are
+	// GLOBAL (security.* applies to every tenant unless a route overrides
+	// it — ADR-001) and are not another tenant's data, so exposing them here
+	// is intentional, unlike routes_count: an unfiltered len(h.cfg.Routes)
+	// reveals the WHOLE deployment's route count across every tenant to any
+	// authenticated caller — deployment topology/scale a tenant B operator
+	// has no reason to learn about. Scoped the same way getRoutes already
+	// scopes the route list itself (audit finding, 2026-08-22).
+	routesCount := len(h.cfg.Routes)
+	if !iam.IsSuperAdmin(r.Context()) {
+		self := tenant.From(r.Context())
+		routesCount = 0
+		for _, rt := range h.cfg.Routes {
+			if rt.TenantID == "" || rt.TenantID == self {
+				routesCount++
+			}
+		}
+	}
 	safe := map[string]any{
 		"listen":       h.cfg.Listen,
 		"admin_listen": h.cfg.AdminListen,
@@ -216,7 +261,7 @@ func (h *handlers) getConfig(w http.ResponseWriter, r *http.Request) {
 			"api_inventory": h.cfg.Security.Inventory.Enabled,
 			"threat_feed":   h.cfg.Security.ThreatFeed.Enabled,
 		},
-		"routes_count": len(h.cfg.Routes),
+		"routes_count": routesCount,
 	}
 	writeJSON(w, http.StatusOK, safe)
 }
@@ -299,8 +344,13 @@ func (h *handlers) blockIPHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate IP format
-	if req.IP == "" || net.ParseIP(req.IP) == nil {
+	parsed := net.ParseIP(req.IP)
+	if req.IP == "" || parsed == nil {
 		writeError(w, http.StatusBadRequest, "valid IP address is required")
+		return
+	}
+	if isUnblockableIP(parsed) {
+		writeError(w, http.StatusBadRequest, "loopback, unspecified, and link-local addresses cannot be blocked")
 		return
 	}
 
@@ -345,6 +395,13 @@ func (h *handlers) unblockIPHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "IP unblocked", "ip": ip})
 }
 
+// isUnblockableIP rejects addresses that would only cause self-inflicted
+// disruption if blocked: loopback, unspecified, and link-local — none of
+// which identify a real remote attacker.
+func isUnblockableIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
+}
+
 // ── JWT Revocation ────────────────────────────────────────────────────────────
 
 func (h *handlers) revokeJWT(w http.ResponseWriter, r *http.Request) {
@@ -365,6 +422,10 @@ func (h *handlers) revokeJWT(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.JTI == "" {
 		writeError(w, http.StatusBadRequest, "jti is required")
+		return
+	}
+	if req.TTLSeconds < 0 {
+		writeError(w, http.StatusBadRequest, "ttl_seconds must not be negative")
 		return
 	}
 

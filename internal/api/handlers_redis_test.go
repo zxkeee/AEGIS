@@ -130,6 +130,39 @@ func TestGetConfig_RedactsAndShapes(t *testing.T) {
 	}
 }
 
+// TestGetConfig_RoutesCountTenantScoped is a regression test: routes_count
+// used to be len(h.cfg.Routes) unconditionally — the WHOLE deployment's
+// route count across every tenant, unfiltered, unlike getRoutes (which
+// already scopes the route list itself). A tenant B admin could learn
+// tenant A's deployment scale/topology from a field that should mirror
+// getRoutes' own scoping. Only a super-admin sees the true total.
+func TestGetConfig_RoutesCountTenantScoped(t *testing.T) {
+	h, _ := redisHandlers(t)
+	h.cfg.Routes = []config.RouteConfig{
+		{Path: "/acme/", TenantID: "acme", Upstreams: []string{"http://acme-internal"}},
+		{Path: "/globex/", TenantID: "globex", Upstreams: []string{"http://globex-internal"}},
+		{Path: "/shared/", Upstreams: []string{"http://shared"}}, // TenantID == "" (single-tenant style)
+	}
+
+	// acme viewer: own route + tenant-agnostic shared route = 2, not 3.
+	rec, body := doReq(h.getConfig, http.MethodGet, "/api/config", ctxAs("acme", iam.RoleViewer, false), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("config = %d", rec.Code)
+	}
+	if got, _ := body["routes_count"].(float64); got != 2 {
+		t.Fatalf("acme session routes_count = %v, want 2 (acme's + shared, not globex's)", body["routes_count"])
+	}
+
+	// Super-admin sees the true total.
+	rec, body = doReq(h.getConfig, http.MethodGet, "/api/config", ctxAs("acme", iam.RoleAdmin, true), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("config = %d", rec.Code)
+	}
+	if got, _ := body["routes_count"].(float64); got != 3 {
+		t.Fatalf("super-admin routes_count = %v, want 3 (all routes)", body["routes_count"])
+	}
+}
+
 func TestGetRoutes_OK(t *testing.T) {
 	h, _ := redisHandlers(t)
 	rec := httptest.NewRecorder()
@@ -259,6 +292,18 @@ func TestBlockIP_InvalidIP(t *testing.T) {
 	}
 }
 
+func TestBlockIP_RejectsLoopbackAndUnspecified(t *testing.T) {
+	h, _ := redisHandlers(t)
+	admin := ctxAs("default", iam.RoleAdmin, false)
+	for _, ip := range []string{"127.0.0.1", "0.0.0.0", "::1", "169.254.1.1"} {
+		rec, _ := doReq(h.blockIPHandler, http.MethodPost, "/api/blocked-ips", admin,
+			map[string]any{"ip": ip})
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("block %q = %d, want 400", ip, rec.Code)
+		}
+	}
+}
+
 func TestBlockIP_ViewerForbidden(t *testing.T) {
 	h, _ := redisHandlers(t)
 	// Even with outer AdminAuth disabled, the in-handler requireMutator still
@@ -294,5 +339,18 @@ func TestRevokeJWT_MissingJTI(t *testing.T) {
 		map[string]any{"ttl_seconds": 60})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("missing jti = %d, want 400", rec.Code)
+	}
+}
+
+func TestRevokeJWT_RejectsNegativeTTL(t *testing.T) {
+	h, _ := redisHandlers(t)
+	admin := ctxAs("default", iam.RoleAdmin, false)
+	rec, _ := doReq(h.revokeJWT, http.MethodPost, "/api/jwt/revoke", admin,
+		map[string]any{"jti": "abc-123", "ttl_seconds": -1})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("negative ttl_seconds = %d, want 400", rec.Code)
+	}
+	if revoked, _ := h.store.IsJTIRevoked(context.Background(), "abc-123"); revoked {
+		t.Fatal("jti must not be revoked when ttl_seconds is rejected")
 	}
 }

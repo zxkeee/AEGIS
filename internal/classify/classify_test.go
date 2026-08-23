@@ -16,6 +16,10 @@ func TestDetect_Types(t *testing.T) {
 		{"ssn", "ssn 123-45-6789", []string{"ssn"}},
 		{"phone", "call (415) 555-0132 today", []string{"phone"}},
 		{"mixed", "a@b.io paid with 4111111111111111", []string{"credit_card", "email"}},
+		// A bare 10-digit run also matches the phone pattern by shape — both
+		// fire, which is correct: an NPI genuinely looks like a phone number.
+		{"npi", "referring provider NPI: 1234567893", []string{"npi", "phone"}},
+		{"npi hash-separated", "NPI#1234567893", []string{"npi", "phone"}},
 		{"none", `{"order_id": 8675309, "qty": 3}`, nil},
 	}
 	for _, c := range cases {
@@ -50,6 +54,36 @@ func TestDetect_SSNValidation(t *testing.T) {
 	}
 }
 
+// NPI is the one PHI-category detector; verify Categories actually surfaces
+// PHI (it's a documented category in the package doc comment, but was
+// previously unreachable — no detector ever produced it).
+func TestDetect_NPIValidatesCheckDigit(t *testing.T) {
+	// 1234567893 is the standard CMS-documented example of a valid NPI. It
+	// also matches the phone-shape detector — both are correct, an NPI
+	// genuinely looks like a phone number by digit shape alone.
+	if got := Detect([]byte("NPI: 1234567893")); !reflect.DeepEqual(got, []string{"npi", "phone"}) {
+		t.Fatalf("valid NPI = %v, want [npi phone]", got)
+	}
+	// Bad check digit (last digit flipped) must not be reported as npi
+	// (though it may still match the phone-shape detector).
+	if got := Detect([]byte("NPI: 1234567890")); contains(got, "npi") {
+		t.Fatalf("invalid check digit should not be reported as npi, got %v", got)
+	}
+	// A bare 10-digit run with no "NPI" label must not be flagged as npi —
+	// this is what keeps it from colliding with ordinary phone numbers/IDs
+	// (it may still legitimately match the phone-shape detector).
+	if got := Detect([]byte("call center ext 1234567893")); contains(got, "npi") {
+		t.Fatalf("unlabelled 10-digit number must not be reported as npi, got %v", got)
+	}
+}
+
+func TestCategories_IncludesPHI(t *testing.T) {
+	got := Categories([]string{"npi"})
+	if !reflect.DeepEqual(got, []string{"PHI"}) {
+		t.Fatalf("Categories([npi]) = %v, want [PHI]", got)
+	}
+}
+
 func TestRedact_MasksAndReportsTypes(t *testing.T) {
 	in := []byte("email a@b.io card 4111 1111 1111 1111")
 	out, types := Redact(in, []byte("***"))
@@ -73,6 +107,15 @@ func TestCategories(t *testing.T) {
 	if Categories(nil) != nil {
 		t.Fatal("Categories(nil) should be nil")
 	}
+}
+
+func contains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 func containsDigits(b []byte) bool {

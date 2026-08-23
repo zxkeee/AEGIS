@@ -226,6 +226,88 @@ func TestStore_Sessions(t *testing.T) {
 	}
 }
 
+func TestStore_RevokeSessions(t *testing.T) {
+	ctx := context.Background()
+	tenantASess1 := iam.Session{TenantID: "tenant-a", UserID: "u1", Role: iam.RoleAdmin, CSRF: "c1"}
+	tenantASess2 := iam.Session{TenantID: "tenant-a", UserID: "u2", Role: iam.RoleViewer, CSRF: "c2"}
+	tenantBSess := iam.Session{TenantID: "tenant-b", UserID: "u3", Role: iam.RoleAdmin, CSRF: "c3"}
+
+	t.Run("revoke by tenant clears only that tenant", func(t *testing.T) {
+		st := newTestStore(t)
+		for token, sess := range map[string]iam.Session{
+			"tok-a1": tenantASess1, "tok-a2": tenantASess2, "tok-b1": tenantBSess,
+		} {
+			if err := st.CreateSession(ctx, token, sess, time.Hour); err != nil {
+				t.Fatalf("CreateSession(%s): %v", token, err)
+			}
+		}
+		n, err := st.RevokeSessions(ctx, "tenant-a", "")
+		if err != nil {
+			t.Fatalf("RevokeSessions: %v", err)
+		}
+		if n != 2 {
+			t.Errorf("revoked = %d, want 2", n)
+		}
+		if _, ok, _ := st.ValidateSession(ctx, "tok-a1"); ok {
+			t.Error("tenant-a session tok-a1 should be revoked")
+		}
+		if _, ok, _ := st.ValidateSession(ctx, "tok-a2"); ok {
+			t.Error("tenant-a session tok-a2 should be revoked")
+		}
+		if _, ok, _ := st.ValidateSession(ctx, "tok-b1"); !ok {
+			t.Error("tenant-b session must survive a tenant-a revoke")
+		}
+	})
+
+	t.Run("revoke by user narrows within tenant", func(t *testing.T) {
+		st := newTestStore(t)
+		for token, sess := range map[string]iam.Session{
+			"tok-a1": tenantASess1, "tok-a2": tenantASess2, "tok-b1": tenantBSess,
+		} {
+			if err := st.CreateSession(ctx, token, sess, time.Hour); err != nil {
+				t.Fatalf("CreateSession(%s): %v", token, err)
+			}
+		}
+		n, err := st.RevokeSessions(ctx, "tenant-a", "u1")
+		if err != nil {
+			t.Fatalf("RevokeSessions: %v", err)
+		}
+		if n != 1 {
+			t.Errorf("revoked = %d, want 1", n)
+		}
+		if _, ok, _ := st.ValidateSession(ctx, "tok-a1"); ok {
+			t.Error("u1 session should be revoked")
+		}
+		if _, ok, _ := st.ValidateSession(ctx, "tok-a2"); !ok {
+			t.Error("u2 session must survive a u1-scoped revoke")
+		}
+	})
+
+	t.Run("empty tenant filter narrows by user only (super-admin cross-tenant delete)", func(t *testing.T) {
+		st := newTestStore(t)
+		for token, sess := range map[string]iam.Session{
+			"tok-a1": tenantASess1, "tok-b1": tenantBSess,
+		} {
+			if err := st.CreateSession(ctx, token, sess, time.Hour); err != nil {
+				t.Fatalf("CreateSession(%s): %v", token, err)
+			}
+		}
+		n, err := st.RevokeSessions(ctx, "", "u3")
+		if err != nil {
+			t.Fatalf("RevokeSessions: %v", err)
+		}
+		if n != 1 {
+			t.Errorf("revoked = %d, want 1", n)
+		}
+		if _, ok, _ := st.ValidateSession(ctx, "tok-b1"); ok {
+			t.Error("u3 session should be revoked regardless of tenant filter")
+		}
+		if _, ok, _ := st.ValidateSession(ctx, "tok-a1"); !ok {
+			t.Error("u1 session must survive a u3-scoped revoke")
+		}
+	})
+}
+
 func TestStore_Forensic(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>The Order Is Load-Bearing — AEGIS</title>
+<meta name="description" content="Why the middleware chain order is part of the contract, not an implementation detail — including a diagram mistake we made ourselves and caught." />
+<link rel="stylesheet" href="/articles/article.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/">AEGIS</a>
+  <a class="back" href="/articles.html">← all articles</a>
+</nav>
+
+<div class="wrap">
+  <p class="eyebrow">Engineering</p>
+  <h1>The Order Is Load-Bearing</h1>
+  <p class="dek">Why a security gateway's middleware order is part of its contract — and a diagram mistake we made ourselves, caught, and are writing up instead of quietly fixing.</p>
+
+  <p>Every request through AEGIS passes through roughly twenty middleware stages before it reaches your backend. The obvious question anyone asks when they see a list that long is "does the order matter, or is that just how it happened to get written?" It matters — enough that we pin the order with a named-step test that fails CI if anyone reorders it without meaning to. Three examples of why.</p>
+
+  <h2>Identity must resolve before anything trusts it</h2>
+  <p><code>TenantResolve</code> runs first, full stop, because everything downstream — rate limits, blocklists, the catalog — reads the tenant from context. Put it anywhere else and every control behind it is scoping decisions against a tenant it hasn't determined yet.</p>
+  <p><code>CleanHeaders</code> runs second, immediately after, and strips any client-supplied <code>X-Gateway-*</code> or <code>X-JA3-*</code> header before a single downstream control has a chance to read — and trust — a value the client could have forged. Run this later and you've spent however many stages came before it trusting headers nobody has verified yet.</p>
+
+  <h2>Discovery sits in a very specific place, and it's not arbitrary</h2>
+  <p>The catalog-building middleware sits <em>after</em> rate-limiting, bot detection, and the WAF, but <em>before</em> authentication and DLP. Both boundaries are deliberate, for opposite reasons:</p>
+  <ul>
+    <li><strong>After the early filters</strong>, so a request already rejected as an attack — blocked by the WAF, rate-limited, flagged as a bot — never reaches the catalog at all. Attack noise doesn't get to pollute the map of your real API surface.</li>
+    <li><strong>Before auth and DLP</strong>, so the observation it records still reflects whatever those later stages decide — including a rejection. A request that clears the early filters is recorded regardless of what auth or DLP do to it afterward.</li>
+  </ul>
+
+  <h2>Authorization-abuse detection needs verified roles to exist first</h2>
+  <p>BOLA/BFLA detection runs after JWT authentication for a reason that sounds obvious once stated and is easy to get backwards under time pressure: it reads the caller's roles to decide whether a privileged path was accessed without permission. Run it before authentication and there are no verified roles yet to check against — the detector would either have nothing to evaluate or, worse, trust unverified claims.</p>
+
+  <h2>The part we're not going to quietly fix</h2>
+  <p>An earlier draft of one of our own explainer diagrams — not this site, an internal one — showed identity ("who is this?") as the <em>first</em> gate a request passes, ahead of rate-limiting and the WAF. That's backwards from the actual chain, and we caught it by going back to the source file instead of trusting our own prior summary of it. The corrected, verified order is what's described above — rate and reputation first, then content inspection, then identity, then data-leak and behavior checks last.</p>
+  <p>We're mentioning this specifically, not editing it away silently, because it's the exact failure mode this whole post is about: a description of the order drifting from the order that's actually enforced, and nobody noticing until someone checks the source instead of the summary.</p>
+
+  <div class="cta">
+    <p>The object-ownership detector that runs in this chain — after auth, evaluated after the response — has its own writeup.</p>
+    <a class="btn" href="/articles/bola-detection.html">Read: Catching the IDOR a Signature WAF Can't See →</a>
+  </div>
+</div>
+
+<footer>AEGIS — inline API security gateway, built in Go.</footer>
+
+</body>
+</html>

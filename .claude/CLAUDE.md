@@ -70,11 +70,12 @@ old chain.
 
 ### Middleware chain — order is load-bearing
 
-`buildHandlerChain` in `cmd/gateway/main.go` assembles the chain; the **first
-listed is outermost**. The ordering is deliberate (e.g. `TenantResolve` must run
-first; `CleanHeaders` strips spoofed identity before anything trusts it;
-`Discovery` sits inside auth/DLP so it can enrich the observation with identity
-and PII signals, and outside the proxy so it captures the final status). Read
+`BuildHandlerChain` (via `chainSteps`) in `internal/gateway/chain.go` assembles
+the chain; the **first listed is outermost**. The ordering is deliberate (e.g.
+`TenantResolve` must run first; `CleanHeaders` strips spoofed identity before
+anything trusts it; `Discovery` sits inside auth/DLP so it can enrich the
+observation with identity and PII signals, and outside the proxy so it captures
+the final status). Read
 that function before reordering anything. Each middleware lives in
 `internal/middleware/` and is a `func(http.Handler) http.Handler`; disabled
 features return `passthrough`.
@@ -136,10 +137,14 @@ upstream-supplied JA3 header, but **only from a `trusted_proxies` peer**.
 ## Conventions
 
 - **Secrets come from the environment**, never config files: `AEGIS_ADMIN_SECRET`,
-  `AEGIS_REDIS_PASSWORD`, `AEGIS_JWT_SECRET`, `AEGIS_FORENSIC_DSN`,
-  `AEGIS_ALERT_WEBHOOK_URL` (`applyEnvOverrides` in `internal/config`).
-  `config.Validate` rejects insecure placeholder secrets, short admin secrets,
-  and inconsistent TLS/CORS/tenant settings — run it mentally when adding config.
+  `AEGIS_REDIS_PASSWORD`, `AEGIS_REDIS_SENTINEL_PASSWORD`, `AEGIS_JWT_SECRET`,
+  `AEGIS_PROPAGATION_SECRET`, `AEGIS_FORENSIC_DSN`, `AEGIS_OIDC_CLIENT_ID`,
+  `AEGIS_OIDC_CLIENT_SECRET`, `AEGIS_ALERT_WEBHOOK_URL` (`applyEnvOverrides` in
+  `internal/config`). `config.Validate` rejects insecure placeholder secrets,
+  short admin secrets, and inconsistent TLS/CORS/tenant settings — run it
+  mentally when adding config. (`web/server.go` — a separate `aegis-site`
+  marketing binary, not the gateway — has its own unrelated `SMTP_USER`/
+  `SMTP_PASS`/`MAIL_TO` env vars; out of scope for this list.)
 - **`fail_closed`** is an opt-in per control (rate limit, IP guard): on a Redis
   outage, deny instead of failing open. Behavioural scoring intentionally stays
   fail-open (a scoring gap beats blocking all traffic).

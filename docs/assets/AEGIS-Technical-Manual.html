@@ -1,0 +1,807 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AEGIS — Technical Manual</title>
+<style>
+@font-face {
+  font-family: "Iowan";
+  src: local("Iowan Old Style"), local("Georgia");
+}
+
+:root {
+  --obsidian: #111111;
+  --canvas: #181818;
+  --card: #1f1f1f;
+  --ink: #eeeeee;
+  --ash: #e4e4e4;
+  --muted: #a4a19b;
+  --faint: #5e5d59;
+  --line: #262626;
+
+  --paper: #f4f2ee;
+  --paper-card: #ffffff;
+  --text: #1c1a17;
+  --text-muted: #5b574f;
+  --text-faint: #8a857a;
+  --rule: #ddd8cd;
+  --rule-2: #c9c3b5;
+
+  --accent: #2b5fd9;
+  --accent-dim: #dde6fb;
+  --navy: #16233f;
+
+  --crit: #a3271f;
+  --crit-bg: #f7e6e4;
+  --warn: #8a5a13;
+  --warn-bg: #f6ecd9;
+  --ok: #1f6e4a;
+  --ok-bg: #e2f0e8;
+
+  --serif: "Iowan", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  --sans: -apple-system, "Inter", "Helvetica Neue", Arial, sans-serif;
+  --mono: "SF Mono", "Fira Code", ui-monospace, Menlo, monospace;
+}
+
+@page { size: A4; margin: 9mm; }
+@page :first { margin: 0; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: #ffffff;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The beige panel is the .page element's own background, not the page
+   margin — @page margin above is a thin white frame around it. Text sits
+   inset from the panel edge via this padding, not via the page margin, so
+   the two are independently tunable (wide beige panel, comfortable text
+   inset). Each .page is a section of content, not a literal physical page —
+   the browser paginates naturally within @page's margins; a section that
+   runs long simply continues onto the next physical page (the panel
+   background carries across the page-break automatically). Forcing an exact
+   297mm box per section is what caused an earlier overflow/blank-page bug —
+   don't reintroduce a fixed height here. */
+.page {
+  background: var(--paper);
+  padding: 14mm 16mm;
+  page-break-before: always;
+}
+.page:first-of-type { page-break-before: avoid; }
+
+/* ── Cover ─────────────────────────────────────────────────────────── */
+.cover {
+  width: 210mm;
+  height: 297mm;
+  margin: 0;
+  padding: 22mm 26mm;
+  background: var(--obsidian);
+  color: var(--ink);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  page-break-before: avoid;
+  overflow: hidden;
+}
+.cover-top { display: flex; justify-content: space-between; align-items: flex-start; }
+.cover-mark {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+.cover-mark b { color: var(--ink); }
+.cover-tag {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--faint);
+  text-align: right;
+  line-height: 1.7;
+}
+.cover-mid { margin-top: 30mm; }
+.cover-eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 14px;
+}
+h1.cover-title {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 52px;
+  line-height: 1.08;
+  margin: 0 0 20px;
+  color: var(--ink);
+  max-width: 15ch;
+}
+p.cover-sub {
+  font-size: 15px;
+  color: var(--muted);
+  max-width: 46ch;
+  line-height: 1.6;
+  margin: 0;
+}
+.cover-bottom {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+.cover-stat-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  margin-bottom: 4px;
+}
+.cover-stat-value { font-size: 13px; color: var(--ash); font-weight: 500; }
+
+/* ── Body pages ────────────────────────────────────────────────────── */
+.hdr {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 8px;
+  margin-bottom: 14mm;
+}
+.hdr b { color: var(--text-muted); }
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 8px;
+}
+h2 {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 27px;
+  color: var(--navy);
+  margin: 0 0 4mm;
+  line-height: 1.15;
+}
+h2 .num { color: var(--rule-2); font-family: var(--mono); font-size: 16px; margin-right: 10px; }
+h3 {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--navy);
+  margin: 6.5mm 0 3mm;
+  letter-spacing: -0.01em;
+}
+.lede {
+  font-family: var(--serif);
+  font-size: 15.5px;
+  line-height: 1.6;
+  color: var(--text);
+  margin: 0 0 4.5mm;
+  max-width: 62ch;
+}
+p { margin: 0 0 3mm; color: var(--text); max-width: 68ch; }
+p.muted { color: var(--text-muted); font-size: 11.5px; }
+strong { color: var(--navy); font-weight: 600; }
+a { color: var(--accent); }
+code, .mono { font-family: var(--mono); font-size: 0.92em; }
+code {
+  background: var(--paper-card);
+  border: 1px solid var(--rule);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--navy);
+}
+
+ul, ol { margin: 0 0 3mm; padding-left: 18px; max-width: 66ch; }
+li { margin-bottom: 1.2mm; }
+li::marker { color: var(--accent); }
+
+/* ── Cards / grids ─────────────────────────────────────────────────── */
+.grid { display: grid; gap: 8px; margin: 4mm 0 5mm; }
+.grid-2 { grid-template-columns: 1fr 1fr; }
+.grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+.grid-4 { grid-template-columns: repeat(4, 1fr); }
+.card {
+  background: var(--paper-card);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 3.5mm 4mm;
+}
+.card h4 {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  margin: 0 0 3px;
+  font-weight: 500;
+}
+.card .v { font-size: 20px; font-weight: 600; color: var(--navy); font-family: var(--serif); }
+.card .d { font-size: 10.5px; color: var(--text-muted); margin-top: 3px; line-height: 1.5; }
+
+/* ── Tables ────────────────────────────────────────────────────────── */
+table { width: 100%; border-collapse: collapse; margin: 4mm 0 6mm; font-size: 11px; }
+th {
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  font-weight: 500;
+  padding: 5px 8px;
+  border-bottom: 1.5px solid var(--rule-2);
+}
+td { padding: 6px 8px; border-bottom: 1px solid var(--rule); vertical-align: top; color: var(--text); }
+tr:last-child td { border-bottom: none; }
+td.mono, th.mono { font-family: var(--mono); }
+td.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ── Chain diagram ─────────────────────────────────────────────────── */
+.chain {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 5mm 0 6mm;
+  counter-reset: step;
+}
+.chain-step {
+  counter-increment: step;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  background: var(--paper-card);
+  border: 1px solid var(--rule-2);
+  border-radius: 4px;
+  padding: 4px 7px 4px 20px;
+  position: relative;
+  color: var(--text);
+}
+.chain-step::before {
+  content: counter(step);
+  position: absolute;
+  left: 6px;
+  top: 4px;
+  color: var(--accent);
+  font-weight: 700;
+}
+.chain-step.security { border-color: var(--accent); background: var(--accent-dim); }
+
+/* ── Pills / badges ────────────────────────────────────────────────── */
+.pill {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 20px;
+  font-weight: 600;
+}
+.pill-done { background: var(--ok-bg); color: var(--ok); }
+.pill-partial { background: var(--warn-bg); color: var(--warn); }
+.pill-open { background: var(--crit-bg); color: var(--crit); }
+
+/* ── Callouts ──────────────────────────────────────────────────────── */
+.callout {
+  border-left: 3px solid var(--accent);
+  background: var(--paper-card);
+  padding: 3.5mm 5mm;
+  margin: 4mm 0 5mm;
+  border-radius: 0 5px 5px 0;
+}
+.callout.warn { border-color: var(--warn); }
+.callout p:last-child { margin-bottom: 0; }
+.callout .k { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-faint); margin-bottom: 2mm; }
+
+.keep { break-inside: avoid; page-break-inside: avoid; }
+
+.two-col { columns: 2; column-gap: 10mm; }
+.two-col > * { break-inside: avoid; }
+
+@media print {
+  body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .page { box-shadow: none; }
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════ COVER ═══════════════════════════ -->
+<section class="page cover">
+  <div class="cover-top">
+    <div class="cover-mark"><b>AEGIS</b> — API Security Gateway</div>
+    <div class="cover-tag">internal technical review<br>prepared for security peer read</div>
+  </div>
+  <div class="cover-mid">
+    <div class="cover-eyebrow">Technical Manual · v1</div>
+    <h1 class="cover-title">Architecture &amp; security posture</h1>
+    <p class="cover-sub">A self-hosted reverse-proxy gateway that discovers, scores, and protects
+      APIs in-process — no traffic ever leaves the operator's own network. This document
+      covers the architecture, the security control chain, deployment models, and an honest
+      account of what is closed and what is still open.</p>
+  </div>
+  <div class="cover-bottom">
+    <div><div class="cover-stat-label">Language</div><div class="cover-stat-value">Go, single static binary</div></div>
+    <div><div class="cover-stat-label">Controls per request</div><div class="cover-stat-value">20, ordered chain</div></div>
+    <div><div class="cover-stat-label">WAF engine</div><div class="cover-stat-value">Coraza (CRS v4 opt-in)</div></div>
+    <div><div class="cover-stat-label">Deployment</div><div class="cover-stat-value">Self-hosted, on-prem / VPC</div></div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ 1. THESIS ═══════════════════════════ -->
+<section class="page">
+  <div class="hdr"><span><b>AEGIS</b> Technical Manual</span><span>01 — Overview</span></div>
+
+  <p class="eyebrow">01 · What this is</p>
+  <h2>A gateway that sees the request before it decides whether to trust it</h2>
+  <p class="lede">AEGIS is a reverse proxy: it sits in front of an existing API, forwards every
+    request to a real backend, and — in the same process, on the same request — runs a chain of
+    security controls and builds a live map of who calls what, with what data, and how well
+    protected each endpoint actually is.</p>
+
+  <p>The problem it addresses: a signature-based WAF (SQLi/XSS pattern matching) does not
+    understand business context. It cannot tell that a caller who normally touches three orders
+    just enumerated three hundred, or that an endpoint returning a credit-card number has no
+    authentication in front of it. Those are the OWASP API Top-10 classes — <strong>BOLA, BFLA,
+    excessive data exposure, shadow endpoints</strong> — and they look like perfectly valid HTTP
+    traffic to a signature engine.</p>
+
+  <div class="grid grid-3">
+    <div class="card">
+      <h4>See</h4>
+      <div class="d">Passive discovery of every endpoint actually hit, path-normalized, PII-classified,
+        scored 0–100 by posture, compared against a declared OpenAPI contract for drift.</div>
+    </div>
+    <div class="card">
+      <h4>Protect</h4>
+      <div class="d">WAF, JWT auth with signed identity propagation, rate limiting, IP/bot/threat
+        controls, and BOLA/BFLA detection built on a consumer graph — all inline, one process.</div>
+    </div>
+    <div class="card">
+      <h4>Prove</h4>
+      <div class="d">Posture scoring, a persistent audit log, multi-tenant isolation, findings mapped to
+        NIS2 / ISO 27001 / OWASP, exportable reports.</div>
+    </div>
+  </div>
+
+  <h3>What makes this different from a WAF-only product</h3>
+  <p>Every request that reaches a backend is attributed to a consumer identity (JWT subject, API
+    key, or IP) and, where the response body names an object's owner, to that object. Over time
+    this produces a <strong>consumer graph</strong> — not a signature list — and it is what
+    catches the abuse a signature engine structurally cannot see: a valid, authenticated,
+    correctly-formed request for someone else's data.</p>
+
+  <h3>Deployment model</h3>
+  <p>Single Go binary, no agents, no data plane leaving the operator's own network — the traffic
+    AEGIS inspects never transits a third-party cloud. This targets the segment that a SaaS-only
+    competitor (Salt, Noname, Imperva) structurally cannot serve: regulated mid-market on-prem
+    or in a private VPC, where sending traffic to someone else's cloud is not an option.</p>
+</section>
+
+<!-- ═══════════════════════════ 2. ARCHITECTURE ═══════════════════════════ -->
+<section class="page">
+  <div class="hdr"><span><b>AEGIS</b> Technical Manual</span><span>02 — Architecture</span></div>
+
+  <p class="eyebrow">02 · Architecture</p>
+  <h2>Two servers, one process, a 20-step ordered chain</h2>
+  <p class="lede">A single binary runs two HTTP servers side by side: the <strong>gateway</strong>
+    (data plane — the reverse proxy every request flows through) and the <strong>admin API</strong>
+    (control plane — dashboard, findings, configuration, IAM). Config is hot-reloaded: a file
+    change rebuilds the handler chain and swaps it atomically, so in-flight requests keep
+    running against the old chain.</p>
+
+  <h3>The data-plane middleware chain (source of truth: <code>internal/gateway/chain.go</code>)</h3>
+  <p class="muted">Ordering is load-bearing and deliberate — e.g. tenant resolution must run
+    first; spoofable identity headers are stripped before anything downstream trusts them;
+    discovery wraps <em>around</em> auth/DLP (outside them in the chain) so it can enrich each
+    observation, after the fact, with the identity and PII signals those layers attach, and
+    outside the proxy call so it captures the final response status.</p>
+  <div class="chain">
+    <div class="chain-step">TenantResolve</div>
+    <div class="chain-step">CleanHeaders</div>
+    <div class="chain-step">UpstreamFingerprint</div>
+    <div class="chain-step">TLSFingerprint</div>
+    <div class="chain-step">SecurityHeaders</div>
+    <div class="chain-step">RequestID</div>
+    <div class="chain-step">PathSanity</div>
+    <div class="chain-step">CORS</div>
+    <div class="chain-step security">IPGuard</div>
+    <div class="chain-step security">ThreatFeed</div>
+    <div class="chain-step security">RateLimit</div>
+    <div class="chain-step security">BotProtection</div>
+    <div class="chain-step security">Challenge</div>
+    <div class="chain-step security">WAF</div>
+    <div class="chain-step">Discovery</div>
+    <div class="chain-step security">Auth (JWT)</div>
+    <div class="chain-step security">SchemaValidation</div>
+    <div class="chain-step security">AbuseDetection (BOLA/BFLA)</div>
+    <div class="chain-step security">DLP</div>
+    <div class="chain-step">BehaviorAnalysis</div>
+  </div>
+
+  <h3>State backends</h3>
+  <div class="grid grid-2">
+    <div class="card">
+      <h4>Redis</h4>
+      <div class="d">Rate-limit windows, IP blocklists, behaviour scores, JA3 sets, BOLA object-ownership
+        counters, challenge tokens, JWT revocation (JTI), admin sessions, metrics, a forensic ring
+        buffer. Most keys carry TTLs. Multi-tenant keys are prefixed <code>gw:t:&lt;tenant&gt;:*</code>.</div>
+    </div>
+    <div class="card">
+      <h4>PostgreSQL <span class="pill pill-partial" style="margin-left:6px">optional</span></h4>
+      <div class="d">The discovery catalog and forensic log share one database, enabled only when a DSN
+        is configured. Without it, Discovery degrades to passthrough — the gateway still runs, it
+        just doesn't build a catalog. Every table carries <code>tenant_id</code> with Row-Level
+        Security as a fail-closed backstop.</div>
+    </div>
+  </div>
+
+  <h3>Identity propagation to backends</h3>
+  <p>After JWT verification, the gateway signs the forwarded identity —
+    <code>HMAC-SHA256(secret, "sub:roles:scopes:ts:nonce")</code> — into
+    <code>X-Gateway-Signature</code>. A backend can verify authenticity, timestamp freshness, and
+    replay (nonce) using the reference SDK (<code>sdk/gatewayverify</code>), so a compromised
+    edge cannot silently forge an identity a backend trusts. Inbound <code>X-Gateway-*</code>
+    headers are stripped before this point, so a client can never inject a fake one.</p>
+</section>
+
+<!-- ═══════════════════════════ 3. BOLA/BFLA ═══════════════════════════ -->
+<section class="page">
+  <div class="hdr"><span><b>AEGIS</b> Technical Manual</span><span>03 — Abuse detection</span></div>
+
+  <p class="eyebrow">03 · The differentiator</p>
+  <h2>Catching the leak a signature WAF cannot see</h2>
+  <p class="lede">BOLA/BFLA detection (<code>AbuseDetection</code> middleware, wired after JWT
+    so it sees verified roles) is the primary reason a team buys API-specific security rather
+    than "another WAF." It is built entirely on the consumer graph, not signatures.</p>
+
+  <div class="grid grid-2">
+    <div class="card">
+      <h4>BFLA — broken function-level authorization</h4>
+      <div class="d">A consumer hits a privileged path prefix without holding any of the roles that
+        path requires. Configured per-path (<code>privileged</code> rules).</div>
+    </div>
+    <div class="card">
+      <h4>BOLA / IDOR — two independent signals</h4>
+      <div class="d">(1) <strong>Enumeration</strong>: distinct object-IDs per consumer/endpoint against
+        a hard threshold and an adaptive per-consumer EWMA baseline. (2) <strong>Single-object
+        ownership</strong>: learns which consumer owns which object from response bodies, flags a
+        different consumer successfully (2xx) reading it.</div>
+    </div>
+  </div>
+
+  <h3>Why single-object detection matters most</h3>
+  <p>Enumeration catches scraping. It does not catch the case that actually leaks data in
+    practice: one authenticated, legitimate-looking request for <em>one</em> object that belongs
+    to someone else. AEGIS reads the declared owner field out of the response body
+    (<code>owner_fields</code>), compares it against the authenticated caller, and — when the
+    binding is confirmed — can <strong>deny the next cross-owner access before it reaches the
+    backend</strong>, not just log it after the fact. A backend 4xx (the app already denied it)
+    is correctly not flagged; only a successful, wrongful read counts.</p>
+
+  <div class="callout keep">
+    <div class="k">Evaluated live, not asserted</div>
+    <p>A minted-JWT walkthrough (<code>demo/idor-demo.sh</code>) drives this end to end against a
+      deliberately vulnerable backend: a second user's order leaks once, AEGIS confirms the IDOR
+      from the response body with an explainable <code>why</code>, and every repeat attempt is
+      denied at the gateway — the legitimate owner is unaffected throughout.</p>
+  </div>
+
+  <h3>False-positive controls</h3>
+  <ul>
+    <li>An allowlist exempts known-benign high-cardinality callers (batch jobs, search
+      indexers, internal admins) from enumeration detection entirely.</li>
+    <li>Ownership-bypass roles (support/admin) are exempt from the proactive-deny path.</li>
+    <li>The per-consumer adaptive baseline reduces false positives from callers whose normal
+      volume is simply higher than the global threshold.</li>
+  </ul>
+
+  <div class="keep">
+    <p class="eyebrow" style="margin-top:9mm">Complementary signature layer</p>
+    <h3 style="margin-top:3mm">WAF: Coraza, OWASP CRS v4 opt-in</h3>
+    <p>Alongside behavioural detection, the gateway runs Coraza — the built-in starter ruleset by
+      default (zero-setup, dev/demo-grade), or the full <strong>OWASP Core Rule Set v4</strong>
+      (~900 rules, anomaly scoring, paranoia levels 1–4) with <code>use_crs: true</code> — the
+      production-grade choice, and the default in the Helm chart's enterprise profile.
+      <code>block_mode: false</code> runs either ruleset in detection-only mode for tuning false
+      positives first.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ 4. DISCOVERY / COMPLIANCE ═══════════════════════════ -->
+<section class="page">
+  <div class="hdr"><span><b>AEGIS</b> Technical Manual</span><span>04 — Discovery &amp; compliance</span></div>
+
+  <p class="eyebrow">04 · See, then prove</p>
+  <h2>Passive discovery, posture scoring, compliance mapping</h2>
+  <p class="lede">Every request produces an observation; a background worker aggregates
+    observations per 5-second window and flushes normalized deltas to PostgreSQL. Paths are
+    normalized (<code>/users/42</code> → <code>/users/{id}</code>) so the catalog reflects real
+    API surface, not raw URL noise.</p>
+
+  <h3>Posture classification</h3>
+  <table>
+    <tr><th>Posture</th><th>Meaning</th></tr>
+    <tr><td class="mono">protected</td><td>Auth required and enforced, WAF/DLP active per the effective route config.</td></tr>
+    <tr><td class="mono">partial</td><td>Some controls active, not the full set the route's risk profile would call for.</td></tr>
+    <tr><td class="mono">unprotected</td><td>Endpoint is live, receiving traffic, with no meaningful controls in front of it.</td></tr>
+    <tr><td class="mono">shadow</td><td>Observed in real traffic but absent from the declared OpenAPI contract — API9.</td></tr>
+  </table>
+
+  <h3>Findings — the buyer-facing view</h3>
+  <p>Findings are derived per endpoint from accumulated traffic and mapped to OWASP API Top-10:
+    <strong>API3</strong> (PII returned to an anonymous or unauthenticated-in-practice caller —
+    confirmed critical vs. latent warning depending on whether auth is merely undeclared or
+    actually not enforced) and <strong>API9</strong> (a shadow endpoint that also leaks PII).
+    Severity-sorted, critical first, exportable as JSON or CSV.</p>
+
+  <h3>Compliance mapping</h3>
+  <p>Findings and runtime abuse detections (BOLA/BFLA events) are mapped through OWASP API
+    Top-10 onto concrete framework controls — for example an IDOR maps to
+    <strong>NIS2 Art. 21(2)(i)</strong> and <strong>ISO/IEC 27001:2022 Annex A.8.3</strong> — with
+    severity and the underlying issue list attached to each control. This is a pure, unit-tested
+    mapping function, not a marketing claim layered on top after the fact.</p>
+
+  <div class="callout warn">
+    <div class="k">Scope, stated plainly</div>
+    <p>OWASP API Top-10 coverage today: BOLA/BFLA (API1/API5) enforced, PII-exposure and
+      shadow-endpoint findings (API3/API9) detected, mass assignment (API6) enforced via schema
+      validation (<code>additionalProperties: false</code> rejects undocumented body fields).
+      Injection-pattern findings and broken-auth velocity detection are not yet built.
+      PCI-DSS/HIPAA/GDPR compliance templates are not yet built — NIS2/ISO 27001 only, today.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ 5. DEPLOYMENT ═══════════════════════════ -->
+<section class="page">
+  <div class="hdr"><span><b>AEGIS</b> Technical Manual</span><span>05 — Deployment models</span></div>
+
+  <p class="eyebrow">05 · How a trial actually works</p>
+  <h2>Observe mode: inline, and provably unable to break anything</h2>
+  <p class="lede">The standard objection to any inline security product is "what if it blocks or
+    breaks something in front of my production traffic." AEGIS has a deployment mode built
+    specifically to make that objection moot for the trial period.</p>
+
+  <p><code>observe: true</code> is a single top-level flag. A dedicated function
+    (<code>ApplyObserveMode</code>) runs <em>after</em> config validation, on both startup and
+    every hot-reload, and coerces the entire security configuration into a guaranteed
+    non-disruptive shape — it cannot be bypassed by a per-route override or a later config edit.</p>
+
+  <table>
+    <tr><th>Control</th><th>Enforce mode</th><th>Observe mode</th></tr>
+    <tr><td>WAF</td><td>Blocks (403)</td><td>Detection-only — matches and logs, forwards the request</td></tr>
+    <tr><td>DLP</td><td>Redacts PII in the response</td><td>Classifies and flags; body passes through unmodified</td></tr>
+    <tr><td>JWT auth</td><td>401 on missing/invalid token</td><td>Extracts identity from a valid token; otherwise passes through</td></tr>
+    <tr><td>BOLA/BFLA</td><td>Can proactively deny</td><td>Detect-only</td></tr>
+    <tr><td>Rate limit, IP guard, bot, challenge, behavior</td><td>Block / throttle / ban</td><td>Disabled entirely</td></tr>
+    <tr><td>fail_closed (rate-limit, IP-guard, revocation)</td><td>May deny on a Redis outage</td><td>Forced off — never fail closed</td></tr>
+  </table>
+
+  <p>What still runs, and produces the trial's value: passive discovery, DLP <em>classification</em>
+    (which endpoints leak which PII types), BOLA/BFLA <em>detection</em> (identity-attributed
+    when a valid token is present), WAF detection, schema drift. A loud
+    <code>OBSERVE MODE ACTIVE</code> warning is logged at startup and on every reload.</p>
+
+  <div class="callout keep">
+    <div class="k">Verified, not just configured</div>
+    <p>A built-in WAF rule-engine asymmetry was found through this exact process: the embedded
+      starter rules hardcode an inline <code>deny</code> under <code>SecRuleEngine On</code>, so
+      <code>block_mode: false</code> alone did not stop them from returning 403 on a live probe.
+      Fixed by forcing <code>DetectionOnly</code> specifically for observe mode. Caught by
+      testing on a running binary against a deliberately maximally-blocking config, not by unit
+      tests alone — SQLi, XSS, a missing JWT, and a rate-limit trip all now pass through as 200,
+      while WAF/DLP/BOLA detections are still recorded.</p>
+  </div>
+
+  <h3>A trial, concretely</h3>
+  <ol>
+    <li>Deploy in front of the partner's live traffic with <code>observe: true</code> — one YAML
+      change, a ready-made template ships with the product.</li>
+    <li>Let it run for a week. Nothing is blocked, redacted, or rejected at any point.</li>
+    <li>Read the findings: shadow endpoints, PII exposure, confirmed BOLA/BFLA events, mapped to
+      NIS2/ISO 27001 — as a downloadable CSV, no console access required.</li>
+  </ol>
+  <p class="muted">Caveat, stated honestly: observe mode is still <em>inline</em> — the gateway
+    sits in the request path and adds a proxy hop, even though it blocks nothing. True
+    out-of-band ingestion (traffic mirroring / eBPF) removes the hop entirely and is scoped but
+    not yet built (roadmap item B1).</p>
+</section>
+
+<!-- ═══════════════════════════ 6. RELIABILITY ═══════════════════════════ -->
+<section class="page">
+  <div class="hdr"><span><b>AEGIS</b> Technical Manual</span><span>06 — Multi-tenancy &amp; reliability</span></div>
+
+  <p class="eyebrow">06 · Isolation and failure behavior</p>
+  <h2>Multi-tenant by construction, tested under real failure</h2>
+
+  <h3>Tenant isolation</h3>
+  <p><code>TenantResolve</code> runs outermost in the chain — it maps a request to a tenant by
+    route or Host, rejects a mismatch or unresolved tenant with 404, and strips
+    client-supplied <code>X-Tenant-*</code> headers so a tenant can never be spoofed from
+    outside. Isolation is then enforced at every storage layer:</p>
+  <div class="grid grid-2">
+    <div class="card">
+      <h4>Redis</h4>
+      <div class="d">Every per-tenant key family (rate limits, blocklists, forensic buffer, ~15
+        total) is prefixed <code>gw:t:&lt;tenant&gt;:*</code> — cross-tenant access is structurally
+        impossible. One exception: sessions carry the tenant in the payload of a flat
+        <code>gw:session:&lt;token&gt;</code> key, checked by <code>AdminAuth</code>.</div>
+    </div>
+    <div class="card">
+      <h4>PostgreSQL</h4>
+      <div class="d">Composite primary keys carrying <code>tenant_id</code>, every query filtered by it,
+        <strong>plus Row-Level Security</strong> as a fail-closed backstop — an unscoped query
+        returns zero rows rather than another tenant's data, even if application code forgot the
+        filter.</div>
+    </div>
+  </div>
+  <p class="muted">Console sessions are pinned to a tenant with admin/viewer RBAC; cross-tenant
+    deny paths (session, blocklist, metrics, forensic log) are covered by dedicated tests against
+    live Redis and PostgreSQL.</p>
+
+  <h3>Measured failure behavior (on-hardware, sustained traffic)</h3>
+  <div class="grid grid-3">
+    <div class="card">
+      <h4>Redis killed mid-traffic</h4>
+      <div class="v">100%</div>
+      <div class="d">Requests still succeeded (fail-open by design), p99 bounded by fast-fail timeouts
+        rather than the multi-second hangs default client timeouts would cause. Latency snapped
+        back to normal immediately on recovery.</div>
+    </div>
+    <div class="card">
+      <h4>PostgreSQL killed mid-traffic</h4>
+      <div class="v">100%</div>
+      <div class="d">Data-plane traffic held 100% success with flat latency — the catalog/forensic write
+        path is fully decoupled (async) from proxied requests. Only the admin catalog <em>read</em>
+        degrades, and self-recovers.</div>
+    </div>
+    <div class="card">
+      <h4>Rolling deploy (SIGTERM)</h4>
+      <div class="v">Zero 5xx</div>
+      <div class="d">A lame-duck drain (<code>/readyz</code> → 503 → finish in-flight → stop) behind a
+        readiness-gated load balancer turns what used to be a burst of connection errors into a
+        clean rollout.</div>
+    </div>
+  </div>
+
+  <h3>Multi-tenancy performance overhead</h3>
+  <p>Single-tenant vs. three-tenant mixed traffic, same VU count, same hardware: throughput moved
+    from 373.6 to 375.7 req/s and p50 latency by roughly half a millisecond — the isolation cost
+    of per-tenant Redis prefixes and RLS policy evaluation is in the noise, not a meaningful tax.</p>
+</section>
+
+<!-- ═══════════════════════════ 7. OWN SECURITY POSTURE ═══════════════════════════ -->
+<section class="page">
+  <div class="hdr"><span><b>AEGIS</b> Technical Manual</span><span>07 — Engineering practice</span></div>
+
+  <p class="eyebrow">07 · Security of the tool itself</p>
+  <h2>A security product that is audited the same way it audits others</h2>
+  <p class="lede">Five GitHub Actions workflows run on every commit. None of this is a one-time
+    claim — it is enforced on every push, and it has caught real bugs, not just theoretical
+    ones.</p>
+
+  <div class="grid grid-4">
+    <div class="card"><h4>Dependency &amp; stdlib CVEs</h4><div class="d"><code>govulncheck</code>,
+      pinned Go toolchain, every commit.</div></div>
+    <div class="card"><h4>Static security analysis</h4><div class="d"><code>gosec</code> medium+
+      and <code>golangci-lint</code>, every commit.</div></div>
+    <div class="card"><h4>Test coverage gate</h4><div class="d">Per-package floors that only ratchet
+      upward, against live Redis + PostgreSQL.</div></div>
+    <div class="card"><h4>Dynamic scan</h4><div class="d">E2E smoke test plus a
+      <code>nuclei</code> pass on a live admin plane.</div></div>
+  </div>
+
+  <h3>Current coverage (against live Redis + PostgreSQL, not mocks)</h3>
+  <p class="mono muted">tenant / tlsfp 100% · gatewayverify 94% · classify / proxy 92% · config 90% ·
+    gateway 87% · sso 88% · discovery 84% · store / middleware 83% · iam / retention 82% ·
+    audit 81% · api 78% — every critical package at or above the 70% release floor.</p>
+
+  <h3>A concrete example: this month's self-audit</h3>
+  <p>A full pass across the codebase (automated scanners plus manual review of everything changed
+    that quarter) found and fixed, in order:</p>
+  <ol>
+    <li><strong>Log injection (CWE-117)</strong> — a client IP reached a log line without the same
+      CR/LF stripping applied to the adjacent fields on that line. Fixed and covered with a
+      regression test.</li>
+    <li><strong>A stdlib CVE patched in one Go module, silently unpatched in a second</strong> — a
+      separate module (the marketing site's tiny backend) had no pinned toolchain, so
+      <code>govulncheck</code> found four real, reachable CVEs, including the exact TLS CVE
+      already fixed elsewhere weeks earlier. Pinned to match.</li>
+    <li><strong>A CI blind spot</strong> — that same second module was never scanned by any CI
+      workflow at all, because it lives in its own <code>go.mod</code> and none of the pipelines
+      descended into it. Closed by adding it everywhere Go checks run.</li>
+    <li><strong>An untested new endpoint</strong> — a just-shipped admin API route had no unit test.
+      Verified live on a running binary first (unauthenticated → 401, valid credential → correct
+      data, invalid credential → 403), then covered.</li>
+  </ol>
+  <p class="muted">Included here deliberately, not omitted: a security product's credibility rests
+    on how it handles finding its own bugs, not on a claim of having none.</p>
+</section>
+
+<!-- ═══════════════════════════ 8. STATUS ═══════════════════════════ -->
+<section class="page">
+  <div class="hdr"><span><b>AEGIS</b> Technical Manual</span><span>08 — Status, honestly</span></div>
+
+  <p class="eyebrow">08 · Where this actually stands</p>
+  <h2>Closed, and open — without rounding up</h2>
+
+  <h3>Closed</h3>
+  <div class="two-col" style="font-size:11.5px">
+    <ul>
+      <li>Console authentication: bcrypt + session cookies, CSRF, admin/viewer RBAC</li>
+      <li>OIDC single sign-on (Authorization Code + PKCE, JIT provisioning)</li>
+      <li>Multi-tenancy — all 6 phases (ingress, PG isolation + RLS, Redis isolation, session RBAC, tenant/user CRUD, load-tested)</li>
+      <li>Real TLS/JA3 fingerprinting from the ClientHello, spoofable header stripped</li>
+      <li><code>fail_closed</code> for rate-limit and IP-guard on a Redis outage</li>
+      <li>BOLA/BFLA detection with confirmed single-object ownership + proactive deny</li>
+    </ul>
+    <ul>
+      <li>OpenAPI spec-drift detection (undocumented + zombie endpoints)</li>
+      <li>Schema enforcement — positive security against an imported contract</li>
+      <li>Observe/pilot mode — the guaranteed non-disruptive trial posture</li>
+      <li>Data retention sweep, HA runbook (Sentinel + PG streaming replication)</li>
+      <li>Prometheus metrics, admin audit log, secret-rotation runbook</li>
+      <li>NIS2 / ISO 27001 compliance mapping</li>
+    </ul>
+  </div>
+
+  <h3>Open — stated without softening</h3>
+  <table>
+    <tr><th>Gap</th><th>Status</th><th>Why it matters</th></tr>
+    <tr>
+      <td><strong>Independent manual pentest</strong></td>
+      <td><span class="pill pill-open">not started</span></td>
+      <td>The one item that cannot be self-certified by any amount of internal tooling. Currently
+        paused on budget. Does not block a trial run in observe mode — it blocks selling
+        enforce-mode in production.</td>
+    </tr>
+    <tr>
+      <td><strong>Out-of-band deployment</strong></td>
+      <td><span class="pill pill-open">not built</span></td>
+      <td>Traffic mirroring / eBPF ingestion, for partners who cannot add any inline hop at all.
+        Scoped, deliberately deferred until a specific partner requires it.</td>
+    </tr>
+    <tr>
+      <td><strong>Production-grade capacity number</strong></td>
+      <td><span class="pill pill-partial">partial</span></td>
+      <td>Internal benchmarking shows no measurable overhead from observe mode versus enforce
+        mode, and WAF cost is small at moderate load — but a trustworthy absolute max-RPS figure
+        needs dedicated server-grade hardware; current numbers are floor estimates from
+        consumer-grade test hardware.</td>
+    </tr>
+    <tr>
+      <td><strong>OWASP API Top-10 breadth</strong></td>
+      <td><span class="pill pill-partial">partial</span></td>
+      <td>BOLA/BFLA (API1/API5), PII/shadow-endpoint findings (API3/API9), and mass assignment
+        (API6, via schema enforcement) are built. Injection-pattern findings and broken-auth
+        velocity are not yet.</td>
+    </tr>
+  </table>
+
+  <div class="callout keep">
+    <div class="k">The honest pitch</div>
+    <p>This is a strong, actively-hardened implementation with a real technical differentiator
+      (the consumer-graph-based BOLA/BFLA detection) and a genuinely safe way to trial it. It is
+      not yet independently pentested, and it does not yet match a mature SaaS competitor's
+      breadth. Both of those are stated here on purpose.</p>
+  </div>
+</section>
+
+</body>
+</html>

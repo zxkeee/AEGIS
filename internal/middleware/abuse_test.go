@@ -1,9 +1,13 @@
 package middleware
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -144,6 +148,76 @@ func TestBOLAOwnership_BlockAllowsRealOwner(t *testing.T) {
 	rec := runAbuseBody(cfg, st, "/api/orders/12345", "alice", "user", http.StatusOK, `{"user_id":"alice"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("real owner must not be blocked: got %d", rec.Code)
+	}
+}
+
+// TestBOLAOwnership_StoreErrorFailOpenByDefault is a regression test:
+// ObjectOwnershipBlock is a proactive HARD DENY (blocks before forwarding),
+// unlike the rest of BOLA detection (detect-and-record). A GetObjectOwner
+// error (e.g. Redis outage) must not silently disable that guarantee without
+// a way to opt out — default is fail-open (request proceeds, matching
+// RateLimitConfig/IPGuardConfig's own fail-open default).
+func TestBOLAOwnership_StoreErrorFailOpenByDefault(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.ObjectOwnershipBlock = true
+	st := &fakeStore{getOwner: func() (string, bool, error) { return "", false, errors.New("redis: connection refused") }}
+	rec := runAbuseStatus(cfg, st, http.MethodGet, "/api/orders/12345", "bob", "user", http.StatusOK)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("store error, OwnershipFailClosed=false: got %d, want 200 (fail-open — candidate skipped, request proceeds)", rec.Code)
+	}
+}
+
+// TestBOLAOwnership_StoreErrorFailClosedWhenConfigured is the counterpart:
+// with OwnershipFailClosed set, the same store error must deny instead of
+// silently degrading the hard-block guarantee to record-only.
+func TestBOLAOwnership_StoreErrorFailClosedWhenConfigured(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.ObjectOwnershipBlock = true
+	cfg.OwnershipFailClosed = true
+	st := &fakeStore{getOwner: func() (string, bool, error) { return "", false, errors.New("redis: connection refused") }}
+	rec := runAbuseStatus(cfg, st, http.MethodGet, "/api/orders/12345", "bob", "user", http.StatusOK)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("store error, OwnershipFailClosed=true: got %d, want 503 (deny — cross-owner status cannot be confirmed)", rec.Code)
+	}
+}
+
+// TestIsJSONContentType_AcceptsPlusJSONVariants is a regression test: a
+// sibling instance of waf.go's own JSON-body detection gap. Coraza (and this
+// package's own jsonBodyDirectives) treats any "application/...+json" suffix
+// as JSON, not just the bare media type — bodyObjectIDs and
+// captureWriter.decide must agree, or a body sent as e.g.
+// application/vnd.api+json is fully JSON-parsed by the WAF but invisible to
+// BOLA body-ID extraction and confirmed-owner binding.
+func TestIsJSONContentType_AcceptsPlusJSONVariants(t *testing.T) {
+	accept := []string{
+		"application/json",
+		"application/json; charset=utf-8",
+		"application/vnd.api+json",
+		"application/merge-patch+json",
+		"application/hal+json",
+		"APPLICATION/JSON",
+	}
+	for _, ct := range accept {
+		if !isJSONContentType(ct) {
+			t.Errorf("isJSONContentType(%q) = false, want true", ct)
+		}
+	}
+	reject := []string{"", "text/plain", "application/xml", "application/x-www-form-urlencoded", "multipart/form-data"}
+	for _, ct := range reject {
+		if isJSONContentType(ct) {
+			t.Errorf("isJSONContentType(%q) = true, want false", ct)
+		}
+	}
+}
+
+// TestBodyObjectIDs_AcceptsPlusJSONContentType end-to-end: a body sent with a
+// +json media type must still have its object IDs extracted.
+func TestBodyObjectIDs_AcceptsPlusJSONContentType(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPatch, "/api/v1/orders", strings.NewReader(`{"order_id":1002}`))
+	r.Header.Set("Content-Type", "application/vnd.api+json")
+	got := bodyObjectIDs(r)
+	if len(got["order_id"]) != 1 || got["order_id"][0] != "1002" {
+		t.Fatalf("bodyObjectIDs with +json content-type: got %v, want order_id=[1002]", got)
 	}
 }
 
@@ -397,6 +471,46 @@ func TestBOLA_SingleSegment_NotTracked(t *testing.T) {
 	}
 }
 
+// TestBOLA_BlocksQueryParamEnumeration is a regression test for VULN-M02: the
+// BOLA/BFLA detector used to derive object IDs exclusively from URL-path
+// segments, so a backend that keys object access off a query parameter
+// (?order_id=1002) rather than a path segment was invisible to enumeration
+// detection no matter how many distinct IDs one consumer swept. Uses a
+// single-segment path so the path-fallback candidate (which would also fire
+// on any query, since fakeStore.trackObject ignores its arguments) can't mask
+// whether the query-side detection is actually what's firing.
+func TestBOLA_BlocksQueryParamEnumeration(t *testing.T) {
+	cfg := config.AbuseConfig{Enabled: true, BlockMode: true, EnumThreshold: 50, Window: time.Minute}
+	st := &fakeStore{trackObject: func() (int64, error) { return 51, nil }}
+	rec := runAbuse(cfg, st, http.MethodGet, "/orders?order_id=1002", "scraper", "user")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("query-param enumeration: got %d, want 429", rec.Code)
+	}
+}
+
+// A UUID-shaped query value must be tracked the same way as a numeric one.
+func TestBOLA_BlocksQueryParamEnumeration_UUID(t *testing.T) {
+	cfg := config.AbuseConfig{Enabled: true, BlockMode: true, EnumThreshold: 50, Window: time.Minute}
+	st := &fakeStore{trackObject: func() (int64, error) { return 51, nil }}
+	rec := runAbuse(cfg, st, http.MethodGet, "/orders?id=550e8400-e29b-41d4-a716-446655440000", "scraper", "user")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("UUID query-param enumeration: got %d, want 429", rec.Code)
+	}
+}
+
+// A free-text query parameter (not numeric/UUID-shaped) must NOT be treated as
+// an object ID — otherwise a search/filter param would false-positive. Uses a
+// single-segment path (like TestBOLA_SingleSegment_NotTracked) so the
+// path-fallback candidate doesn't also fire and mask the query-side check.
+func TestBOLA_QueryParam_FreeTextNotTracked(t *testing.T) {
+	cfg := config.AbuseConfig{Enabled: true, BlockMode: true, EnumThreshold: 50, Window: time.Minute}
+	st := &fakeStore{trackObject: func() (int64, error) { return 999, nil }}
+	rec := runAbuse(cfg, st, http.MethodGet, "/search?q=laptop", "scraper", "user")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("free-text query param should not be BOLA-tracked: got %d, want 200", rec.Code)
+	}
+}
+
 func TestBOLA_AllowsUnderThreshold(t *testing.T) {
 	cfg := config.AbuseConfig{Enabled: true, BlockMode: true, EnumThreshold: 50, Window: time.Minute}
 	st := &fakeStore{trackObject: func() (int64, error) { return 5, nil }}
@@ -511,4 +625,115 @@ func TestAbuse_EventsCarrySeverityAndWhy(t *testing.T) {
 	if why, _ := st2.forensic[0].Extra["why"].(string); why == "" {
 		t.Fatal("BOLA event missing 'why' explanation")
 	}
+}
+
+// ── BOLA blind-spot regressions: query batching + request body ──────────────
+
+// TestBolaTargets_QueryBatchDefeatsThreshold is a regression test: the query-
+// string BOLA fix originally required len(vals)==1, so an attacker batching
+// an entire enumeration sweep into one request (?id=1&id=2&...&id=1000, or
+// the comma-joined ?ids=1,2,...,1000 form) was silently dropped — zero IDs
+// counted — while the identical sweep split across N single-id requests
+// would have been caught. bolaTargets must track every qualifying value.
+func TestBolaTargets_QueryBatchDefeatsThreshold(t *testing.T) {
+	q := url.Values{"id": {"1", "2", "3"}}
+	ids := idsFor(t, bolaTargets(http.MethodGet, "/api/v1/orders", q, nil), "?id=")
+	if len(ids) != 3 {
+		t.Fatalf("repeated ?id=1&id=2&id=3: got %d ids %v, want 3", len(ids), ids)
+	}
+
+	q2 := url.Values{"ids": {"10,20,30"}}
+	ids2 := idsFor(t, bolaTargets(http.MethodGet, "/api/v1/orders", q2, nil), "?ids=")
+	if len(ids2) != 3 {
+		t.Fatalf("comma-joined ?ids=10,20,30: got %d ids %v, want 3", len(ids2), ids2)
+	}
+
+	// Free-text params must still be ignored (no false positives from a
+	// multi-valued non-ID param).
+	q3 := url.Values{"tag": {"red", "blue"}}
+	cands3 := bolaTargets(http.MethodGet, "/api/v1/orders", q3, nil)
+	for _, c := range cands3 {
+		if strings.Contains(c.scope, "?tag=") {
+			t.Fatalf("free-text ?tag=red&tag=blue must not be treated as an ID candidate, got %+v", c)
+		}
+	}
+}
+
+// TestBodyObjectIDs_ExtractsAndBatches is a regression test for the BOLA
+// body blind spot: an object reference carried in a JSON request body
+// (PATCH /orders {"order_id":1002}) or a batch body ({"ids":[1,2,3]}) used to
+// be invisible to BOLA detection entirely, since only the path and query
+// string were inspected.
+func TestBodyObjectIDs_ExtractsAndBatches(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPatch, "/api/v1/orders", strings.NewReader(`{"order_id":1002,"note":"hi"}`))
+	r.Header.Set("Content-Type", "application/json")
+	got := bodyObjectIDs(r)
+	if len(got["order_id"]) != 1 || got["order_id"][0] != "1002" {
+		t.Fatalf("bodyObjectIDs single field: got %v, want order_id=[1002]", got)
+	}
+	// Body must be rewound so a downstream reader (proxy/DLP) still sees it.
+	rest, _ := io.ReadAll(r.Body)
+	if !strings.Contains(string(rest), "order_id") {
+		t.Fatalf("body was not rewound after extraction: got %q", rest)
+	}
+
+	r2 := httptest.NewRequest(http.MethodPost, "/api/v1/orders/batch", strings.NewReader(`{"ids":[1,2,3],"valid":true}`))
+	r2.Header.Set("Content-Type", "application/json")
+	got2 := bodyObjectIDs(r2)
+	if len(got2["ids"]) != 3 {
+		t.Fatalf("bodyObjectIDs batch array: got %v, want 3 ids", got2["ids"])
+	}
+	// "valid" ends in "id" as a bare substring but is not an id-shaped field
+	// name (looksLikeIDField requires "id"/"_id"/"Id" boundary) — must not
+	// appear even though its value wouldn't pass looksLikeObjectID anyway.
+	if _, present := got2["valid"]; present {
+		t.Fatalf("bodyObjectIDs false-positived on field 'valid': got %v", got2)
+	}
+
+	// Non-JSON body: no extraction, no panic.
+	r3 := httptest.NewRequest(http.MethodPost, "/api/v1/orders", strings.NewReader("order_id=1002"))
+	r3.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if got3 := bodyObjectIDs(r3); got3 != nil {
+		t.Fatalf("bodyObjectIDs on non-JSON content-type: got %v, want nil", got3)
+	}
+}
+
+// TestAbuseDetection_BodyIDEnumeration is an end-to-end regression test: a
+// consumer sweeping object IDs via a JSON body field (rather than the path or
+// query string) must still trip BOLA enumeration.
+func TestAbuseDetection_BodyIDEnumeration(t *testing.T) {
+	cfg := config.AbuseConfig{Enabled: true, BlockMode: false, EnumThreshold: 50, Window: time.Minute}
+	st := &fakeStore{trackObject: func() (int64, error) { return 60, nil }}
+	_ = InitTrustedProxies(nil)
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	h := AbuseDetection(cfg, fakeLogger{}, st)(next)
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/orders/action", strings.NewReader(`{"order_id":9001}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.RemoteAddr = "1.2.3.4:1"
+	r.Header.Set("X-Gateway-Subject", "scraper")
+	h.ServeHTTP(rec, r)
+	found := false
+	for _, ev := range st.forensic {
+		if ev.Reason != "bola_enumeration" {
+			continue
+		}
+		if ep, _ := ev.Extra["endpoint"].(string); strings.Contains(ep, "body.order_id") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a bola_enumeration event for body field order_id, got %+v", st.forensic)
+	}
+}
+
+// idsFor collects the ids of every candidate whose scope mentions want.
+func idsFor(t *testing.T, cands []bolaCandidate, want string) []string {
+	t.Helper()
+	for _, c := range cands {
+		if strings.Contains(c.scope, want) {
+			return c.ids
+		}
+	}
+	return nil
 }

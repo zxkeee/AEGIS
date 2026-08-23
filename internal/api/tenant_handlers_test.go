@@ -7,12 +7,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/iam"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/pgtest"
+	"api-gateway/internal/store"
 	"api-gateway/internal/tenant"
+
+	"github.com/alicebob/miniredis/v2"
 )
 
 // pgDSN returns a schema-isolated integration-test DSN (or skips when unset).
@@ -30,20 +34,35 @@ func pgDSN(t *testing.T) string {
 // creates the tables empty inside it.
 func freshHandlers(t *testing.T) *handlers {
 	t.Helper()
-	store, err := iam.NewStore(pgDSN(t), logger.New("error"))
+	iamStore, err := iam.NewStore(pgDSN(t), logger.New("error"))
 	if err != nil {
 		t.Fatalf("iam.NewStore: %v", err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(func() { _ = iamStore.Close() })
+
+	// A real (miniredis-backed) Store, not nil: deleteTenant/deleteUser sweep
+	// live sessions via h.store.RevokeSessions, matching production wiring
+	// where Postgres (iam) and Redis (sessions) are always both present.
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	t.Cleanup(mr.Close)
+	redisStore, err := store.New(mr.Addr(), "", 0)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = redisStore.Close() })
+
 	// AdminAuth disabled in tests so requireAuth passes without a cookie/bearer —
 	// these tests exercise the RBAC policy layer (role + super-admin in ctx),
 	// independent of cookie/CSRF mechanics covered by middleware tests.
 	cfg := config.GatewayConfig{AdminAuth: false, AdminSecret: "test-secret-min-32-characters-1234"}
 	return &handlers{
-		store: nil, // not needed for these handlers
+		store: redisStore,
 		log:   logger.New("error"),
 		cfg:   cfg,
-		users: store,
+		users: iamStore,
 	}
 }
 
@@ -146,6 +165,32 @@ func TestTenants_IDValidation(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("bad id %q: got %d, want 400", badID, rec.Code)
 		}
+	}
+}
+
+func TestTenants_DeleteRevokesLiveSessions(t *testing.T) {
+	h := freshHandlers(t)
+	su := ctxAs("default", iam.RoleAdmin, true)
+	_, _ = doReq(h.createTenant, http.MethodPost, "/api/tenants", su, map[string]any{"id": "acme"})
+
+	// Simulate a live console session for the deleted tenant, as CreateSession
+	// would on login.
+	sess := iam.Session{TenantID: "acme", UserID: "u1", Role: iam.RoleAdmin, CSRF: "csrf"}
+	if err := h.store.CreateSession(context.Background(), "tok-acme", sess, time.Hour); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	r := httptest.NewRequest(http.MethodDelete, "/api/tenants/acme", nil)
+	r = r.WithContext(su)
+	r.SetPathValue("id", "acme")
+	rec := httptest.NewRecorder()
+	h.deleteTenant(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete tenant: %d", rec.Code)
+	}
+
+	if _, ok, _ := h.store.ValidateSession(context.Background(), "tok-acme"); ok {
+		t.Error("session for the deleted tenant must be revoked, not just left to expire on TTL")
 	}
 }
 
@@ -317,5 +362,35 @@ func TestUsers_CannotDeleteSelf(t *testing.T) {
 	us, _ := h.users.ListUsers(context.Background(), "default")
 	if len(us) != 1 {
 		t.Fatalf("users after blocked self-delete = %d, want 1", len(us))
+	}
+}
+
+func TestUsers_DeleteRevokesLiveSessions(t *testing.T) {
+	h := freshHandlers(t)
+	su := ctxAs("default", iam.RoleAdmin, true)
+	_, body := doReq(h.createUser, http.MethodPost, "/api/users", su, map[string]any{
+		"email": "victim@default.io", "password": "longlonglonglong",
+	})
+	uid, _ := body["id"].(string)
+	if uid == "" {
+		t.Fatal("could not seed user")
+	}
+
+	sess := iam.Session{TenantID: "default", UserID: uid, Role: iam.RoleAdmin, CSRF: "csrf"}
+	if err := h.store.CreateSession(context.Background(), "tok-victim", sess, time.Hour); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	r := httptest.NewRequest(http.MethodDelete, "/api/users/"+uid, nil)
+	r = r.WithContext(su)
+	r.SetPathValue("id", uid)
+	rec := httptest.NewRecorder()
+	h.deleteUser(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete user: %d", rec.Code)
+	}
+
+	if _, ok, _ := h.store.ValidateSession(context.Background(), "tok-victim"); ok {
+		t.Error("session for the deleted user must be revoked, not just left to expire on TTL")
 	}
 }

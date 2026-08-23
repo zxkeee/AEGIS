@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -111,7 +113,51 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 		routeLB := lb
 		routeRetries := retries
 
+		// allowedMethods enforces route.Methods (SEC: was declared in config and
+		// documented as an ACL but silently never checked — every method reached
+		// the backend regardless of what the operator configured; audit finding
+		// 2026-08-23). An empty list means "no restriction," matching the
+		// documented default. Built once per route, not per request.
+		var allowedMethods map[string]bool
+		if len(route.Methods) > 0 {
+			allowedMethods = make(map[string]bool, len(route.Methods))
+			for _, m := range route.Methods {
+				allowedMethods[strings.ToUpper(m)] = true
+			}
+		}
+
+		// stripPrefix removes the matched route.Path from the forwarded request
+		// (SEC: also declared and documented but never applied — see above).
+		// http.ServeMux's routePath may or may not end in "/"; strip exactly the
+		// segment the route matched on, mirroring how the pattern was registered.
+		stripPrefix := route.StripPrefix
+		routePrefix := strings.TrimSuffix(routePath, "/")
+
 		gw.mux.HandleFunc(routePath, func(w http.ResponseWriter, r *http.Request) {
+			if allowedMethods != nil && !allowedMethods[r.Method] {
+				allow := make([]string, 0, len(allowedMethods))
+				for m := range allowedMethods {
+					allow = append(allow, m)
+				}
+				sort.Strings(allow)
+				w.Header().Set("Allow", strings.Join(allow, ", "))
+				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+				return
+			}
+
+			if stripPrefix {
+				trimmed := strings.TrimPrefix(r.URL.Path, routePrefix)
+				if trimmed == "" {
+					trimmed = "/"
+				} else if !strings.HasPrefix(trimmed, "/") {
+					trimmed = "/" + trimmed
+				}
+				r.URL.Path = trimmed
+				if r.URL.RawPath != "" {
+					r.URL.RawPath = trimmed
+				}
+			}
+
 			retryable := isRetryable(r)
 
 			// Retry logic with circuit breaker awareness.
@@ -168,10 +214,12 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 		})
 
 		log.Info("route registered", map[string]any{
-			"path":      route.Path,
-			"upstreams": route.Upstreams,
-			"lb":        route.LoadBalance,
-			"retries":   retries,
+			"path":         route.Path,
+			"upstreams":    route.Upstreams,
+			"lb":           route.LoadBalance,
+			"retries":      retries,
+			"methods":      route.Methods, // empty = unrestricted
+			"strip_prefix": route.StripPrefix,
 		})
 	}
 

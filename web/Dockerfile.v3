@@ -1,20 +1,24 @@
 # Builds the v3 (React) production site and serves it with the same tiny Go
 # server used for v1/v2 (static files + POST /api/pilot -> pilot-requests.jsonl).
 # Build context is web/ (this file's directory): `docker build -f Dockerfile.v3 .`
-FROM node:20-alpine AS webbuild
+FROM node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb AS webbuild
 WORKDIR /site
 COPY v3/package.json v3/package-lock.json* ./
-RUN npm install
+# npm ci (not npm install): fails closed on any lockfile/manifest mismatch and
+# never rewrites package-lock.json, so the image is built from exactly the
+# versions the lockfile pins instead of silently drifting to fresher
+# semver-range-compatible releases on every rebuild.
+RUN npm ci
 COPY v3/ ./
 RUN npm run build
 
-FROM golang:1.22-alpine AS gobuild
+FROM golang:1.26-alpine@sha256:111d79159b2326f7e80c4a4706e1ba166acb0e2611df853955f3621828cd49e8 AS gobuild
 WORKDIR /src
 COPY go.mod ./
 COPY server.go ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/aegis-site .
 
-FROM alpine:3.20
+FROM alpine:3.20@sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e
 RUN adduser -D -H app && mkdir -p /data && chown app /data
 WORKDIR /app
 COPY --from=gobuild /out/aegis-site /usr/local/bin/aegis-site
@@ -22,4 +26,9 @@ COPY --from=webbuild /site/dist ./
 USER app
 EXPOSE 8090
 VOLUME ["/data"]
+# No dedicated /health endpoint (this is a static file server, unlike the
+# gateway's Dockerfile which probes :8081/health) — probe the root path,
+# which always serves the built index.html when the server is up.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget -qO- http://127.0.0.1:8090/ >/dev/null 2>&1 || exit 1
 ENTRYPOINT ["aegis-site", "-addr", ":8090", "-dir", "/app", "-out", "/data/pilot-requests.jsonl"]

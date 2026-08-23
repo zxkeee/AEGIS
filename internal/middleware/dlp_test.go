@@ -37,6 +37,35 @@ func TestDLP_RedactsDefaultPatterns(t *testing.T) {
 	}
 }
 
+// TestDLP_OversizedBodySkipsWithSignal locks in that a response over the
+// inspection buffer cap is not silently passed through: it must still be
+// visible via a metric, so operators can see the DLP enforcement-coverage
+// gap instead of assuming "clean scan" for a response that was never scanned.
+func TestDLP_OversizedBodySkipsWithSignal(t *testing.T) {
+	_ = InitTrustedProxies(nil)
+	cfg := config.DLPConfig{Enabled: true}
+	// A card number straddling the write boundary would prove redaction is
+	// truly skipped (not just re-chunked), but the coverage-gap signal is the
+	// property under test here, so a simple oversized body is enough.
+	oversized := strings.Repeat("a", dlpMaxBuffer+1)
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, oversized)
+	})
+	store := &fakeStore{}
+	h := DLP(cfg, fakeLogger{}, store)(next)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Body.Len() != len(oversized) {
+		t.Fatalf("oversized body must still reach the client in full: got %d bytes, want %d", rec.Body.Len(), len(oversized))
+	}
+	if store.metrics["dlp_skipped_oversized"] == 0 {
+		t.Error("expected dlp_skipped_oversized metric to be recorded when the buffer cap is exceeded")
+	}
+}
+
 // TestDLP_ChunkedResponseIsRedacted guards the DLP bypass on chunked responses.
 // A backend that does not set Content-Length makes the reverse proxy flush the
 // body mid-flight (Go sets FlushInterval to immediate when ContentLength == -1).

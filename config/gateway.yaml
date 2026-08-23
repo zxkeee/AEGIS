@@ -63,7 +63,7 @@ redis:
   sentinel:
     master_name: ""        # e.g. "mymaster"
     addrs: []              # e.g. ["sentinel-1:26379","sentinel-2:26379","sentinel-3:26379"]
-    sentinel_password: ""  # only when sentinels themselves require auth
+    sentinel_password: ""  # only when sentinels themselves require auth; via AEGIS_REDIS_SENTINEL_PASSWORD
 
 logging:
   level: "info"
@@ -106,7 +106,6 @@ security:
     enabled: true
     requests: 100
     window: 60s
-    burst_limit: 20
     # When true, deny requests if Redis is unavailable instead of failing open.
     # Default false favours availability; set true for high-assurance deployments.
     fail_closed: false
@@ -140,9 +139,14 @@ security:
     ruleset_path: ""      # optional extra directives, included last (e.g. rule exclusions)
     block_mode: true
     # use_crs loads the full OWASP Core Rule Set v4 (~900 rules, anomaly scoring)
-    # instead of the built-in starter rules — the production-grade choice. Roll it
-    # out in monitor first (block_mode: false = detect + log, no blocking), tune
-    # false positives via ruleset_path (SecRuleRemoveById ...), then enforce.
+    # instead of the built-in starter rules. The built-in starter rules are
+    # dev/demo-grade signature regexes, evadable by any competent attacker
+    # (encoding tricks, whitespace, alternate syntax) — they exist so WAF has
+    # SOME effect with zero setup, not as a production control. Set use_crs:
+    # true for any real deployment (see charts/aegis/values.yaml, which
+    # defaults to it). Roll out in monitor first (block_mode: false = detect
+    # and log, no blocking), tune false positives via ruleset_path
+    # (SecRuleRemoveById ...), then enforce.
     use_crs: false
     paranoia_level: 1     # 1-4: higher catches more, flags more benign traffic
     anomaly_threshold: 5  # inbound score at which CRS blocks (lower = stricter)
@@ -229,8 +233,8 @@ security:
     # max_body_bytes: 1048576  # body cap for validation (default 1 MiB)
 
 registry:
-  enabled: false
-  dsn: ""
+  enabled: false  # EXPERIMENTAL, NOT YET WIRED — setting true fails config.Validate
+  dsn: ""  # not yet wired up — see RegistryConfig's doc comment in internal/config/config.go
   cache_ttl_secs: 30
   rotation_days: 90
 

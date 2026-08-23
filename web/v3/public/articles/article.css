@@ -1,0 +1,65 @@
+:root {
+  --obsidian: #111111; --canvas: #181818; --card: #1f1f1f; --elevated: #262626;
+  --ink: #eeeeee; --ash: #e4e4e4; --muted: #a4a19b; --faint: #5e5d59;
+  --line: #262626; --line-2: #323232; --accent: #2b7fff;
+  --font-serif: "Libre Baskerville", "Source Serif Pro", Georgia, serif;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "Fira Code", ui-monospace, "SF Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--canvas); color: var(--ink); font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased; line-height: 1.65;
+}
+::selection { background: var(--accent); color: #fff; }
+a { color: var(--accent); }
+.nav {
+  border-bottom: 1px solid var(--line); padding: 20px 6vw; display: flex; align-items: center;
+  justify-content: space-between;
+}
+.wordmark { font-family: var(--font-serif); font-size: 18px; color: var(--ink); text-decoration: none; letter-spacing: -0.01em; }
+.back { font-family: var(--font-mono); font-size: 13px; color: var(--muted); text-decoration: none; }
+.back:hover { color: var(--ink); }
+
+.wrap { max-width: 720px; margin: 0 auto; padding: 64px 6vw 100px; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); margin: 0 0 18px; }
+h1 { font-family: var(--font-serif); font-weight: 700; font-size: clamp(28px, 4.4vw, 42px); line-height: 1.2; letter-spacing: -0.01em; margin: 0 0 14px; }
+.dek { font-size: 17px; color: var(--muted); margin: 0 0 40px; max-width: 60ch; }
+
+h2 { font-family: var(--font-serif); font-size: 24px; font-weight: 700; margin: 48px 0 16px; letter-spacing: -0.01em; }
+p { font-size: 16px; color: var(--ash); margin: 0 0 18px; max-width: 68ch; }
+ul, ol { margin: 0 0 18px; padding-left: 22px; }
+li { font-size: 15.5px; color: var(--ash); margin-bottom: 10px; max-width: 64ch; }
+code { font-family: var(--font-mono); font-size: 0.9em; background: var(--card); border: 1px solid var(--line-2); padding: 1px 6px; border-radius: 4px; color: var(--ink); }
+
+pre {
+  background: var(--obsidian); border: 1px solid var(--line-2); border-radius: 10px;
+  padding: 20px 22px; overflow-x: auto; margin: 20px 0 24px;
+}
+pre code { background: none; border: none; padding: 0; font-size: 13px; line-height: 1.7; color: var(--ash); white-space: pre; }
+.cmt { color: var(--faint); }
+
+table { border-collapse: collapse; width: 100%; margin: 8px 0 24px; font-size: 14px; }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+th { font-family: var(--font-mono); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 500; }
+td { color: var(--ash); font-variant-numeric: tabular-nums; }
+
+.cta {
+  margin-top: 56px; padding: 28px; background: var(--card); border: 1px solid var(--line-2);
+  border-radius: 12px;
+}
+.cta p { margin: 0 0 14px; color: var(--ash); }
+.cta a.btn {
+  display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 13.5px;
+  color: var(--obsidian); background: var(--ink); padding: 10px 16px; border-radius: 6px; text-decoration: none;
+  font-weight: 500;
+}
+footer { border-top: 1px solid var(--line); padding: 32px 6vw; text-align: center; font-family: var(--font-mono); font-size: 12.5px; color: var(--faint); }
+
+/* index page */
+.article-list { display: flex; flex-direction: column; border-top: 1px solid var(--line); margin-top: 8px; }
+.article-row { display: block; padding: 26px 0; border-bottom: 1px solid var(--line); text-decoration: none; }
+.article-row .tag { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 8px; }
+.article-row h3 { font-family: var(--font-serif); font-size: 21px; font-weight: 700; color: var(--ink); margin: 0 0 8px; letter-spacing: -0.01em; }
+.article-row p { font-size: 14.5px; color: var(--muted); margin: 0; max-width: 62ch; }

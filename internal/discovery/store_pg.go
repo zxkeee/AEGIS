@@ -7,8 +7,16 @@ import (
 	"sort"
 	"time"
 
-	"github.com/lib/pq" // PostgreSQL driver + array support
+	"github.com/jackc/pgx/v5/pgtype"
+	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver
 )
+
+// pgTypeMap adapts pgx's array codecs to database/sql's Scanner interface
+// (see pgTypeMap.SQLScanner below) — pgx's stdlib compat layer binds a plain
+// Go slice as a query argument natively (e.g. text[] from []string), but
+// scanning an array column back into a slice needs this adapter. Built once;
+// the registry it wraps is safe for concurrent use.
+var pgTypeMap = pgtype.NewMap()
 
 // catalogSchema creates the catalog tables and indices if they do not exist.
 const catalogSchema = `
@@ -136,7 +144,7 @@ type pgStore struct {
 }
 
 func newPGStore(dsn string, log Logger) (*pgStore, error) {
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("discovery: pg connect: %w", err)
 	}
@@ -223,7 +231,7 @@ ON CONFLICT (tenant_id, id) DO UPDATE SET
 		if _, err := tx.ExecContext(ctx, q,
 			tenantOr(a.tenant), a.id, a.method, a.pathTemplate, a.requestCount, a.errorCount,
 			a.authPresent, a.anonCount, a.piiCount, a.latencyMsSum, a.latencySamples,
-			a.posture, a.riskScore, a.routePath, pq.Array(piiTypeSlice(a.piiTypes))); err != nil {
+			a.posture, a.riskScore, a.routePath, piiTypeSlice(a.piiTypes)); err != nil {
 			return err
 		}
 		const sq = `
@@ -432,7 +440,7 @@ func (s *pgStore) graphData(ctx context.Context, tenantID string, limit int) (Gr
 		// Endpoint nodes referenced by those edges.
 		epRows, err := tx.QueryContext(ctx, `SELECT id, method, path_template, posture,
 			risk_score, pii_count, request_count FROM api_endpoints
-			WHERE tenant_id = $1 AND id = ANY($2)`, tenantOr(tenantID), pq.Array(mapKeys(epSet)))
+			WHERE tenant_id = $1 AND id = ANY($2)`, tenantOr(tenantID), mapKeys(epSet))
 		if err != nil {
 			return err
 		}
@@ -458,7 +466,7 @@ func (s *pgStore) graphData(ctx context.Context, tenantID string, limit int) (Gr
 
 		// Consumer nodes referenced by those edges.
 		conRows, err := tx.QueryContext(ctx, `SELECT id, kind, label, request_count
-			FROM api_consumers WHERE tenant_id = $1 AND id = ANY($2)`, tenantOr(tenantID), pq.Array(mapKeys(conSet)))
+			FROM api_consumers WHERE tenant_id = $1 AND id = ANY($2)`, tenantOr(tenantID), mapKeys(conSet))
 		if err != nil {
 			return err
 		}
@@ -570,7 +578,7 @@ func scanEndpoint(r rowScanner) (Endpoint, error) {
 	if err := r.Scan(&e.ID, &e.Method, &e.PathTemplate, &e.FirstSeen, &e.LastSeen,
 		&e.RequestCount, &e.ErrorCount, &e.AuthPresentCount, &e.AnonCount,
 		&e.PIICount, &e.latencyMsSum, &e.latencySamples, &e.Posture,
-		&e.RiskScore, &e.RoutePath, pq.Array(&e.PIITypes)); err != nil {
+		&e.RiskScore, &e.RoutePath, pgTypeMap.SQLScanner(&e.PIITypes)); err != nil {
 		return e, err
 	}
 	if e.latencySamples > 0 {

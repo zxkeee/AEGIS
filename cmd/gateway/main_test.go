@@ -1,23 +1,54 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"api-gateway/internal/api"
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
 	"api-gateway/internal/gateway"
+	"api-gateway/internal/license"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/middleware"
 	"api-gateway/internal/store"
 
 	"github.com/alicebob/miniredis/v2"
 )
+
+// issueTestLicense sets up a throwaway Ed25519 keypair for the duration of
+// the test (via license.SetPublicKeyForTesting), signs a valid never-expiring
+// license, writes it to a temp file, and returns its path — for tests that
+// need loadValidatedConfig to pass the (now hard-required) license gate
+// without depending on a real release build's embedded key.
+func issueTestLicense(t *testing.T) string {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate test license key: %v", err)
+	}
+	restore := license.SetPublicKeyForTesting(base64.StdEncoding.EncodeToString(pub))
+	t.Cleanup(restore)
+
+	signed, err := license.Sign(priv, license.Claims{Licensee: "test", Tier: "internal"})
+	if err != nil {
+		t.Fatalf("sign test license: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "test.lic")
+	if err := os.WriteFile(path, []byte(signed), 0o600); err != nil {
+		t.Fatalf("write test license: %v", err)
+	}
+	return path
+}
 
 // TestChain_PostureMatchesEnforcement is the guard against the headline bug class:
 // the posture engine must never report protection the data plane does not deliver.
@@ -95,6 +126,126 @@ func TestChain_PostureMatchesEnforcement(t *testing.T) {
 	}
 }
 
+// TestLoadValidatedConfig_DoesNotCommitTrustedProxies is a regression test:
+// loadValidatedConfig used to call middleware.InitTrustedProxies directly,
+// committing the parsed trusted_proxies to the global RealIP trust boundary
+// immediately — before the rest of a hot-reload (BuildHandlerChain) was known
+// to succeed. A reload that failed later left that new trust boundary live
+// under the OLD, still-serving handler chain, contradicting "previous config
+// stays active." loadValidatedConfig must now only PARSE and return the
+// trusted-proxy set; the caller commits via middleware.SetTrustedProxies only
+// once the entire reload has succeeded (see reload() in main.go).
+func TestLoadValidatedConfig_DoesNotCommitTrustedProxies(t *testing.T) {
+	middleware.SetTrustedProxies(nil) // baseline: no trusted proxies configured
+	t.Cleanup(func() { middleware.SetTrustedProxies(nil) })
+
+	dir := t.TempDir()
+	p := filepath.Join(dir, "trusted.yaml")
+	licPath := issueTestLicense(t)
+	body := `
+admin_auth: true
+admin_secret: "a-strong-admin-secret-32-characters!!"
+redis: {password: "redis-pass"}
+trusted_proxies: ["10.0.0.0/8"]
+license_path: "` + licPath + `"
+`
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, nets, _, err := loadValidatedConfig(p)
+	if err != nil {
+		t.Fatalf("loadValidatedConfig: %v", err)
+	}
+	if len(nets) != 1 {
+		t.Fatalf("parsed nets = %v, want 1 entry (10.0.0.0/8)", nets)
+	}
+
+	// The proxy at 10.0.0.1 must NOT be trusted yet — loadValidatedConfig only
+	// parsed the new set, it never committed it.
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "10.0.0.1:1"
+	r.Header.Set("X-Forwarded-For", "203.0.113.9")
+	if got := middleware.RealIP(r); got != "10.0.0.1" {
+		t.Fatalf("RealIP before commit = %q, want %q (10.0.0.0/8 must not be trusted until SetTrustedProxies is called)", got, "10.0.0.1")
+	}
+
+	// Only after the caller explicitly commits (mirroring reload() committing
+	// after BuildHandlerChain succeeds) does the new trust boundary apply.
+	middleware.SetTrustedProxies(nets)
+	if got := middleware.RealIP(r); got != "203.0.113.9" {
+		t.Fatalf("RealIP after commit = %q, want %q (10.0.0.0/8 should now be trusted)", got, "203.0.113.9")
+	}
+}
+
+// TestRunLicenseRecheck_UpdatesStatusIndependentlyOfConfigReload is a
+// regression test for the licensing "continuous enforcement" gap (audit
+// finding, 2026-08-23): watchConfigFile only re-validates the license as a
+// side effect of a gateway.yaml edit, so a long-lived process whose config
+// is never touched again — the steady-state case — would keep serving on a
+// stale license status (and, worse, an actually-expired license) forever.
+// runLicenseRecheck is licenseRecheckLoop's per-tick body; this proves it
+// updates the Server's published license status on its own, without any
+// config file ever changing.
+func TestRunLicenseRecheck_UpdatesStatusIndependentlyOfConfigReload(t *testing.T) {
+	adminSrv := api.NewServer(nil, logger.New("error"), config.GatewayConfig{}, nil, nil, nil, nil, nil, nil)
+
+	var currentLicensePath atomic.Value
+	currentLicensePath.Store("") // nothing configured yet -> reports invalid
+
+	getLicenseValid := func() any {
+		rec := httptest.NewRecorder()
+		adminSrv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/license", nil))
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("unmarshal /api/license body: %v", err)
+		}
+		return body["valid"]
+	}
+
+	runLicenseRecheck(&currentLicensePath, logger.New("error"), adminSrv)
+	if got := getLicenseValid(); got != false {
+		t.Fatalf("before a license is configured: /api/license valid = %v, want false", got)
+	}
+
+	// Point at a real, valid license and re-run the check — the published
+	// status must update WITHOUT any config-file hot-reload happening at all.
+	currentLicensePath.Store(issueTestLicense(t))
+	runLicenseRecheck(&currentLicensePath, logger.New("error"), adminSrv)
+	if got := getLicenseValid(); got != true {
+		t.Fatalf("after runLicenseRecheck picked up a newly-valid license: /api/license valid = %v, want true", got)
+	}
+}
+
+// TestLoadValidatedConfig_NoLicenseFailsBoot is the licensing enforcement
+// boundary: a deployment with no valid license_path (the default — nothing
+// baked into a plain `go build`, nothing configured) must not come up at all,
+// on boot or on hot-reload — same treatment as any other config.Validate
+// rejection. A soft degrade (e.g. forcing Observe mode) would still give away
+// the discovery/posture/findings value for free, which defeats licensing
+// entirely.
+func TestLoadValidatedConfig_NoLicenseFailsBoot(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "gateway.yaml")
+	body := `
+admin_auth: true
+admin_secret: "a-strong-admin-secret-32-characters!!"
+redis: {password: "redis-pass"}
+observe: false
+`
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, licStatus, err := loadValidatedConfig(p)
+	if err == nil {
+		t.Fatal("expected loadValidatedConfig to reject a config with no valid license")
+	}
+	if licStatus.Valid {
+		t.Fatal("expected no license to be configured in this test env")
+	}
+}
+
 // loadValidatedConfig is the shared gate for startup AND hot-reload: a config
 // that fails Validate must be rejected in both paths (hot-reload used to skip
 // validation entirely, letting an unsafe edit go live).
@@ -109,14 +260,16 @@ func TestLoadValidatedConfig_RejectsUnsafeConfig(t *testing.T) {
 		return p
 	}
 
+	licPath := issueTestLicense(t)
 	good := write("good.yaml", `
 admin_auth: true
 admin_secret: "a-strong-admin-secret-32-characters!!"
 redis:
   password: "redis-pass"
 trusted_proxies: ["10.0.0.0/8"]
+license_path: "`+licPath+`"
 `)
-	if _, err := loadValidatedConfig(good); err != nil {
+	if _, _, _, err := loadValidatedConfig(good); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
 
@@ -144,7 +297,7 @@ routes:
 	}
 	for name, body := range cases {
 		p := write(strings.ReplaceAll(name, " ", "-")+".yaml", body)
-		if _, err := loadValidatedConfig(p); err == nil {
+		if _, _, _, err := loadValidatedConfig(p); err == nil {
 			t.Fatalf("%s: unsafe config accepted", name)
 		}
 	}

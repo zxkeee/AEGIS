@@ -25,6 +25,17 @@ spec:
         {{- include "aegis.selectorLabels" . | nindent 8 }}
     spec:
       terminationGracePeriodSeconds: 30
+      # AEGIS never calls the Kubernetes API — don't hand a live cluster token
+      # to a container that also terminates public-ish traffic.
+      automountServiceAccountToken: false
+      securityContext:
+        # Pod-level seccompProfile: without it, the container gets the
+        # container-runtime's own default, which on some cluster
+        # configurations is Unconfined — a wider syscall surface than a Go
+        # static binary needs. RuntimeDefault applies the runtime's curated
+        # allowlist (available on all supported Kubernetes versions, 1.19+).
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: gateway
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -48,6 +59,54 @@ spec:
                 secretKeyRef:
                   name: {{ $secretName }}
                   key: jwt-secret
+                  optional: true
+            {{- end }}
+            {{- if or .Values.secrets.forensicDsn .Values.secrets.existingSecret }}
+            - name: AEGIS_FORENSIC_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: forensic-dsn
+                  optional: true
+            {{- end }}
+            {{- if or .Values.secrets.propagationSecret .Values.secrets.existingSecret }}
+            - name: AEGIS_PROPAGATION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: propagation-secret
+                  optional: true
+            {{- end }}
+            {{- if or .Values.secrets.sentinelPassword .Values.secrets.existingSecret }}
+            - name: AEGIS_REDIS_SENTINEL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: sentinel-password
+                  optional: true
+            {{- end }}
+            {{- if or .Values.secrets.oidcClientId .Values.secrets.existingSecret }}
+            - name: AEGIS_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: oidc-client-id
+                  optional: true
+            {{- end }}
+            {{- if or .Values.secrets.oidcClientSecret .Values.secrets.existingSecret }}
+            - name: AEGIS_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: oidc-client-secret
+                  optional: true
+            {{- end }}
+            {{- if or .Values.secrets.alertWebhookUrl .Values.secrets.existingSecret }}
+            - name: AEGIS_ALERT_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: alert-webhook-url
                   optional: true
             {{- end }}
           ports:

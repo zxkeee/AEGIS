@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>We Scope Every Query by Tenant. We Still Added a Database-Level Backstop — AEGIS</title>
+<meta name="description" content="Why application-level tenant scoping isn't enough on its own, and how PostgreSQL's FORCE ROW LEVEL SECURITY closes the gap application code can't." />
+<link rel="stylesheet" href="/articles/article.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/">AEGIS</a>
+  <a class="back" href="/articles.html">← all articles</a>
+</nav>
+
+<div class="wrap">
+  <p class="eyebrow">Engineering</p>
+  <h1>We Scope Every Query by Tenant. We Still Added a Database-Level Backstop</h1>
+  <p class="dek">Application code eventually forgets a WHERE clause. A database enforcing isolation itself never does.</p>
+
+  <p>Multi-tenant data isolation has one well-known failure mode, and it isn't exotic: someone adds a new query, a new endpoint, a new report six months from now, and forgets the <code>WHERE tenant_id = ?</code> clause. Every AEGIS table already carries <code>tenant_id</code> in a composite primary key, and every query in the codebase filters by it. That's necessary. It is not, on its own, sufficient — because it depends on every future line of code getting it right, forever, with no second layer catching the one that doesn't.</p>
+
+  <p>So there's a second layer. PostgreSQL can enforce tenant isolation itself, independent of whether the application remembered to ask for it.</p>
+
+  <h2>The mechanism: RLS, forced</h2>
+  <pre><code>ALTER TABLE forensic_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE forensic_logs FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON forensic_logs
+    USING (tenant_id = current_setting('app.tenant_id', true));</code></pre>
+
+  <p>The <code>FORCE</code> is the part that's easy to skip and matters most. Plain <code>ENABLE ROW LEVEL SECURITY</code> in PostgreSQL doesn't apply the policy to the table's owner — and the application's own database role is typically that owner, which means an unforced policy is exactly the kind of protection that silently doesn't protect the one connection that matters. <code>FORCE</code> applies the policy to the owner too. A connection that doesn't explicitly set which tenant it's acting as doesn't get "all rows" by accident — it gets zero rows.</p>
+
+  <h2>Threading tenant identity through a transaction</h2>
+  <p>The policy reads <code>current_setting('app.tenant_id', true)</code> — a Postgres session variable, not a column value the application passes in a query. Every write path sets it explicitly, scoped to the transaction:</p>
+
+  <pre><code><span class="cmt">// withTenantTx pins the GUC via set_config(..., is_local=true) so the
+// tenant scope never leaks across pooled connections between requests</span></code></pre>
+
+  <p><code>is_local=true</code> matters specifically because connections are pooled. Without it, a setting made on a pooled connection could still be visible to the next, unrelated request that happens to reuse that same connection — which would defeat the entire point. Scoping it to the transaction means the setting evaporates the moment the transaction ends, regardless of what the connection does next.</p>
+
+  <h2>Proving the fail-closed direction, not just asserting it</h2>
+  <p>The property that actually matters here is: what happens when the tenant scope is <em>never set</em> — a bug, a missed code path, a connection that skipped the setup. Untested, that's exactly the scenario a "fail closed" claim usually turns out not to survive. So it's covered directly:</p>
+
+  <pre><code>func TestPG_RLS_FailsClosedWithoutGUC(t *testing.T) {
+    <span class="cmt">// an unscoped SELECT — no app.tenant_id set at all — must return zero rows,
+    // not every tenant's rows</span>
+}
+
+func TestPG_RLS_RejectsCrossTenantWrite(t *testing.T) {
+    <span class="cmt">// WITH CHECK on the policy must block an INSERT/UPDATE attempting to write
+    // under a tenant_id that doesn't match the session's scope</span>
+}</code></pre>
+
+  <p>The first test is the one that matters most, because it's the one a naive implementation is most likely to get backwards. It would be easy to build tenant scoping that fails <em>open</em> when the scope is missing — returns everything, because nothing told it not to. The whole point of putting this at the database layer instead of only in application code is that the database's default, absent any instruction, is to show nothing rather than everything.</p>
+
+  <h2>One operational gotcha this uncovers on its own</h2>
+  <p>RLS has a well-known trap in Postgres: a role with <code>BYPASSRLS</code> or superuser privileges ignores row-level security entirely, <code>FORCE</code> or not. If the application's database role ever gets granted superuser — during an incident, a migration, a well-meaning "just to debug this quickly" — the backstop silently stops existing without any error, any log line, any signal that it happened. This is exactly the kind of failure that's invisible until the day it matters, so it gets hardened explicitly: the connecting role is set <code>NOSUPERUSER NOBYPASSRLS</code>, and a startup check warns loudly if that role ever drifts from that state.</p>
+
+  <h2>What this is, and isn't</h2>
+  <ul>
+    <li>This is a <strong>backstop</strong>, not the primary isolation mechanism. Application-level scoping (every Redis key prefixed by tenant, every query filtered) is still what runs on the hot path. RLS is what catches the day that scoping has a bug.</li>
+    <li>It doesn't replace network-level tenant separation if your threat model needs that too — it operates entirely within one shared database.</li>
+    <li>It has a real, measured cost: negligible in practice. A multi-tenant load test with mixed tenant traffic showed overhead in the noise (373.6 → 375.7 RPS, p50 +0.6ms) against the same setup without it.</li>
+  </ul>
+
+  <div class="cta">
+    <p>Curious what a live chaos test looks like for the layers below this one — Redis and Postgres killed mid-traffic, not just described?</p>
+    <a class="btn" href="/articles/chaos-test.html">Read: We Killed Redis and Postgres Under Load, on Purpose →</a>
+  </div>
+</div>
+
+<footer>AEGIS — inline API security gateway, built in Go.</footer>
+
+</body>
+</html>

@@ -5,5 +5,67 @@ metadata:
   labels:
     {{- include "aegis.labels" . | nindent 4 }}
 data:
+  # Every gateway.* field with an AEGIS_* env-var override (internal/config's
+  # applyEnvOverrides) is always sourced from that env var at runtime
+  # (Secret-backed, see deployment.yaml + secret.yaml) and takes precedence
+  # over anything in this file. All ten are force-blanked below rather than
+  # trusted to stay empty in .Values.gateway: an operator who follows the
+  # natural values.yaml shape and sets a real value directly (instead of the
+  # secrets.* fields) would otherwise get it persisted into this plaintext,
+  # RBAC-only-protected ConfigMap — no Secret involved at all.
+  #
+  #   env var                          -> gateway.yaml field
+  #   AEGIS_FORENSIC_DSN               -> forensic_dsn
+  #   AEGIS_ADMIN_SECRET               -> admin_secret
+  #   AEGIS_REDIS_PASSWORD             -> redis.password
+  #   AEGIS_REDIS_SENTINEL_PASSWORD    -> redis.sentinel.sentinel_password
+  #   AEGIS_JWT_SECRET                 -> security.auth.secret
+  #   AEGIS_PROPAGATION_SECRET         -> security.auth.propagation_secret
+  #   AEGIS_OIDC_CLIENT_ID             -> oidc.client_id (not itself a secret,
+  #                                       but env-authoritative like the rest —
+  #                                       blanked for the same consistency
+  #                                       reason, and because the lint
+  #                                       invariant below checks every
+  #                                       AEGIS_*-sourced field, not just the
+  #                                       secret-named ones)
+  #   AEGIS_OIDC_CLIENT_SECRET         -> oidc.client_secret
+  #   AEGIS_ALERT_WEBHOOK_URL          -> alerting.webhook_url (can carry an
+  #                                       auth token in the URL itself, e.g. a
+  #                                       Slack webhook — treated as sensitive)
+  #   AEGIS_LICENSE_PATH               -> license_path (not secret content
+  #                                       itself — the license file it points
+  #                                       at is separate — but a filesystem
+  #                                       path is still env-authoritative like
+  #                                       the rest, same consistency reason)
+  #
+  # (Security audit, 2026-08-22/23: this fix originally covered only
+  # forensic_dsn/redis.password — the other eight are the identical bug class,
+  # just missed each time a new AEGIS_* field was added. See
+  # scripts/lint-invariants.sh, which now asserts every AEGIS_*-sourced field
+  # above stays force-blanked here.) When adding a new AEGIS_* env override to
+  # config.go, add its field here AND to that invariant in the same change.
   gateway.yaml: |
-    {{- .Values.gateway | toYaml | nindent 4 }}
+    {{- $gw := deepCopy .Values.gateway }}
+    {{- $_ := set $gw "forensic_dsn" "" }}
+    {{- $_ := set $gw "admin_secret" "" }}
+    {{- $_ := set $gw "license_path" "" }}
+    {{- if hasKey $gw "redis" }}
+    {{- $_ := set (index $gw "redis") "password" "" }}
+    {{- if hasKey (index $gw "redis") "sentinel" }}
+    {{- $_ := set (index (index $gw "redis") "sentinel") "sentinel_password" "" }}
+    {{- end }}
+    {{- end }}
+    {{- if hasKey $gw "security" }}
+    {{- if hasKey (index $gw "security") "auth" }}
+    {{- $_ := set (index (index $gw "security") "auth") "secret" "" }}
+    {{- $_ := set (index (index $gw "security") "auth") "propagation_secret" "" }}
+    {{- end }}
+    {{- end }}
+    {{- if hasKey $gw "oidc" }}
+    {{- $_ := set (index $gw "oidc") "client_id" "" }}
+    {{- $_ := set (index $gw "oidc") "client_secret" "" }}
+    {{- end }}
+    {{- if hasKey $gw "alerting" }}
+    {{- $_ := set (index $gw "alerting") "webhook_url" "" }}
+    {{- end }}
+    {{- $gw | toYaml | nindent 4 }}

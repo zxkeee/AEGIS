@@ -10,6 +10,7 @@ operator off-boarding.
 | Admin secret | `admin_secret` / env | `AEGIS_ADMIN_SECRET` | Full admin-API + console takeover |
 | JWT / identity-signing secret | `security.auth.secret` / env | `AEGIS_JWT_SECRET` | Forge downstream identity (`X-Gateway-*`) |
 | Redis password | `redis.password` / env | `AEGIS_REDIS_PASSWORD` | Read/poison sessions, rate-limit, blocklists |
+| Redis Sentinel password | `redis.sentinel.sentinel_password` / env | `AEGIS_REDIS_SENTINEL_PASSWORD` | Same as Redis password, HA deployments only |
 | Forensic / catalog DSN password | `forensic_dsn` / env | `AEGIS_FORENSIC_DSN` | Read forensic logs + API catalog |
 
 Secrets are read from the environment first (`applyEnvOverrides`), so production

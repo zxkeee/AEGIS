@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>The One Control That Has No Fail-Closed Option — AEGIS</title>
+<meta name="description" content="Rate limiting and IP reputation can be configured fail-closed. Behavioral scoring can't — not because we haven't gotten to it, but on purpose." />
+<link rel="stylesheet" href="/articles/article.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/">AEGIS</a>
+  <a class="back" href="/articles.html">← all articles</a>
+</nav>
+
+<div class="wrap">
+  <p class="eyebrow">Engineering</p>
+  <h1>The One Control That Has No Fail-Closed Option</h1>
+  <p class="dek">Rate limiting and IP reputation can be configured to deny everything when Redis is down. Behavioral scoring can't be — there's no config field for it. That's deliberate, not an oversight.</p>
+
+  <p>"Fail open or fail closed" is usually presented as a single global choice a security product makes once. It shouldn't be. Different controls protect against different things, and the right failure direction for one is often the wrong one for another running in the same request path.</p>
+
+  <h2>Two controls, same outage, opposite right answer</h2>
+  <p>Redis goes down. Every control that reads from it has to decide what to do about a request it can no longer check.</p>
+  <p><strong>Rate limiting and IP reputation</strong> — <code>RateLimit.FailClosed</code>, <code>IPGuard.FailClosed</code> — are real config fields an operator can set to <code>true</code>. If the backing store that enforces them is gone, deny the request. That's a defensible default for a high-assurance deployment: better to serve nothing than to serve everything unmetered and unfiltered during an outage.</p>
+  <p><strong>Behavioral scoring is different.</strong> There's no <code>Behavior.FailClosed</code> field anywhere in the config schema. It's not that the default is <code>false</code> and you can flip it — the option doesn't exist. Every request that would have been scored is simply scored, and if the score calculation can't reach its data, the practical result is a request that gets treated as unscored rather than as guilty by default.</p>
+
+  <h2>Why deny-by-default is the wrong call specifically here</h2>
+  <p>Behavioral scoring accumulates risk across a history of requests from an IP — it's inherently a control about patterns over time, not about any single request. Set it to fail closed and a Redis outage means every IP on the gateway, including every legitimate one with a spotless history, starts being denied purely because the system can no longer read a history it would otherwise have vouched for them. You'd be converting an infrastructure outage into a total traffic outage, for a control whose entire job is nuance ("is this IP's pattern unusual"), not a binary allow/deny gate.</p>
+  <p>Rate limiting and IP reputation don't have this problem in the same way — they're closer to a hard cap and a static-ish list, either of which failing closed degrades gracefully into "temporarily more restrictive," not "block everyone regardless of history."</p>
+
+  <h2>What the code actually does when the store is unreachable</h2>
+  <pre><code><span class="cmt">// Step 1: check score from prior history BEFORE serving the request.</span>
+score := st.CalcBehaviorScore(r.Context(), ip, cfg.ScoreThreshold)
+if score >= cfg.ScoreThreshold {
+    <span class="cmt">// ... block ...</span>
+}</code></pre>
+  <p>There's no error branch here that denies the request. A score that can't be computed doesn't get treated as maximally suspicious — it doesn't clear the threshold, so the request proceeds. This is the concrete shape of "intentionally fail-open": not a missing error handler, a present one that's designed to not escalate to a block.</p>
+
+  <h2>This isn't a theoretical claim — it's a measured one</h2>
+  <p>Talk is cheap for failure-mode claims, so this was run against a live instance under sustained traffic with Redis killed mid-test, not just reasoned about:</p>
+  <table>
+    <thead><tr><th>Condition</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>Redis fully down, 50 req/s sustained</td><td>100% request success</td></tr>
+      <tr><td>Latency during outage</td><td>p99 864 ms, max 1.30 s</td></tr>
+      <tr><td>Latency after recovery</td><td>p99 back to 42 ms</td></tr>
+    </tbody>
+  </table>
+  <p>The elevated latency during the outage isn't scoring logic slowing down — it's the store client hitting its fail-fast timeouts (1s dial, 500ms read/write, one retry) before falling through to the fail-open path, instead of hanging for the multi-second default a naive Redis client would sit on per request.</p>
+
+  <h2>The honest tradeoff, stated plainly</h2>
+  <p>This means during a Redis outage, behavioral auto-banning is effectively paused — an IP that would have been flagged and banned mid-outage isn't, until the store comes back. That's a real gap, not a hidden one. It's also, we think, obviously the better failure mode than the alternative: a scoring gap during a rare infrastructure incident, versus every legitimate user on the gateway getting denied because the system that was supposed to vouch for their good history couldn't be reached.</p>
+
+  <div class="cta">
+    <p>This is one piece of a broader chaos-test pass — Postgres was killed under load too, separately.</p>
+    <a class="btn" href="/articles/chaos-test.html">Read: We Killed Redis and Postgres Under Load, on Purpose →</a>
+  </div>
+</div>
+
+<footer>AEGIS — inline API security gateway, built in Go.</footer>
+
+</body>
+</html>

@@ -10,7 +10,7 @@ import (
 
 	"api-gateway/internal/store"
 
-	_ "github.com/lib/pq" // PostgreSQL driver
+	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver
 )
 
 // Logger is a minimal logging interface.
@@ -63,7 +63,7 @@ CREATE POLICY tenant_isolation ON forensic_logs
 // NewPGSink creates a new PostgreSQL forensic log sink.
 // It creates the table if it doesn't exist and starts a background flush worker.
 func NewPGSink(dsn string, log Logger) (*PGSink, error) {
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("forensic: pg connect: %w", err)
 	}

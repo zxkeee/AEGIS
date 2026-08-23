@@ -1,7 +1,8 @@
 // Package classify is the data-classification engine: it identifies the TYPES of
-// sensitive data in a payload (credit card, SSN, email, phone) and maps them to
-// compliance categories (PCI / PII / PHI). It is a leaf package (stdlib only) so
-// both the DLP middleware and the discovery catalog can use it without a cycle.
+// sensitive data in a payload (credit card, SSN, email, phone, NPI) and maps
+// them to compliance categories (PCI / PII / PHI). It is a leaf package
+// (stdlib only) so both the DLP middleware and the discovery catalog can use
+// it without a cycle.
 //
 // Typing matters because "this endpoint leaks payment-card data (PCI) to
 // unauthenticated callers" is a far more actionable — and sellable — finding
@@ -22,6 +23,10 @@ const (
 	CategoryPHI = "PHI" // protected health information
 )
 
+// npiConstant is the CMS-assigned constant prefixed to a 10-digit NPI before
+// Luhn-validating its check digit (see validNPI).
+const npiConstant = "80840"
+
 type detector struct {
 	Type     string
 	Category string
@@ -39,6 +44,12 @@ var detectors = []detector{
 	{"ssn", CategoryPII, regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`), validSSN},
 	{"email", CategoryPII, regexp.MustCompile(`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`), nil},
 	{"phone", CategoryPII, regexp.MustCompile(`\b(?:\+?\d{1,2}[ .\-]?)?\(?\d{3}\)?[ .\-]?\d{3}[ .\-]?\d{4}\b`), validPhone},
+	// npi: a bare 10-digit run is indistinguishable from a phone number or any
+	// other numeric ID, so this only fires next to an explicit "NPI" label —
+	// the same precision-over-recall tradeoff as the other detectors, applied
+	// via context instead of a value-shape check. The check-digit validation
+	// (validNPI) is the CMS Luhn-variant algorithm, not a shape heuristic.
+	{"npi", CategoryPHI, regexp.MustCompile(`(?i)\bNPI\b[:#\s]{0,3}(\d{10})\b`), validNPI},
 }
 
 // typeCategory maps a data type to its compliance category.
@@ -111,19 +122,45 @@ func sortedKeys(m map[string]bool) []string {
 // luhnValid strips separators and reports whether the digits form a 13–19 digit
 // Luhn-valid number — the standard payment-card checksum.
 func luhnValid(s string) bool {
-	digits := make([]int, 0, len(s))
-	for _, r := range s {
-		if r >= '0' && r <= '9' {
-			digits = append(digits, int(r-'0'))
-		}
-	}
+	digits := onlyDigits(s)
 	if len(digits) < 13 || len(digits) > 19 {
 		return false
 	}
+	return luhnChecksumValid(digits)
+}
+
+// validNPI reports whether s contains exactly one 10-digit National Provider
+// Identifier with a valid check digit. Per the CMS algorithm, the check digit
+// is valid when the 10-digit NPI, prefixed with the constant "80840", passes
+// the standard Luhn checksum. s is the full regex match (label text plus the
+// number); the label contributes no digits, so extracting all digits from it
+// yields exactly the 10-digit NPI.
+func validNPI(s string) bool {
+	digits := onlyDigits(s)
+	if len(digits) != 10 {
+		return false
+	}
+	return luhnChecksumValid(npiConstant + digits)
+}
+
+// onlyDigits returns the numeric digits of s as a string, discarding
+// everything else (separators, labels, etc.).
+func onlyDigits(s string) string {
+	b := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c >= '0' && c <= '9' {
+			b = append(b, c)
+		}
+	}
+	return string(b)
+}
+
+// luhnChecksumValid applies the standard Luhn algorithm to a digit string.
+func luhnChecksumValid(digits string) bool {
 	sum := 0
 	double := false
 	for i := len(digits) - 1; i >= 0; i-- {
-		d := digits[i]
+		d := int(digits[i] - '0')
 		if double {
 			d *= 2
 			if d > 9 {

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,6 +21,7 @@ import (
 	"api-gateway/internal/forensic"
 	"api-gateway/internal/gateway"
 	"api-gateway/internal/iam"
+	"api-gateway/internal/license"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/middleware"
 	"api-gateway/internal/retention"
@@ -38,13 +41,29 @@ var (
 
 func main() {
 	cfgPath := flag.String("config", "config/gateway.yaml", "path to gateway config")
+	printFingerprint := flag.Bool("print-fingerprint", false,
+		"print this machine's license hardware fingerprint and exit (run this BEFORE requesting a license, "+
+			"on the box that will actually run the gateway — see docs/licensing.md)")
 	flag.Parse()
 
+	if *printFingerprint {
+		fp, err := license.Fingerprint()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "cannot compute fingerprint: "+err.Error())
+			os.Exit(1)
+		}
+		fmt.Println(fp)
+		return
+	}
+
 	// ── Load Configuration ────────────────────────────────────────────────────
-	cfg, err := loadValidatedConfig(*cfgPath)
+	cfg, trustedProxyNets, licStatus, err := loadValidatedConfig(*cfgPath)
 	if err != nil {
 		panic("unsafe configuration: " + err.Error())
 	}
+	// No prior chain to protect on boot — commit immediately (see
+	// loadValidatedConfig's doc comment for why hot-reload defers this).
+	middleware.SetTrustedProxies(trustedProxyNets)
 
 	// ── Logger ────────────────────────────────────────────────────────────────
 	log := logger.New(cfg.Logging.Level)
@@ -55,6 +74,7 @@ func main() {
 		"commit":       commit,
 		"build_time":   buildTime,
 	})
+	logLicenseStatus(log, licStatus)
 	if cfg.Observe {
 		log.Warn("OBSERVE MODE ACTIVE: passive pilot posture — the gateway inspects and records but blocks nothing, "+
 			"modifies no response body, and never fails closed. Discovery, findings, WAF-detection, DLP-classification "+
@@ -214,6 +234,12 @@ func main() {
 	}
 	activeHandler.Store(handler)
 
+	// currentLicensePath tracks cfg.LicensePath across hot-reloads (a reload
+	// can change it), read by licenseRecheckLoop below. See that function's
+	// doc comment for why this exists.
+	var currentLicensePath atomic.Value
+	currentLicensePath.Store(cfg.LicensePath)
+
 	// ── Gateway Server (Hot Reload via atomic swap) ───────────────────────────
 	// fpRegistry captures a real TLS fingerprint from each ClientHello when the
 	// gateway terminates TLS, replacing the spoofable X-JA3-Fingerprint header.
@@ -249,13 +275,19 @@ func main() {
 		ssoIface = ssoAuth
 	}
 	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog, iamStore, auditStore, ssoIface)
+	adminSrv.SetLicenseStatus(licStatus) // GET /api/license + console banner reflect this boot's outcome
 
-	// FIX SEC: Protect admin API against brute force and DDoS
+	// FIX SEC: Protect admin API against brute force and DDoS.
+	// This is a fixed-window counter (5 requests/second, enforced atomically
+	// in internal/store), not a token bucket — there is no separate "burst"
+	// allowance above this rate. A prior burst_limit field here was dead
+	// config that the limiter never actually read; removed rather than kept
+	// as a misleading knob. If a real token-bucket burst allowance is wanted
+	// later, it needs a new Lua script in internal/store, not just this field.
 	adminRateLimit := config.RateLimitConfig{
-		Enabled:    true,
-		Requests:   5,
-		Window:     time.Second,
-		BurstLimit: 10,
+		Enabled:  true,
+		Requests: 5,
+		Window:   time.Second,
 	}
 
 	if !cfg.AdminAuth {
@@ -305,7 +337,15 @@ func main() {
 	}
 
 	// ── Hot Reload Watcher ────────────────────────────────────────────────────
-	go watchConfigFile(*cfgPath, &activeHandler, log, st, catalog)
+	go watchConfigFile(*cfgPath, &activeHandler, log, st, catalog, adminSrv, &currentLicensePath)
+
+	// ── License Re-check ──────────────────────────────────────────────────────
+	// See licenseRecheckLoop's doc comment: the hot-reload watcher above only
+	// re-validates the license as a side effect of a gateway.yaml edit, so
+	// without this a long-lived process (nobody touches its config — the
+	// steady-state case) would keep serving on an expired license
+	// indefinitely (audit finding, 2026-08-23).
+	go licenseRecheckLoop(&currentLicensePath, log, adminSrv)
 
 	// ── Start Servers ─────────────────────────────────────────────────────────
 	go func() {
@@ -371,26 +411,145 @@ func main() {
 // loadValidatedConfig parses the config file and runs the SAME safety gate for
 // both startup and hot-reload: config.Validate (rejects insecure combinations
 // such as placeholder secrets, wildcard CORS with auth, non-HTTPS threat feeds)
-// and middleware.InitTrustedProxies (re-parses trusted_proxies so RealIP
-// resolution tracks the config). Hot-reload previously skipped both, which let
-// an unsafe edit go live and silently ignored trusted_proxies changes — the
-// setting every per-IP control depends on.
-func loadValidatedConfig(path string) (config.GatewayConfig, error) {
+// and trusted_proxies parsing (so RealIP resolution tracks the config). Hot-
+// reload previously skipped both, which let an unsafe edit go live and
+// silently ignored trusted_proxies changes — the setting every per-IP control
+// depends on.
+//
+// The parsed trusted-proxy set is returned rather than committed here
+// (audit finding, 2026-08-22): committing eagerly meant a hot-reload that
+// passed this gate but failed LATER — e.g. gateway.BuildHandlerChain
+// rejecting an empty route's upstreams — had already overwritten the global
+// RealIP trust boundary for the OLD, still-serving handler chain, silently
+// contradicting the "previous config stays active" guarantee on error. The
+// caller must call middleware.SetTrustedProxies with the returned set only
+// once the ENTIRE reload (including BuildHandlerChain) has succeeded; on
+// boot there is no prior chain to protect, so main() commits immediately.
+func loadValidatedConfig(path string) (config.GatewayConfig, []*net.IPNet, license.Status, error) {
 	cfg, err := config.Load(path)
 	if err != nil {
-		return config.GatewayConfig{}, err
+		return config.GatewayConfig{}, nil, license.Status{}, err
 	}
 	if err := config.Validate(cfg); err != nil {
-		return config.GatewayConfig{}, err
+		return config.GatewayConfig{}, nil, license.Status{}, err
+	}
+	// License is a hard boot gate, not a soft degrade: no valid license means
+	// the gateway does not come up at all — same treatment as any other
+	// config.Validate rejection (main() panics; a hot-reload with an invalid
+	// license is rejected and the previous, already-running config stays
+	// active, exactly like any other rejected reload). This is deliberate:
+	// letting an unlicensed copy run for free in Observe mode still gives away
+	// the discovery/posture/findings value for nothing, which defeats the
+	// point. See docs/licensing.md for how to self-issue an internal license
+	// for your own dev/eval use — that is the supported free path, not "no
+	// license file at all."
+	//
+	// LoadWithGrace (not the plain Load) specifically so a hardware-lock
+	// mismatch — the customer migrated/rebuilt the host the gateway runs on —
+	// gets a bounded grace window instead of an immediate outage; see
+	// license.LoadWithGrace's doc comment and docs/licensing.md.
+	licStatus := license.LoadWithGrace(cfg.LicensePath, license.DefaultHardwareGrace)
+	if !licStatus.Valid {
+		return config.GatewayConfig{}, nil, licStatus, fmt.Errorf(
+			"no valid license: %s (see docs/licensing.md — issue one with cmd/licensegen)", licStatus.Reason)
 	}
 	// Observe/pilot mode coercion runs AFTER validation, so the returned config is
 	// already in its guaranteed non-disruptive shape before any chain is built —
 	// on startup and on every hot-reload alike.
 	cfg.ApplyObserveMode()
-	if err := middleware.InitTrustedProxies(cfg.TrustedProxies); err != nil {
-		return config.GatewayConfig{}, err
+	trustedProxyNets, err := middleware.ParseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return config.GatewayConfig{}, nil, license.Status{}, err
 	}
-	return cfg, nil
+	return cfg, trustedProxyNets, licStatus, nil
+}
+
+// logLicenseStatus reports a valid license's terms so licensee/tier/expiry
+// are visible in every boot's and every hot-reload's logs, not just at issue
+// time. loadValidatedConfig already turns an invalid license into a hard
+// error before this is called (see there), so st.Valid is expected true here;
+// the else branch is defensive only.
+func logLicenseStatus(log *logger.Logger, st license.Status) {
+	if !st.Valid {
+		log.Error("license: INVALID OR MISSING (unexpected — loadValidatedConfig should have rejected this "+
+			"before startup/hot-reload got this far)", map[string]any{"reason": st.Reason, "path": st.Path})
+		return
+	}
+	if st.Grace {
+		log.Warn("license: HARDWARE MISMATCH — running on a temporary grace period, NOT normally valid. "+
+			"This machine's fingerprint does not match the license; the gateway will refuse to start once the "+
+			"grace window ends. Contact the vendor for a free re-issue now — see docs/licensing.md.", map[string]any{
+			"licensee":            st.Claims.Licensee,
+			"tier":                st.Claims.Tier,
+			"grace_until":         st.GraceUntil.Format(time.RFC3339),
+			"current_fingerprint": st.CurrentFingerprint,
+		})
+		return
+	}
+	fields := map[string]any{"licensee": st.Claims.Licensee, "tier": st.Claims.Tier}
+	if !st.Claims.ExpiresAt.IsZero() {
+		fields["expires"] = st.Claims.ExpiresAt.Format("2006-01-02")
+		fields["days_left"] = st.DaysLeft
+	}
+	log.Info("license: valid", fields)
+}
+
+// licenseRecheckInterval bounds how stale a running gateway's license status
+// can get without a config-file edit or restart. Short enough that "the
+// trial clock is real" (docs/licensing.md) holds within a bounded window
+// rather than only "at the next incidental config touch or restart"; long
+// enough that it is not itself a meaningful load source.
+const licenseRecheckInterval = 15 * time.Minute
+
+// licenseRecheckLoop independently re-validates the license on a fixed
+// schedule, closing a gap watchConfigFile leaves open: that watcher only
+// re-runs loadValidatedConfig (and therefore re-checks the license) as a
+// side effect of a gateway.yaml change, so a long-lived process whose config
+// is never edited again — the steady-state case for a production proxy —
+// would otherwise keep serving on an expired or newly-hardware-mismatched
+// license indefinitely, with `/api/license`/the console banner reporting a
+// frozen boot-time snapshot the entire time (audit finding, 2026-08-23).
+//
+// This does NOT tear down the running chain or refuse traffic on its own
+// when the license goes invalid mid-run: docs/licensing.md deliberately
+// treats a same-minute production outage over licensing as a worse outcome
+// than a bounded window of non-compliance (the same reasoning
+// LoadWithGrace's hardware-grace period already applies to node-lock
+// mismatches). It only makes the status LOUD and CURRENT — a fresh
+// Load/LoadWithGrace result is logged and pushed to SetLicenseStatus every
+// tick, so the console/API never lag boot-or-last-reload by more than
+// licenseRecheckInterval, and an operator or log-based alerting sees the
+// same "license: INVALID" signal a restart would have produced, without
+// needing one.
+func licenseRecheckLoop(currentLicensePath *atomic.Value, log *logger.Logger, adminSrv *api.Server) {
+	ticker := time.NewTicker(licenseRecheckInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		runLicenseRecheck(currentLicensePath, log, adminSrv)
+	}
+}
+
+// runLicenseRecheck is licenseRecheckLoop's per-tick body, split out so a
+// test can exercise one check deterministically without waiting on a real
+// ticker.
+func runLicenseRecheck(currentLicensePath *atomic.Value, log *logger.Logger, adminSrv *api.Server) {
+	path, _ := currentLicensePath.Load().(string)
+	st := license.LoadWithGrace(path, license.DefaultHardwareGrace)
+	if !st.Valid {
+		// Deliberately NOT logLicenseStatus here: its !Valid branch says
+		// "unexpected — loadValidatedConfig should have rejected this
+		// before startup/hot-reload got this far," which is wrong in this
+		// context — this IS the expected place a mid-run expiry first
+		// surfaces, not a bug.
+		log.Error("license: periodic re-check found the running license NO LONGER VALID — "+
+			"traffic keeps flowing (see docs/licensing.md's mid-run-expiry design note), but this is "+
+			"now a licensing breach; renew and hot-reload (or restart) to clear it", map[string]any{
+			"reason": st.Reason, "path": path,
+		})
+	} else {
+		logLicenseStatus(log, st)
+	}
+	adminSrv.SetLicenseStatus(st)
 }
 
 // loadConfigSpec loads the optional config-level OpenAPI spec (discovery.
@@ -421,7 +580,7 @@ func loadConfigSpec(cfg config.GatewayConfig, catalog *discovery.Catalog, log *l
 
 // watchConfigFile uses fsnotify for instant config hot-reload (zero-downtime).
 // Falls back to 5s polling if fsnotify setup fails.
-func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logger, st *store.Store, catalog *discovery.Catalog) {
+func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logger, st *store.Store, catalog *discovery.Catalog, adminSrv *api.Server, currentLicensePath *atomic.Value) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		absPath = path
@@ -430,14 +589,21 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 	reload := func() {
 		log.Info("config change detected, hot-reloading...")
 
-		// The full startup gate (parse + Validate + trusted-proxy re-init) also
+		// The full startup gate (parse + Validate + trusted-proxy parsing) also
 		// guards hot-reload: an edit that would be rejected at boot must not go
-		// live either. On any error the previous configuration stays active.
-		newCfg, err := loadValidatedConfig(absPath)
+		// live either. On any error the previous configuration stays active —
+		// newTrustedProxyNets is NOT committed yet (see loadValidatedConfig's
+		// doc comment); it only takes effect once BuildHandlerChain below also
+		// succeeds, so a later failure genuinely leaves the old chain's trust
+		// boundary untouched too, not just its routing.
+		newCfg, newTrustedProxyNets, newLicStatus, err := loadValidatedConfig(absPath)
 		if err != nil {
 			log.Error("hot-reload: rejected, previous config stays active", map[string]any{"error": err.Error()})
 			return
 		}
+		logLicenseStatus(log, newLicStatus)
+		adminSrv.SetLicenseStatus(newLicStatus)
+		currentLicensePath.Store(newCfg.LicensePath)
 		if newCfg.Observe {
 			log.Warn("hot-reload: OBSERVE MODE ACTIVE — controls coerced to passive (record-only, no blocking/redaction)", nil)
 		}
@@ -459,6 +625,9 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 			loadConfigSpec(newCfg, catalog, log)
 		}
 
+		// The ENTIRE reload has now succeeded — only now commit the new trust
+		// boundary, immediately alongside the handler swap it belongs with.
+		middleware.SetTrustedProxies(newTrustedProxyNets)
 		activeHandler.Store(newHandler)
 		// Only the data-plane chain is swapped. The admin server (admin_listen,
 		// admin_auth/secret, admin_cors, session TTL) is built once at startup —

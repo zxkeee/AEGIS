@@ -103,6 +103,47 @@ func TestValidate_RejectsInvalidTrustedProxy(t *testing.T) {
 	}
 }
 
+func TestValidate_RejectsInvalidIPGuardWhitelistEntry(t *testing.T) {
+	c := validBase()
+	c.Security.IPGuard.Whitelist = []string{"not-an-ip-or-cidr"}
+	if err := Validate(c); err == nil {
+		t.Fatal("invalid ip_guard.whitelist entry must be rejected")
+	}
+}
+
+func TestValidate_RejectsInvalidIPGuardBlacklistEntry(t *testing.T) {
+	c := validBase()
+	c.Security.IPGuard.Blacklist = []string{"999.999.999.999"}
+	if err := Validate(c); err == nil {
+		t.Fatal("invalid ip_guard.blacklist entry must be rejected")
+	}
+}
+
+func TestValidate_AcceptsIPGuardCIDREntries(t *testing.T) {
+	c := validBase()
+	c.Security.IPGuard.Whitelist = []string{"10.0.0.0/8", "192.168.1.1"}
+	c.Security.IPGuard.Blacklist = []string{"2001:db8::/32"}
+	if err := Validate(c); err != nil {
+		t.Fatalf("valid CIDR/IP entries should be accepted: %v", err)
+	}
+}
+
+func TestValidate_RejectsRegistryEnabled(t *testing.T) {
+	c := validBase()
+	c.Registry.Enabled = true
+	if err := Validate(c); err == nil {
+		t.Fatal("registry.enabled: true must be rejected — ServiceAuth is not wired into the request path")
+	}
+}
+
+func TestValidate_AcceptsRegistryDisabled(t *testing.T) {
+	c := validBase()
+	c.Registry.Enabled = false
+	if err := Validate(c); err != nil {
+		t.Fatalf("registry.enabled: false should be accepted: %v", err)
+	}
+}
+
 func TestValidate_JWTSecretRequiredWithoutJWKS(t *testing.T) {
 	c := validBase()
 	c.Security.Auth.Enabled = true
@@ -118,6 +159,69 @@ func TestValidate_JWKSURLSatisfiesAuth(t *testing.T) {
 	c.Security.Auth.JWKSURL = "https://issuer.example/.well-known/jwks.json"
 	if err := Validate(c); err != nil {
 		t.Fatalf("JWKS URL should satisfy auth validation, got %v", err)
+	}
+}
+
+func TestValidate_PropagationSecretOptional(t *testing.T) {
+	c := validBase()
+	c.Security.Auth.PropagationSecret = "" // falls back to auth.secret, not required
+	if err := Validate(c); err != nil {
+		t.Fatalf("empty propagation_secret should be accepted (falls back to auth.secret), got %v", err)
+	}
+}
+
+func TestValidate_RejectsPlaceholderPropagationSecret(t *testing.T) {
+	c := validBase()
+	c.Security.Auth.PropagationSecret = "changeme"
+	if err := Validate(c); err == nil {
+		t.Fatal("placeholder propagation_secret must be rejected")
+	}
+}
+
+func TestValidate_RejectsShortPropagationSecret(t *testing.T) {
+	c := validBase()
+	c.Security.Auth.PropagationSecret = "too-short"
+	if err := Validate(c); err == nil {
+		t.Fatal("propagation_secret under 32 chars must be rejected")
+	}
+}
+
+func TestValidate_AcceptsStrongPropagationSecret(t *testing.T) {
+	c := validBase()
+	// A genuinely random-looking 32+ char secret, not strings.Repeat("a", 32) —
+	// that fixture used to pass only because Validate checked length and a
+	// literal placeholder list, not entropy; it is exactly the low-entropy
+	// shape looksLowEntropy now rejects (see TestValidate_RejectsLowEntropySecret).
+	c.Security.Auth.PropagationSecret = "9f3a7c1e5b8d2046af71c3e9b05d8f42"
+	if err := Validate(c); err != nil {
+		t.Fatalf("strong propagation_secret should be accepted, got %v", err)
+	}
+}
+
+// TestValidate_RejectsLowEntropySecret is a regression test for the secret-scan
+// finding that placeholder rejection was exact-string-match only: a value long
+// enough to pass the 32-char floor and absent from insecurePlaceholders — a
+// run of one character, or a short repeating cycle — used to be accepted.
+func TestValidate_RejectsLowEntropySecret(t *testing.T) {
+	cases := map[string]string{
+		"admin_secret":       strings.Repeat("a", 32),
+		"auth.secret":        strings.Repeat("ab", 16), // short repeating cycle
+		"propagation_secret": strings.Repeat("x", 40),
+	}
+	for name, secret := range cases {
+		c := validBase()
+		switch name {
+		case "admin_secret":
+			c.AdminSecret = secret
+		case "auth.secret":
+			c.Security.Auth.Enabled = true
+			c.Security.Auth.Secret = secret
+		case "propagation_secret":
+			c.Security.Auth.PropagationSecret = secret
+		}
+		if err := Validate(c); err == nil {
+			t.Errorf("%s = %q: low-entropy secret should be rejected, got nil error", name, secret)
+		}
 	}
 }
 
@@ -404,6 +508,15 @@ func TestApplyEnvOverrides_OIDCSecrets(t *testing.T) {
 	}
 }
 
+func TestApplyEnvOverrides_RedisSentinelPassword(t *testing.T) {
+	t.Setenv("AEGIS_REDIS_SENTINEL_PASSWORD", "env-sentinel-pass")
+	c := GatewayConfig{}
+	applyEnvOverrides(&c)
+	if c.Redis.Sentinel.SentinelPassword != "env-sentinel-pass" {
+		t.Fatalf("sentinel password not overridden from env: %+v", c.Redis.Sentinel)
+	}
+}
+
 func TestValidate_Retention(t *testing.T) {
 	base := func() GatewayConfig {
 		c := validBase()
@@ -499,7 +612,7 @@ func TestApplyObserveMode(t *testing.T) {
 		Observe: true,
 		Routes:  []RouteConfig{{Path: "/x", RateLimit: &RateLimitConfig{Enabled: true}}},
 		Security: SecurityConfig{
-			WAF:        WAFConfig{Enabled: true, BlockMode: true},
+			WAF:        WAFConfig{Enabled: true, BlockMode: true, FailClosed: true},
 			Schema:     SchemaConfig{Enabled: true, BlockMode: true},
 			Abuse:      AbuseConfig{Enabled: true, BlockMode: true, ObjectOwnershipBlock: true},
 			DLP:        DLPConfig{Enabled: true},
@@ -543,8 +656,11 @@ func TestApplyObserveMode(t *testing.T) {
 	if cfg.Routes[0].RateLimit != nil {
 		t.Error("per-route rate_limit override was not cleared")
 	}
-	// Never fail closed.
-	if s.RateLimit.FailClosed || s.IPGuard.FailClosed || s.Auth.RevocationFailClosed {
+	// Never fail closed. (VULN-903: s.WAF.FailClosed was added to
+	// ApplyObserveMode without corresponding test coverage — a pilot deployment
+	// must never 503 all data-plane traffic just because the WAF engine failed
+	// to build.)
+	if s.RateLimit.FailClosed || s.IPGuard.FailClosed || s.Auth.RevocationFailClosed || s.WAF.FailClosed {
 		t.Error("a fail_closed flag remained set")
 	}
 

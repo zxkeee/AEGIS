@@ -622,6 +622,57 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 	return s.client.Del(ctx, prefixSession+token).Err()
 }
 
+// RevokeSessions deletes every live session matching tenantID, or every
+// session matching userID regardless of tenant when tenantID is empty (the
+// super-admin cross-tenant delete path, which does not know the user's
+// tenant up front). When both are empty this is a no-op — callers must
+// always supply at least one filter. Sessions have no
+// per-tenant/per-user index (see prefixSession's doc comment — the token is
+// the only key, and the tenant lives inside the JSON payload), so this SCANs
+// the flat session keyspace and decodes each entry. Called from
+// DeleteTenant/DeleteUser so a revoked identity can't keep acting on stale
+// state for the rest of the session TTL. Bounded by the admin-session
+// keyspace size, not overall traffic, and runs only on the rare
+// tenant/user-deletion path — an O(N) SCAN here is an acceptable trade for
+// not maintaining a reverse index.
+func (s *Store) RevokeSessions(ctx context.Context, tenantID, userID string) (int, error) {
+	if tenantID == "" && userID == "" {
+		return 0, nil
+	}
+	var revoked int
+	var cursor uint64
+	for {
+		keys, next, err := s.client.Scan(ctx, cursor, prefixSession+"*", 256).Result()
+		if err != nil {
+			return revoked, err
+		}
+		for _, k := range keys {
+			v, err := s.client.Get(ctx, k).Result()
+			if err != nil {
+				continue // expired between SCAN and GET, or transient error — skip
+			}
+			var sess iam.Session
+			if err := json.Unmarshal([]byte(v), &sess); err != nil {
+				continue
+			}
+			if tenantID != "" && sess.TenantID != tenantID {
+				continue
+			}
+			if userID != "" && sess.UserID != userID {
+				continue
+			}
+			if err := s.client.Del(ctx, k).Err(); err == nil {
+				revoked++
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	return revoked, nil
+}
+
 // prefixLoginFlow stores the one-time OIDC login flow (state→nonce+PKCE
 // verifier) between the redirect to the IdP and the callback. Like sessions it
 // is NOT tenant-scoped: the flow happens pre-authentication, before any tenant

@@ -9,7 +9,7 @@ import (
 	"api-gateway/internal/config"
 	"api-gateway/internal/pgtest"
 
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type nopLogger struct{}
@@ -26,7 +26,7 @@ func (nopLogger) Error(string, ...map[string]any) {}
 func setup(t *testing.T) (*Worker, *sql.DB, string) {
 	t.Helper()
 	dsn := pgtest.DSN(t, "test_retention")
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

@@ -75,6 +75,16 @@ func TenantResolve(cfg config.MultitenancyConfig, routes []config.RouteConfig, l
 			}
 			tenantHost := hostMap[strings.ToLower(host)]
 
+			// Case-insensitive match, same as posture.go's matchRoute/authExcluded
+			// and abuse.go's BFLA check: a backend that routes case-insensitively
+			// would otherwise let a case-varied path ("/Orders" vs a configured
+			// "/orders") dodge its longer, more specific route and fall through
+			// to a shorter, case-differing-safe one — misattributing the request
+			// to the WRONG TENANT'S Redis/catalog/metrics isolation, exactly the
+			// "confused deputy" ADR-001 exists to prevent. (Security audit,
+			// 2026-08-22: this file's own comment above once claimed this class
+			// was "already fixed" here — it wasn't, for the case dimension.)
+			lpath := strings.ToLower(r.URL.Path)
 			var tenantRouteID string
 			for _, tr := range troutes {
 				// Segment-boundary match (not raw HasPrefix): route "/orders" must
@@ -82,7 +92,7 @@ func TenantResolve(cfg config.MultitenancyConfig, routes []config.RouteConfig, l
 				// adjacent path name is silently attributed to the wrong tenant —
 				// corrupting that tenant's metrics/Redis/catalog isolation. An empty
 				// prefix (a root "/" route) matches everything, as before.
-				if tr.path == "" || config.PathHasPrefix(r.URL.Path, tr.path) {
+				if tr.path == "" || config.PathHasPrefix(lpath, strings.ToLower(tr.path)) {
 					tenantRouteID = tr.tenant
 					break
 				}

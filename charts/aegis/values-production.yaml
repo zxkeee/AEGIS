@@ -1,0 +1,25 @@
+# Production overlay — VULN-501 fix.
+#
+# values.yaml ships networkPolicy.enabled: false so a first-time `helm install`
+# never fails to render (the template refuses to render with enabled: true and
+# no podSelector/namespaceSelector set — see networkpolicy.yaml). That default
+# is correct for evaluation, but leaves the admin plane (port 8081) reachable
+# at the network layer from any pod in a flat cluster network, relying solely
+# on AdminAuth (bearer/session) for protection — a defense-in-depth gap in
+# production.
+#
+# Use this file for real deployments:
+#   helm install aegis ./charts/aegis -f values-production.yaml
+# or merge its contents into your own values overlay. You MUST replace the
+# podSelector label below with one that actually matches your operator/CI/
+# bastion pods — an empty {} selector is deliberately rejected at render time.
+
+networkPolicy:
+  enabled: true
+  adminIngress:
+    podSelector:
+      matchLabels:
+        aegis-admin-client: "true"
+    # namespaceSelector:
+    #   matchLabels:
+    #     kubernetes.io/metadata.name: aegis-ops

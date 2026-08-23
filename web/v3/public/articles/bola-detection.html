@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Catching the IDOR a Signature WAF Can't See — AEGIS</title>
+<meta name="description" content="How AEGIS passively detects single-object IDOR/BOLA leaks a signature WAF can't see — without a training set." />
+<link rel="stylesheet" href="/articles/article.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/">AEGIS</a>
+  <a class="back" href="/articles.html">← all articles</a>
+</nav>
+
+<div class="wrap">
+  <p class="eyebrow">Engineering</p>
+  <h1>Catching the IDOR a Signature WAF Can't See</h1>
+  <p class="dek">Passive, gateway-level object-ownership detection — and why "evaluate after the response" is the whole trick.</p>
+
+  <p>Take the most boring vulnerability class in the OWASP API Top 10: Broken Object Level Authorization (BOLA), also known as IDOR. A user changes a number in a URL —</p>
+
+  <pre><code>GET /v1/orders/1001   <span class="cmt">→ your order</span>
+GET /v1/orders/1002   <span class="cmt">→ someone else's order, if the backend forgot to check</span></code></pre>
+
+  <p>— and gets data that isn't theirs. No injection, no malformed payload, no header trick. The request is syntactically perfect. A signature-based WAF has nothing to pattern-match against, because there is no pattern. This is why BOLA remains one of the most common real-world API breaches years after it was named: the class of tool most teams already run (WAF, API gateway, rate limiter) is structurally blind to it.</p>
+
+  <p>AEGIS is a self-hosted API security gateway. This post is about one piece of it: how we detect a single-object leak passively, at the gateway, without a training set, without a signature, and — this is the part worth writing about — without flagging the normal case where authorization already worked.</p>
+
+  <h2>Two different bugs wearing the same name</h2>
+  <p>"BOLA detection" usually means one of two very different things, and conflating them is where most naive implementations go wrong.</p>
+  <p><strong>Bulk enumeration</strong> is the easy case: one consumer hitting <code>/v1/orders/{id}</code> for a thousand sequential IDs in a minute. That's a volume anomaly — count distinct object IDs per consumer per endpoint in a window, compare against a threshold. We do this too, with an adaptive per-consumer baseline instead of a fixed number (more on that in a <a href="/articles/adaptive-baseline.html">separate post</a>) — but this part isn't the interesting bit.</p>
+  <p><strong>The single-object leak</strong> is the hard case, and it's the one that matters more: a consumer requests <em>one</em> object it doesn't own, once, with no volume signature at all. Enumeration detectors don't fire — there's no enumeration. This is the actual shape of most real IDOR incidents: not a script hammering sequential IDs, just one authenticated user who happened to try a neighboring ID once.</p>
+
+  <h2>The approach: learn ownership passively, from traffic you already have</h2>
+  <p>You don't need a training set for this. You already have the signal: your API traffic itself tells you who owns what, as long as you're willing to watch it.</p>
+  <p>The mechanism, roughly:</p>
+  <ul>
+    <li><strong>Learn.</strong> The gateway watches successful requests and, for each object ID it sees, tracks which consumer(s) have legitimately accessed it.</li>
+    <li><strong>Flag.</strong> When a <em>different</em> consumer accesses that object — one who has never touched it before, and who isn't part of a large shared-access group — that's a candidate cross-owner access.</li>
+    <li><strong>Confirm, if you can.</strong> If the API's response body actually names the owner (a <code>user_id</code> field, say), the gateway reads it directly and compares it against the caller's identity. This turns a heuristic into a confirmed fact.</li>
+    <li><strong>Block, once confirmed.</strong> With a confirmed owner on record, a later cross-owner request to the same object can be denied <em>before</em> it's forwarded to your backend — not just logged after the fact.</li>
+  </ul>
+  <p>None of this requires labeling data or training a model. It requires watching real traffic and keeping a small owner map in Redis with a TTL.</p>
+
+  <h2>The trick that actually matters: evaluate after the response, on 2xx only</h2>
+  <p>Here's the discriminator that separates a usable detector from a noisy one. Evaluate cross-owner access <em>before</em> you know the backend's answer, and you'll generate false positives constantly — every properly-authorized request where the backend correctly returns a 403 or 404 looks identical, from the gateway's point of view, to a request about to succeed.</p>
+  <p>So don't evaluate before. Evaluate after:</p>
+
+  <pre><code><span class="cmt">// Post-response: confirm ownership from the body (if OwnerFields is
+// configured) or fall back to the first-accessor heuristic. Evaluated
+// after the response so a 2xx confirms the object was actually returned
+// (a 4xx means the backend enforced authorization — not a leak).</span>
+cw := &captureWriter{ResponseWriter: w, status: http.StatusOK}
+next.ServeHTTP(cw, r)
+if cw.status &lt; 200 || cw.status &gt;= 300 {
+    return
+}</code></pre>
+
+  <p>A 4xx means your backend's own authorization already caught it — correctly. Flagging that as an incident would just be re-reporting your backend's own access control working, which is exactly the kind of noise that gets a security tool disabled within a month. A 2xx on a cross-owner object, on the other hand, means the object was actually returned to someone who shouldn't have it — a real leak, not a maybe.</p>
+  <p>This single ordering decision is most of what makes the detector usable in practice instead of just technically correct.</p>
+
+  <h2>Ownership doesn't care about HTTP method</h2>
+  <p>One detail that's easy to get wrong: object identity should be tracked independent of the HTTP method, even though <em>enumeration</em> volume should be tracked per-method.</p>
+
+  <pre><code><span class="cmt">// bolaTarget resolves the BOLA keys for a request: the method-specific
+// endpoint ("METHOD /template", used for enumeration), the method-
+// INDEPENDENT object scope ("/template", used for ownership), and the
+// concrete object IDs accessed.
+//
+// The object scope omits the method on purpose: order 1001 is the same
+// object whether it is read (GET), modified (PUT/PATCH) or deleted
+// (DELETE), so ownership learned from a read must also protect it
+// against a cross-owner write.</span></code></pre>
+
+  <p>If you key ownership by <code>GET /orders/{id}</code> specifically, an attacker who has never <em>read</em> an object but sends a <code>DELETE</code> to it sails straight through your ownership check, because the detector has no record for that method. Keying ownership by the object itself, separately from the verb applied to it, means an owner learned from an innocuous read also protects the object against a cross-owner write it's never seen before.</p>
+
+  <h2>What this doesn't claim to be</h2>
+  <p>Worth being direct about the limits, since overclaiming a detector is how teams stop trusting it:</p>
+  <ul>
+    <li><strong>Without a configured <code>owner_fields</code></strong> (telling the gateway which response field names the true owner), this runs as a heuristic — "first accessor" ownership affinity — not a confirmed fact. It's flagged at a lower severity for exactly that reason.</li>
+    <li><strong>Cold start.</strong> The first consumer to touch a fresh object is assumed to be its owner. If that assumption is wrong, the detector is wrong until the response body confirms otherwise.</li>
+    <li><strong>Shared objects.</strong> A small number of legitimate co-owners (support staff, a shared team resource) needs either an allowlist or a shared-object threshold, or you'll flag ordinary shared access.</li>
+    <li><strong>This is a safety net, not a substitute</strong> for your backend doing authorization correctly. It catches what slips through — it doesn't replace the check that should have caught it first.</li>
+  </ul>
+
+  <div class="cta">
+    <p>Want to see whether it catches anything real on your own traffic — without touching production? AEGIS has a passive mode that inspects and records but never blocks or modifies anything.</p>
+    <a class="btn" href="/#pilot">Request a pilot →</a>
+  </div>
+</div>
+
+<footer>AEGIS — inline API security gateway, built in Go.</footer>
+
+</body>
+</html>

@@ -52,3 +52,26 @@ func TestIPGuard_WhitelistBypassesError(t *testing.T) {
 		t.Fatalf("whitelisted IP: got %d, want 200", rec.Code)
 	}
 }
+
+func TestIPGuard_BlacklistCIDRDenies(t *testing.T) {
+	// A subnet entry must match every IP inside it, not just an exact string.
+	cfg := config.IPGuardConfig{Enabled: true, Blacklist: []string{"10.0.0.0/8"}}
+	if rec := runIPGuard(cfg, &fakeStore{}, "10.1.2.3"); rec.Code != http.StatusForbidden {
+		t.Fatalf("IP inside blacklisted CIDR: got %d, want 403", rec.Code)
+	}
+}
+
+func TestIPGuard_WhitelistCIDRBypasses(t *testing.T) {
+	cfg := config.IPGuardConfig{Enabled: true, FailClosed: true, Whitelist: []string{"192.168.0.0/16"}}
+	st := &fakeStore{ipBlockErr: errors.New("redis down")}
+	if rec := runIPGuard(cfg, st, "192.168.5.5"); rec.Code != http.StatusOK {
+		t.Fatalf("IP inside whitelisted CIDR: got %d, want 200", rec.Code)
+	}
+}
+
+func TestIPGuard_OutsideCIDRNotMatched(t *testing.T) {
+	cfg := config.IPGuardConfig{Enabled: true, Blacklist: []string{"10.0.0.0/8"}}
+	if rec := runIPGuard(cfg, &fakeStore{}, "11.1.2.3"); rec.Code != http.StatusOK {
+		t.Fatalf("IP outside blacklisted CIDR: got %d, want 200", rec.Code)
+	}
+}

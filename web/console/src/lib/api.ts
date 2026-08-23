@@ -58,6 +58,7 @@ export const api = {
     request<LoginResp>("POST", "/api/login", { email, password, tenant }),
   logout: () => request<unknown>("POST", "/api/logout"),
   session: () => request<SessionResp>("GET", "/api/session"),
+  license: () => request<LicenseResp>("GET", "/api/license"),
 
   // ── Tenants & users (Settings page) ──
   listTenants: () => request<{ tenants: Tenant[]; count: number }>("GET", "/api/tenants"),
@@ -90,6 +91,17 @@ export interface SessionResp {
   tenant: string;
   role: string;
   super_admin: boolean;
+}
+
+export interface LicenseResp {
+  valid: boolean;
+  grace: boolean;
+  licensee?: string;
+  tier?: string;
+  expires_at?: string;
+  days_left?: number;
+  grace_until?: string;
+  reason?: string;
 }
 
 /** Client-side session shape held in App state, threaded down to pages. */

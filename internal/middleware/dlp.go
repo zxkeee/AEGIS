@@ -3,6 +3,7 @@ package middleware
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -52,6 +53,9 @@ func DLP(cfg config.DLPConfig, log Logger, st MetricsSink) Middleware {
 				status:         http.StatusOK,
 				log:            log,
 				path:           r.URL.Path,
+				ip:             RealIP(r),
+				ctx:            r.Context(),
+				metrics:        st,
 			}
 
 			next.ServeHTTP(dw, r)
@@ -132,14 +136,30 @@ type dlpWriter struct {
 	wroteHeader bool
 	log         Logger
 	path        string
+	ip          string
+	ctx         context.Context
+	metrics     MetricsSink
 }
 
 func (d *dlpWriter) Write(b []byte) (int, error) {
 	if d.passthrough {
 		return d.ResponseWriter.Write(b)
 	}
-	// Switch to passthrough if buffering this chunk would exceed the cap.
+	// Switch to passthrough if buffering this chunk would exceed the cap. This
+	// is a silent inspection gap unless surfaced: a response that would have
+	// contained redactable PII sails through unmodified, and nothing else
+	// distinguishes "over the cap, not scanned" from "scanned and clean" —
+	// record it so operators can see the coverage gap (e.g. tune pagination
+	// limits on endpoints that trip this).
 	if d.buf.Len()+len(b) > dlpMaxBuffer {
+		if d.log != nil {
+			d.log.Warn("dlp: response exceeds inspection buffer; skipping DLP for this response", map[string]any{
+				"path": d.path, "ip": d.ip, "max_buffer_bytes": dlpMaxBuffer,
+			})
+		}
+		if d.metrics != nil {
+			d.metrics.IncrMetric(d.ctx, "dlp_skipped_oversized")
+		}
 		d.flushPassthrough()
 		return d.ResponseWriter.Write(b)
 	}

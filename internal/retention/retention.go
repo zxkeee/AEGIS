@@ -21,7 +21,7 @@ import (
 
 	"api-gateway/internal/config"
 
-	_ "github.com/lib/pq" // PostgreSQL driver
+	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver
 )
 
 // Logger is the minimal logging surface the worker needs.
@@ -49,7 +49,7 @@ type Stats struct {
 // New opens a small dedicated connection pool on the shared DSN. The caller owns
 // the returned Worker's lifecycle via Run(ctx) and must Close it.
 func New(dsn string, cfg config.RetentionConfig, log Logger) (*Worker, error) {
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("retention: open: %w", err)
 	}

@@ -17,6 +17,7 @@ import {
 } from "@phosphor-icons/react";
 import { type ReactNode } from "react";
 import { Badge, Button } from "./ui";
+import { LicenseBanner } from "./LicenseBanner";
 import { useTheme } from "@/lib/theme";
 import { type Session } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -181,6 +182,8 @@ export function Shell({
             </Button>
           </div>
         </header>
+
+        <LicenseBanner />
 
         <main className="flex-1 px-4 py-6 md:px-6">
           <AnimatePresence mode="wait">

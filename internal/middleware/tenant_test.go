@@ -55,6 +55,23 @@ func TestTenant_AdjacentPathNotCaptured(t *testing.T) {
 	}
 }
 
+// TestTenant_CaseInsensitiveRouteMatch is a regression test for a residual
+// variant of the segment-boundary bypass TestTenant_AdjacentPathNotCaptured
+// covers: a backend that routes case-insensitively would let a case-varied
+// path ("/Orders", "/ORDERS") dodge the "/orders" route and fall through to
+// unresolved (or, with an overlapping shorter route, to the WRONG tenant) —
+// the same class already fixed in posture.go/abuse.go's BFLA check.
+func TestTenant_CaseInsensitiveRouteMatch(t *testing.T) {
+	mt := config.MultitenancyConfig{Enabled: true, Tenants: []config.TenantConfig{{ID: "acme"}}}
+	routes := []config.RouteConfig{{Path: "/orders", TenantID: "acme"}}
+	for _, p := range []string{"/orders/42", "/Orders/42", "/ORDERS/42"} {
+		got, code := tenantOf(t, mt, routes, func(r *http.Request) { r.URL.Path = p })
+		if code != http.StatusOK || got != "acme" {
+			t.Fatalf("path %q: tenant=%q code=%d, want acme/200 (case must not defeat route→tenant matching)", p, got, code)
+		}
+	}
+}
+
 func TestTenant_ResolvedByHost(t *testing.T) {
 	mt := config.MultitenancyConfig{Enabled: true, Tenants: []config.TenantConfig{
 		{ID: "globex", Hosts: []string{"globex.api.example"}},

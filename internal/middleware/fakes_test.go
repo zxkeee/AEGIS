@@ -44,6 +44,8 @@ type fakeStore struct {
 	forensic []store.ForensicEntry
 	// baseline is the EWMA value TrackBaseline returns (adaptive BOLA tests).
 	baseline float64
+	// metrics counts IncrMetric calls by name (schema/WAF skip-visibility assertions).
+	metrics map[string]int
 }
 
 func (f *fakeStore) IncrRate(ctx context.Context, key string, window time.Duration) (int64, error) {
@@ -73,7 +75,12 @@ func (f *fakeStore) AutoBanIP(_ context.Context, ip string, _ time.Duration) err
 	f.blockedIPs[ip] = true
 	return nil
 }
-func (f *fakeStore) IncrMetric(context.Context, string) {}
+func (f *fakeStore) IncrMetric(_ context.Context, name string) {
+	if f.metrics == nil {
+		f.metrics = map[string]int{}
+	}
+	f.metrics[name]++
+}
 
 func (f *fakeStore) IncrAutoBanCounter(context.Context, string) (int64, error) {
 	if f.autoban > 0 {

@@ -64,9 +64,25 @@ func AdminAuth(cfg config.GatewayConfig, log Logger, st adminStore, aud audit.Re
 			// Method 1: bearer token (API/CLI). Bearer is the system bootstrap
 			// credential: it is super-admin and is implicitly scoped to the
 			// default tenant. Real per-tenant operators must use console login.
+			// Once real IAM users are provisioned, an operator can set
+			// admin_bootstrap_secret_disabled: true to close this path entirely
+			// (see AdminBootstrapSecretDisabled) rather than carry an
+			// always-super-admin, per-operator-unauditable credential forever.
 			if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+				if cfg.AdminBootstrapSecretDisabled {
+					recordDeny(aud, r, "admin_bootstrap_secret_disabled", http.StatusForbidden, audit.Entry{})
+					SecurityDeny(w, r, log, st, "admin_bootstrap_secret_disabled", RealIP(r), http.StatusForbidden, nil)
+					return
+				}
 				token := strings.TrimPrefix(auth, "Bearer ")
 				if subtle.ConstantTimeCompare([]byte(token), secretBytes) == 1 {
+					// Loud, unconditional log on every successful use — not just
+					// failures — so this always-super-admin bootstrap credential's
+					// usage is visible to log-based alerting even though it isn't
+					// tied to a per-operator identity the audit log can attribute.
+					log.Warn("admin_bootstrap_secret_used", map[string]any{
+						"path": r.URL.Path, "method": r.Method, "ip": RealIP(r),
+					})
 					ctx := tenant.With(r.Context(), tenant.Default)
 					ctx = iam.WithRole(ctx, iam.RoleAdmin)
 					ctx = iam.WithSuperAdmin(ctx, true)
@@ -142,6 +158,25 @@ func serveAndAudit(aud audit.Recorder, next http.Handler, w http.ResponseWriter,
 		return
 	}
 	sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+	// A panic inside next.ServeHTTP unwinds straight past the aud.Record call
+	// below, past this function entirely, and is only recovered further down
+	// the stack by net/http's per-connection recovery — leaving a mutation
+	// that panicked partway through with no audit trail at all, contradicting
+	// the package's "durable trail for who did what" guarantee. Record it
+	// (status 500, detail "panic") before re-panicking, so net/http's own
+	// recovery/500-response behavior is unchanged — only the audit gap closes.
+	defer func() {
+		if p := recover(); p != nil {
+			actor.Action = "mutation"
+			actor.Method = r.Method
+			actor.Path = r.URL.Path
+			actor.Status = http.StatusInternalServerError
+			actor.IP = RealIP(r)
+			actor.Detail = "panic"
+			aud.Record(actor)
+			panic(p)
+		}
+	}()
 	next.ServeHTTP(sw, r)
 	actor.Action = "mutation"
 	actor.Method = r.Method

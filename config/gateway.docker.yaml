@@ -30,7 +30,6 @@ security:
     enabled: true
     requests: 100
     window: 60s
-    burst_limit: 20
   waf:
     enabled: true
     block_mode: true

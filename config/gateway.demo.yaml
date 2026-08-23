@@ -37,7 +37,6 @@ security:
     enabled: true
     requests: 30            # low so rate-limiting is easy to demo
     window: 60s
-    burst_limit: 10
     fail_closed: false
 
   auth:

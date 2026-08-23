@@ -106,6 +106,46 @@ func adminHandler(st Store) http.Handler {
 	return AdminAuth(cfg, fakeLogger{}, st, nil)(next)
 }
 
+// TestServeAndAudit_RecordsOnPanic is a regression test: a panic inside a
+// mutating handler used to unwind straight past aud.Record, leaving a
+// mutation that panicked partway through with no audit trail at all —
+// contradicting the package's "durable trail for who did what" guarantee.
+// serveAndAudit must record (status 500, detail "panic") before re-panicking,
+// so net/http's own per-connection recovery is unaffected — this test itself
+// recovers the re-panic (httptest has none of its own) purely to observe it.
+func TestServeAndAudit_RecordsOnPanic(t *testing.T) {
+	_ = InitTrustedProxies(nil)
+	cfg := config.GatewayConfig{AdminAuth: true, AdminSecret: testSecret}
+	aud := &fakeAudit{}
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") })
+	h := AdminAuth(cfg, fakeLogger{}, &fakeStore{}, aud)(next)
+
+	panicked := func() (p any) {
+		defer func() { p = recover() }()
+		doAdmin(h, http.MethodPost, "/api/x", func(r *http.Request) {
+			r.Header.Set("Authorization", "Bearer "+testSecret)
+		})
+		return nil
+	}()
+	if panicked == nil {
+		t.Fatal("expected the panic to propagate past serveAndAudit (re-panic), got none")
+	}
+
+	got := aud.actions()
+	if !hasAction(got, "mutation") {
+		t.Fatalf("expected a mutation entry recorded before the panic propagated, got %v", got)
+	}
+	var found bool
+	for _, e := range aud.entries {
+		if e.Action == "mutation" && e.Status == http.StatusInternalServerError && e.Detail == "panic" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a mutation entry with status=500 detail=panic, got %+v", aud.entries)
+	}
+}
+
 func doAdmin(h http.Handler, method, path string, mutate func(*http.Request)) int {
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(method, path, nil)
@@ -166,6 +206,19 @@ func TestAdmin_BearerWrong(t *testing.T) {
 	})
 	if code != http.StatusForbidden {
 		t.Fatalf("wrong bearer: got %d, want 403", code)
+	}
+}
+
+func TestAdmin_BearerDisabledOnceKillSwitchSet(t *testing.T) {
+	_ = InitTrustedProxies(nil)
+	cfg := config.GatewayConfig{AdminAuth: true, AdminSecret: testSecret, AdminBootstrapSecretDisabled: true}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	h := AdminAuth(cfg, fakeLogger{}, &fakeStore{}, nil)(next)
+	code := doAdmin(h, http.MethodGet, "/api/metrics", func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+testSecret)
+	})
+	if code != http.StatusForbidden {
+		t.Fatalf("bearer secret with kill switch on: got %d, want 403", code)
 	}
 }
 

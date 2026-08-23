@@ -1,4 +1,4 @@
-import { Reveal, GhostButton } from '../lib/ui.jsx'
+import { Reveal, GhostButton, TextLink } from '../lib/ui.jsx'
 import SignalLine from './SignalLine.jsx'
 
 export default function Hero() {
@@ -15,8 +15,9 @@ export default function Hero() {
         </p>
       </Reveal>
       <Reveal delay={0.16}>
-        <div className="mt-8">
+        <div className="mt-8 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
           <GhostButton href="#pilot">Request a pilot</GhostButton>
+          <TextLink href="/how-it-works.html">How it works, end to end</TextLink>
         </div>
       </Reveal>
       <Reveal delay={0.22} className="mt-14 w-full md:mt-20">

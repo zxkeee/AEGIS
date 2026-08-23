@@ -184,8 +184,9 @@ type Catalog struct {
 const maxCatalogEndpoints = 50_000
 
 type specCacheEntry struct {
-	uploadedAt time.Time
-	spec       *Spec
+	uploadedAt time.Time // zero when confirmed no per-tenant spec exists
+	spec       *Spec     // nil when confirmed no per-tenant spec exists (config fallback applies)
+	checkedAt  time.Time // last time this entry was confirmed fresh against Postgres
 }
 
 // NewCatalog connects to PostgreSQL, migrates the schema, and starts the

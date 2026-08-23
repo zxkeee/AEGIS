@@ -68,6 +68,7 @@ func (h *handlers) listTenants(w http.ResponseWriter, r *http.Request) {
 	if !h.usersAvailable(w) {
 		return
 	}
+	h.auditCrossTenantRead(r, "cross_tenant_tenants_read", "*")
 	ts, err := h.users.ListTenants(r.Context())
 	if err != nil {
 		h.log.Error("admin: list tenants failed", map[string]any{"error": err.Error()})
@@ -130,6 +131,15 @@ func (h *handlers) deleteTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not delete tenant")
 		return
 	}
+	// Deleted-tenant sessions carry the tenant/role snapshot from login time
+	// and are not otherwise linked back to the tenants table — sweep them so
+	// an already-authenticated operator can't keep acting on the deleted
+	// tenant for the rest of the session TTL.
+	if revoked, err := h.store.RevokeSessions(r.Context(), id, ""); err != nil {
+		h.log.Error("admin: session revoke after tenant delete failed", map[string]any{"error": err.Error(), "id": id})
+	} else if revoked > 0 {
+		h.log.Info("admin: sessions revoked after tenant delete", map[string]any{"id": id, "count": revoked})
+	}
 	h.log.Info("admin: tenant deleted", map[string]any{"id": id, "existed": existed})
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "deleted": existed})
 }
@@ -150,6 +160,14 @@ func (h *handlers) listUsers(w http.ResponseWriter, r *http.Request) {
 		// Ordinary admins are pinned to their own tenant regardless of what
 		// they ask for; ignore the query param silently to avoid info leaks.
 		target = tenant.From(r.Context())
+	} else if target != tenant.From(r.Context()) {
+		// Super-admin reading another tenant's (or, when target=="", every
+		// tenant's) user list — the audit trail should show who looked.
+		logTarget := target
+		if logTarget == "" {
+			logTarget = "*"
+		}
+		h.auditCrossTenantRead(r, "cross_tenant_users_read", logTarget)
 	}
 	us, err := h.users.ListUsers(r.Context(), target)
 	if err != nil {
@@ -295,6 +313,15 @@ func (h *handlers) deleteUser(w http.ResponseWriter, r *http.Request) {
 		h.log.Error("admin: delete user failed", map[string]any{"error": err.Error()})
 		writeError(w, http.StatusInternalServerError, "could not delete user")
 		return
+	}
+	// Sweep any live session bound to this user so a deleted operator can't
+	// keep acting on stale state for the rest of the session TTL. userID is
+	// always non-empty here, so this narrows correctly even when deleteScope
+	// is "" (super-admin cross-tenant delete).
+	if revoked, err := h.store.RevokeSessions(r.Context(), deleteScope, id); err != nil {
+		h.log.Error("admin: session revoke after user delete failed", map[string]any{"error": err.Error(), "id": id})
+	} else if revoked > 0 {
+		h.log.Info("admin: sessions revoked after user delete", map[string]any{"id": id, "count": revoked})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "deleted": deleted})
 }

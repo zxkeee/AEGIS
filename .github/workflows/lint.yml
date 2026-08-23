@@ -52,3 +52,16 @@ jobs:
       # identity headers are covered by the signature payload.
       - name: Check security invariants
         run: ./scripts/lint-invariants.sh
+
+      # helm is preinstalled on the GitHub-hosted ubuntu-latest runner image
+      # (see actions/runner-images' included software list) — no separate
+      # setup-helm action/install step needed. Catches template errors (e.g.
+      # the configmap.yaml deepCopy/set logic added for the redis.password /
+      # forensic_dsn ConfigMap-leak fix) that nothing else in this repo checks.
+      - name: helm lint
+        run: helm lint charts/aegis
+
+      # Keeps the docker-compose.yml digest-pinning TODOs (prometheus/grafana)
+      # from growing unnoticed, and catches a newly added tag-only image.
+      - name: Check container image pinning
+        run: ./scripts/check-image-pins.sh

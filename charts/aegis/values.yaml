@@ -57,7 +57,10 @@ autoscaling:
 #   helm install aegis . --set secrets.adminSecret=<value>
 secrets:
   # Name of an existing K8s Secret containing all required keys:
-  #   admin-secret, redis-password, jwt-secret (optional)
+  #   admin-secret, redis-password, jwt-secret (optional), forensic-dsn (optional),
+  #   propagation-secret (optional), sentinel-password (optional),
+  #   oidc-client-id (optional), oidc-client-secret (optional),
+  #   alert-webhook-url (optional)
   # When set, the values below are ignored.
   existingSecret: ""
   # Direct values — only used if existingSecret is empty.
@@ -66,10 +69,37 @@ secrets:
   #   helm install aegis . \
   #     --set secrets.adminSecret=$(openssl rand -hex 32) \
   #     --set secrets.redisPassword=$(openssl rand -hex 24) \
-  #     --set secrets.jwtSecret=$(openssl rand -hex 32)
+  #     --set secrets.jwtSecret=$(openssl rand -hex 32) \
+  #     --set secrets.forensicDsn="postgres://user:pass@pg-host:5432/aegis?sslmode=require"
   adminSecret: ""
   redisPassword: ""
   jwtSecret: ""
+  # forensicDsn is the ONLY supported way to set a credential-bearing Postgres
+  # DSN — NEVER put a real value in gateway.forensic_dsn below; the ConfigMap
+  # template force-blanks that field, so a value set there is silently
+  # dropped at render time rather than reaching the gateway at all.
+  forensicDsn: ""
+  # propagationSecret is the HMAC key for X-Gateway-Signature (internal/config's
+  # AEGIS_PROPAGATION_SECRET). Falls back to jwtSecret when unset — see
+  # security.auth.propagation_secret in internal/config/config.go — so it's
+  # optional for a single-gateway deployment but should be set explicitly once
+  # backends verify the signature independently of the JWT secret.
+  propagationSecret: ""
+  # sentinelPassword authenticates to Redis Sentinel when redis.sentinel is in
+  # use (AEGIS_REDIS_SENTINEL_PASSWORD). Leave empty for a standalone Redis
+  # (the default — see the redis sub-chart below).
+  sentinelPassword: ""
+  # oidcClientId / oidcClientSecret configure OIDC/SSO console login
+  # (AEGIS_OIDC_CLIENT_ID / AEGIS_OIDC_CLIENT_SECRET, security.oidc.enabled).
+  # Both empty (the default) means OIDC login is not configured — the
+  # bootstrap secret / per-tenant password login paths still work.
+  oidcClientId: ""
+  oidcClientSecret: ""
+  # alertWebhookUrl is the HTTPS endpoint alerts are POSTed to
+  # (AEGIS_ALERT_WEBHOOK_URL). Routed through the Secret (not the ConfigMap)
+  # because a Slack/Teams/etc. webhook URL carries its own bearer token in the
+  # URL itself. Empty disables alerting.
+  alertWebhookUrl: ""
 
 # Gateway configuration (injected as ConfigMap — no secrets here)
 gateway:
@@ -77,10 +107,26 @@ gateway:
   admin_listen: ":8081"
   admin_auth: true
   admin_secret: ""   # populated at runtime via AEGIS_ADMIN_SECRET env var
-  forensic_dsn: ""  # e.g., "postgres://user:pass@pg-host:5432/aegis?sslmode=require"
+  # Always "" here — populated at runtime via AEGIS_FORENSIC_DSN (see
+  # secrets.forensicDsn above). The ConfigMap template force-blanks this
+  # field regardless of what's set here, so setting a real value in this
+  # file directly would have no effect except leaking it into a plaintext
+  # ConfigMap; use secrets.forensicDsn instead.
+  forensic_dsn: ""
+  # Path to a signed license file (internal/license, cmd/licensegen) — see
+  # docs/licensing.md. Always "" here for the same reason as forensic_dsn
+  # above (force-blanked by the ConfigMap template regardless); populate via
+  # AEGIS_LICENSE_PATH. NOTE: this chart does not yet provide a mechanism to
+  # mount a .lic file into the pod (no volume/Secret wiring for it) — that is
+  # a deployment-capability gap to close separately, not a leak, since the
+  # field stays correctly blanked either way.
+  license_path: ""
 
   redis:
     addr: "aegis-redis:6379"
+    # Always "" here — populated at runtime via AEGIS_REDIS_PASSWORD (see
+    # secrets.redisPassword above); same force-blanked-in-ConfigMap treatment
+    # as forensic_dsn.
     password: ""
     db: 0
 
@@ -89,10 +135,17 @@ gateway:
       enabled: true
       requests: 100
       window: 60s
-      burst_limit: 20
     waf:
       enabled: true
       block_mode: true
+      # The built-in starter ruleset (use_crs: false) is dev/demo-grade —
+      # simple signature regexes, evadable by any competent attacker. These
+      # are "Enterprise Defaults": use the full OWASP Core Rule Set.
+      # Roll out with block_mode: false first if this is a first deployment,
+      # tune false positives (paranoia_level/anomaly_threshold), then enforce.
+      use_crs: true
+      paranoia_level: 1
+      anomaly_threshold: 5
     bot:
       enabled: true
     behavior:
@@ -140,6 +193,29 @@ redis:
     limits:
       cpu: 200m
       memory: 128Mi
+
+# Restrict which pods can reach the admin plane at the network layer, on top
+# of the Service-type restriction above (ClusterIP alone doesn't stop another
+# pod anywhere in a flat cluster network from reaching it). Disabled by
+# default because it requires a CNI that enforces NetworkPolicy (Calico,
+# Cilium, etc.) — enable once you know your cluster supports it.
+networkPolicy:
+  enabled: false
+  # Pods allowed to reach the admin Service (port 8081), scoped by label
+  # within the SAME namespace as the release. WARNING: an empty podSelector
+  # ({}) in a Kubernetes NetworkPolicy `from` clause matches ALL pods in the
+  # namespace, not none — leaving both this and namespaceSelector unset when
+  # networkPolicy.enabled is true is a fail-closed error at render time (see
+  # networkpolicy.yaml), not a safe default. Set a real label, e.g.:
+  #   podSelector:
+  #     matchLabels:
+  #       aegis-admin-client: "true"
+  # (and label your operator/bastion/CI pods with it). Combine with
+  # namespaceSelector below to also allow another namespace (e.g. an
+  # operator/bastion namespace running kubectl port-forward or a VPN gateway).
+  adminIngress:
+    podSelector: {}
+    # namespaceSelector: {}
 
 # Pod disruption budget for HA
 podDisruptionBudget:

@@ -31,6 +31,7 @@ func (h *handlers) getAudit(w http.ResponseWriter, r *http.Request) {
 	// A super-admin can request the cross-tenant view explicitly.
 	if iam.IsSuperAdmin(r.Context()) && r.URL.Query().Get("all") == "true" {
 		f.TenantID = "*"
+		h.auditCrossTenantRead(r, "cross_tenant_audit_read", "*")
 	}
 
 	entries, err := h.audit.List(r.Context(), f)

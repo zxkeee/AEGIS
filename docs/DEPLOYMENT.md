@@ -57,6 +57,13 @@ docker push your-registry/aegis:2.1.0
 
 Создайте файл `values-prod.yaml`:
 
+**Важно про секреты**: `admin_secret`, `forensic_dsn` и остальные `AEGIS_*`-driven
+поля (полный список — в `charts/aegis/values.yaml`, блок `secrets:`) НИКОГДА не
+задаются напрямую в `gateway:` — ConfigMap-темплейт принудительно затирает эти
+поля пустой строкой при рендере именно для того, чтобы их нельзя было
+случайно закоммитить в открытом виде. Реальное значение передаётся только
+через `secrets.*` (Kubernetes Secret), см. ниже.
+
 ```yaml
 # Образ
 image:
@@ -76,38 +83,32 @@ resources:
     memory: "512Mi"
     cpu: "1000m"
 
-# Persistent Volume для логов (опционально)
-persistence:
-  enabled: true
-  size: "10Gi"
-  storageClass: "fast-ssd"
+# Секреты (admin_secret/redis-password обязательны; остальные опциональны —
+# см. charts/aegis/values.yaml для полного списка). НЕ указывайте реальные
+# значения здесь — передавайте через --set/CI secret injection при install,
+# либо укажите secrets.existingSecret с именем заранее созданного Secret.
+secrets:
+  existingSecret: ""
+  # adminSecret: передаётся через --set secrets.adminSecret=... при install,
+  # не хранится в этом файле
+  # redisPassword: аналогично
 
-# ConfigMap с конфигурацией
-config:
+# ConfigMap с конфигурацией (никаких секретов — см. предупреждение выше)
+gateway:
   listen: ":8080"
   admin_listen: ":8081"
   admin_auth: true
-  admin_secret: "your-super-secret-admin-key"
   redis:
     addr: "redis-cluster:6379"  # Redis Cluster
-  forensic_dsn: "postgres://aegis:password@postgres:5432/aegis?sslmode=require"
 
-# Security Policy
-securityPolicy:
-  enabled: true
-  runAsNonRoot: true
-  runAsUser: 1000
-  fsReadOnlyRootFilesystem: true
-  allowPrivilegeEscalation: false
-
-# Network Policy
+# Network Policy — ограничивает, кто может достучаться до admin-плейна
+# (порт 8081); публичный gateway-плейн (порт 8080) отдельным Service.
 networkPolicy:
   enabled: true
-  ingress:
-    - from:
-      - namespaceSelector:
-          matchLabels:
-            name: ingress
+  adminIngress:
+    namespaceSelector:
+      matchLabels:
+        name: ingress
 ```
 
 #### 1.3 Развертывание через Helm
@@ -116,9 +117,12 @@ networkPolicy:
 # Создайте namespace
 kubectl create namespace security
 
-# Установите AEGIS
+# Установите AEGIS, передав секреты отдельно от values-файла
 helm install aegis-gateway ./charts/aegis \
   -f values-prod.yaml \
+  --set secrets.adminSecret=$(openssl rand -hex 32) \
+  --set secrets.redisPassword=$(openssl rand -hex 24) \
+  --set secrets.forensicDsn="postgres://aegis:REPLACE_ME@postgres:5432/aegis?sslmode=require" \
   -n security
 
 # Проверьте статус

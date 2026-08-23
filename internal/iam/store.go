@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/lib/pq" // PostgreSQL driver
+	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -89,7 +89,7 @@ type Store struct {
 // ready-to-use store. The DSN is shared with the forensic / catalog DB on
 // purpose: one database, one operational footprint.
 func NewStore(dsn string, log Logger) (*Store, error) {
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("iam: pg connect: %w", err)
 	}

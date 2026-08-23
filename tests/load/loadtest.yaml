@@ -40,7 +40,6 @@ security:
     enabled: true             # Redis in the hot path, but cap is high so load passes
     requests: 1000000
     window: 60s
-    burst_limit: 1000000
   waf:
     enabled: true
     block_mode: true
