@@ -20,7 +20,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -125,5 +124,5 @@ func lastIDSegment(p string) int {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	b, _ := json.Marshal(v)
-	fmt.Fprint(w, string(b))
+	_, _ = w.Write(b) // a broken client connection is not this stand's problem
 }

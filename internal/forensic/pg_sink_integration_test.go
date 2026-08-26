@@ -209,6 +209,26 @@ func TestPGSink_QueryLogsEmptyTenantDefaultsToDefault(t *testing.T) {
 	}
 }
 
+// skipIfRLSBypassed skips when the connected PostgreSQL role bypasses
+// Row-Level Security (a superuser, or one with BYPASSRLS). RLS never engages
+// for such a role, so a fail-closed assertion cannot hold — CI's postgres
+// service runs as the `postgres` superuser, while a production or home-server
+// app role is non-privileged and does enforce it. Same guard, and the same
+// reasoning, as internal/discovery/store_pg_rls_test.go; duplicated rather
+// than shared because both live in _test files of different packages.
+func skipIfRLSBypassed(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var bypass bool
+	if err := db.QueryRow(
+		`SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user`,
+	).Scan(&bypass); err != nil {
+		t.Fatalf("role capability check: %v", err)
+	}
+	if bypass {
+		t.Skip("connected role bypasses RLS (superuser/BYPASSRLS); RLS is validated with a non-privileged app role")
+	}
+}
+
 // TestPGSink_RLSFailsClosedWithoutGUC mirrors the fail-closed RLS backstop
 // already proven for the catalog tables (store_pg_rls_test.go): a query that
 // never sets app.tenant_id must see zero rows, not every tenant's data.
@@ -226,6 +246,7 @@ func TestPGSink_RLSFailsClosedWithoutGUC(t *testing.T) {
 		t.Fatalf("open raw db: %v", err)
 	}
 	defer func() { _ = raw.Close() }()
+	skipIfRLSBypassed(t, raw)
 	var count int
 	if err := raw.QueryRow(`SELECT count(*) FROM forensic_logs`).Scan(&count); err != nil {
 		t.Fatalf("unscoped count: %v", err)
