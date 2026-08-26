@@ -81,3 +81,6 @@ Thumbs.db
 web/pilot-requests.jsonl
 web/v3/node_modules/
 web/v3/dist/
+
+# Raw exports from the sample-report generator (regenerate with generate.sh)
+demo/sample-report/out/

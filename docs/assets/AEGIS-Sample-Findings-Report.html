@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>AEGIS — Sample Findings Report</title>
+<style>
+@page { size: A4; margin: 18mm 16mm; }
+* { box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+       color: #16181d; font-size: 10.5pt; line-height: 1.5; }
+h1 { font-size: 21pt; margin: 0 0 2mm; letter-spacing: -0.02em; }
+h2 { font-size: 13pt; margin: 9mm 0 3mm; padding-bottom: 1.5mm;
+      border-bottom: 1.5px solid #16181d; letter-spacing: -0.01em; }
+h3 { font-size: 11pt; margin: 5mm 0 1.5mm; }
+p  { margin: 0 0 2.5mm; }
+.sub { color: #5b6270; font-size: 10pt; margin-bottom: 6mm; }
+.tag { display:inline-block; font-size:8pt; font-weight:700; letter-spacing:.06em;
+        text-transform:uppercase; padding:1mm 2mm; border-radius:2px; }
+.tag.crit { background:#fdeaea; color:#a01818; }
+.tag.warn { background:#fdf4e3; color:#8a5a00; }
+.tag.ok   { background:#e9f6ec; color:#1d6b32; }
+.kpis { display:flex; gap:3mm; margin:5mm 0 2mm; }
+.kpi { flex:1; border:1px solid #d9dde5; border-radius:4px; padding:3mm; }
+.kpi .n { font-size:19pt; font-weight:700; line-height:1.1; }
+.kpi .l { font-size:8.5pt; color:#5b6270; text-transform:uppercase; letter-spacing:.05em; margin-top:1mm; }
+.kpi.bad .n { color:#a01818; }
+table { width:100%; border-collapse:collapse; margin:3mm 0; font-size:9.5pt; }
+th { text-align:left; font-size:8pt; text-transform:uppercase; letter-spacing:.05em;
+      color:#5b6270; border-bottom:1px solid #c9cfd9; padding:2mm 2mm 1.5mm 0; }
+td { padding:2mm 2mm 2mm 0; border-bottom:1px solid #eceff4; vertical-align:top; }
+code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:9pt; background:#f4f6f9;
+        padding:0.3mm 1mm; border-radius:2px; }
+.finding { border:1px solid #d9dde5; border-left:3px solid #a01818; border-radius:3px;
+            padding:3mm 3.5mm; margin:3mm 0; }
+.finding .hd { display:flex; justify-content:space-between; align-items:baseline; gap:3mm; }
+.finding .ttl { font-weight:700; font-size:10.5pt; }
+.finding .ev { color:#3d4450; margin-top:1.5mm; }
+.note { background:#f4f6f9; border-radius:3px; padding:3mm 3.5mm; font-size:9.5pt; color:#3d4450; }
+.foot { margin-top:8mm; padding-top:2.5mm; border-top:1px solid #d9dde5;
+         font-size:8.5pt; color:#767d8a; }
+</style></head><body>
+<div class="tag warn">Sample — fictional data</div>
+<h1>API Security Findings Report</h1>
+<p class="sub">Northwind Payments (fictional) · passive assessment · produced by AEGIS from live traffic</p>
+<h2>What we found</h2>
+<div class="kpis">
+  <div class="kpi bad"><div class="n">2</div><div class="l">Critical findings</div></div>
+  <div class="kpi bad"><div class="n">4</div><div class="l">Confirmed data leaks</div></div>
+  <div class="kpi"><div class="n">6</div><div class="l">APIs discovered</div></div>
+  <div class="kpi"><div class="n">16%</div><div class="l">Protection coverage</div></div>
+</div>
+<p>AEGIS ran in front of the API in passive mode: it inspected and recorded, and
+blocked nothing. In that window it discovered <strong>6 live endpoints</strong>,
+of which <strong>3 enforce no authentication, rate limiting or firewall at all</strong>.
+Two of those unprotected endpoints return customer payment-card and email data to
+callers presenting no credential whatsoever.</p>
+<p>Separately, the gateway observed <strong>4 confirmed cases</strong> of one
+authenticated user reading another user's records — not inferred from volume, but
+confirmed by comparing the owner id in each response body against the caller's
+verified identity. This is the class of flaw a signature firewall cannot detect,
+because the requests are syntactically perfect.</p>
+<h2>Critical findings</h2>
+<div class="finding">
+  <div class="hd"><span class="ttl">Sensitive data exposed to unauthenticated callers</span>
+    <span class="tag crit">critical · API3:2023</span></div>
+  <div class="ev"><code>GET /api/v1/customers/{id}</code>
+     — risk score 75</div>
+  <div class="ev">endpoint returned PCI/PII (credit_card, email) on 6 response(s) while 6 request(s) arrived without authentication</div>
+</div>
+<div class="finding">
+  <div class="hd"><span class="ttl">Sensitive data exposed to unauthenticated callers</span>
+    <span class="tag crit">critical · API3:2023</span></div>
+  <div class="ev"><code>GET /internal/reports/export</code>
+     — risk score 75</div>
+  <div class="ev">endpoint returned PCI/PII (credit_card, email) on 2 response(s) while 2 request(s) arrived without authentication</div>
+</div>
+<div class="finding">
+  <div class="hd"><span class="ttl">Broken object level authorization (IDOR) — confirmed</span>
+    <span class="tag crit">critical · API1:2023</span></div>
+  <div class="ev"><code>GET /api/v1/orders/{id}</code>
+     — 4 distinct objects read by a caller who does not own them</div>
+  <div class="ev">consumer &#x27;bob.kessler@example.com&#x27; GET object &#x27;1005&#x27; (/api/v1/orders/{id}) owned by &#x27;12&#x27; (from response body) — confirmed IDOR (BOLA)</div>
+</div>
+<div class="finding">
+  <div class="hd"><span class="ttl">Object enumeration by a single consumer</span>
+    <span class="tag crit">critical · API1:2023</span></div>
+  <div class="ev">consumer &#x27;bob.kessler@example.com&#x27; accessed 5 distinct object IDs on &#x27;GET /api/v1/orders/{id}&#x27; (hard ceiling 4)</div>
+</div>
+<h2>API inventory and protection posture</h2>
+<p>Every endpoint below was discovered from traffic — nothing was declared in advance. <em>Unprotected</em> means none of authentication, rate limiting or firewall applies to it.</p>
+<table><tr><th>Endpoint</th><th>Posture</th><th>Requests</th><th>Anonymous</th><th>Responses with PII</th><th>Risk</th></tr>
+<tr><td><code>GET /api/v1/customers/{id}</code></td>
+<td><span class="tag crit">unprotected</span></td><td>6</td>
+<td>6</td><td>6</td>
+<td>75</td></tr>
+<tr><td><code>GET /internal/reports/export</code></td>
+<td><span class="tag crit">unprotected</span></td><td>2</td>
+<td>2</td><td>2</td>
+<td>75</td></tr>
+<tr><td><code>GET /health</code></td>
+<td><span class="tag crit">unprotected</span></td><td>2</td>
+<td>2</td><td>0</td>
+<td>50</td></tr>
+<tr><td><code>GET /api/v1/invoices/{id}</code></td>
+<td><span class="tag warn">partial</span></td><td>4</td>
+<td>0</td><td>0</td>
+<td>25</td></tr>
+<tr><td><code>GET /api/v1/orders/{id}</code></td>
+<td><span class="tag warn">partial</span></td><td>9</td>
+<td>0</td><td>9</td>
+<td>20</td></tr>
+<tr><td><code>POST /api/v1/payments</code></td>
+<td><span class="tag ok">protected</span></td><td>5</td>
+<td>0</td><td>0</td>
+<td>0</td></tr>
+</table>
+<h2>Who is calling what</h2>
+<p>Consumer identity is taken from the verified JWT where one is present, and falls back to source address where none is.</p>
+<table><tr><th>Consumer</th><th>Identified by</th><th>Requests</th><th>Endpoints touched</th></tr>
+<tr><td><code>alice.renner@example.com</code></td><td>verified token</td>
+<td>11</td><td>3</td></tr>
+<tr><td><code>127.0.0.1</code></td><td>source address (no credential)</td>
+<td>10</td><td>3</td></tr>
+<tr><td><code>bob.kessler@example.com</code></td><td>verified token</td>
+<td>7</td><td>1</td></tr>
+</table>
+<h2>Regulatory mapping</h2>
+<p>The findings above map onto 6 controls across OWASP API Top 10, NIS2 and ISO/IEC 27001:2022. This is a mapping aid for an audit conversation, not a certification.</p>
+<table><tr><th>Framework</th><th>Control</th><th>Title</th><th>Severity</th><th>Issues</th></tr>
+<tr><td>OWASP API Top 10</td><td><code>API1:2023</code></td>
+<td>Broken Object Level Authorization</td><td><span class="tag crit">critical</span></td>
+<td>2</td></tr>
+<tr><td>OWASP API Top 10</td><td><code>API3:2023</code></td>
+<td>Excessive data exposure</td><td><span class="tag crit">critical</span></td>
+<td>2</td></tr>
+<tr><td>NIS2</td><td><code>Art. 21(2)(h)</code></td>
+<td>Cryptography and encryption of data</td><td><span class="tag crit">critical</span></td>
+<td>2</td></tr>
+<tr><td>NIS2</td><td><code>Art. 21(2)(i)</code></td>
+<td>Access control policies</td><td><span class="tag crit">critical</span></td>
+<td>2</td></tr>
+<tr><td>ISO 27001:2022</td><td><code>A.5.34</code></td>
+<td>Privacy and protection of PII</td><td><span class="tag crit">critical</span></td>
+<td>2</td></tr>
+<tr><td>ISO 27001:2022</td><td><code>A.8.3</code></td>
+<td>Information access restriction</td><td><span class="tag crit">critical</span></td>
+<td>2</td></tr>
+</table>
+<h2>How this report was produced</h2>
+<div class="note">
+<p><strong>This is a sample.</strong> The API behind it — "Northwind Payments" — is
+fictional and deliberately flawed, and the customer records in it are synthetic
+(reserved <code>example.com</code> addresses and standard test card numbers). No real
+company's data appears anywhere in this document.</p>
+<p><strong>The findings themselves are not mocked up.</strong> A real AEGIS instance ran in
+front of that API, ordinary traffic was driven through it, and every number, endpoint,
+consumer and finding above was exported from what the gateway actually observed. The
+generator is committed at <code>demo/sample-report/</code> and reproduces this document
+end to end.</p>
+<p><strong>On a real engagement</strong> the same output describes your estate instead: AEGIS
+is deployed in passive mode, blocks nothing, and after roughly a week hands back this
+report. The deployment carries no production risk — no request is modified, no response
+is altered, and no control fails closed.</p>
+</div>
+<div class="foot">AEGIS — inline API security gateway · sample artifact, fictional data · aegis.34host.org</div>
+</body></html>

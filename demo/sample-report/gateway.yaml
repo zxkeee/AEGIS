@@ -1,0 +1,104 @@
+# AEGIS — config for the sample-report stand (demo/sample-report/generate.sh).
+#
+# Fronts the deliberately flawed "Northwind Payments" backend. The per-route
+# control mix is intentionally uneven, because that unevenness is exactly what a
+# real estate looks like and what the posture report is meant to surface:
+#
+#   /api/v1/payments   auth + WAF + rate-limit  -> protected
+#   /api/v1/orders     auth + WAF               -> partial
+#   /api/v1/invoices   auth                     -> partial
+#   /api/v1/customers  none (the bug)           -> unprotected, and it serves PII
+#   /internal          none (the bug)           -> unprotected, and it dumps PII
+#
+# Secrets come from the environment: AEGIS_ADMIN_SECRET, AEGIS_REDIS_PASSWORD,
+# AEGIS_JWT_SECRET, AEGIS_LICENSE_PATH. Plaintext HTTP on purpose (local stand).
+# NEVER use these settings in production.
+
+listen: ":19080"
+admin_listen: ":19081"
+admin_auth: true
+admin_cookie_insecure: true
+require_tls: false
+trusted_proxies: []
+
+tls:
+  enabled: false
+
+redis:
+  addr: "127.0.0.1:16399"
+
+forensic_dsn: ""   # set by generate.sh (AEGIS_FORENSIC_DSN) — catalog + findings live here
+
+logging:
+  level: "warn"
+  format: "json"
+
+discovery: {}
+
+security:
+  auth:
+    enabled: true
+    identity_claim: "uid"     # the caller's real owner id is the uid claim, not the email subject
+    exclude:
+      - "/health"
+
+  waf:
+    enabled: true
+    block_mode: false          # detection-only: the report is about exposure, not blocking
+
+  rate_limit:
+    enabled: false             # switched on per-route below, so posture varies realistically
+
+  dlp:
+    enabled: true              # classifies PII/PCI in responses -> feeds the data-exposure findings
+
+  api_inventory:
+    enabled: true              # passive catalog
+
+  abuse:
+    enabled: true
+    block_mode: false          # detect-only: we want the finding recorded, not the request blocked
+    object_ownership: true     # single-object IDOR detection
+    owner_fields: ["user_id"]  # confirm the object's true owner from the response body
+    enum_threshold: 4          # low, so a short demo sweep registers as enumeration
+    window: 5m
+
+routes:
+  # Fully protected: auth + WAF + rate limit.
+  - path: "/api/v1/payments"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: true
+    waf: true
+    rate_limit:
+      enabled: true
+      requests: 100
+      window: 60s
+
+  # Partial: auth + WAF, no rate limit.
+  - path: "/api/v1/orders/"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: true
+    waf: true
+
+  # Partial: auth only.
+  - path: "/api/v1/invoices/"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: true
+    waf: false
+
+  # THE BUG: serves customer PII, requires nothing.
+  - path: "/api/v1/customers/"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: false
+    waf: false
+
+  # THE BUG: bulk PII export on an "internal" path that is in fact reachable.
+  - path: "/internal/"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: false
+    waf: false
+
+  - path: "/health"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: false
+    waf: false
