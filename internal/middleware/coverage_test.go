@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -245,6 +246,155 @@ func TestDiscovery_Skips404(t *testing.T) {
 	runDiscovery(config.APIInventoryConfig{Enabled: true}, cat, http.StatusNotFound)
 	if len(cat.obs) != 0 {
 		t.Fatalf("404 must not be recorded; got %d observations", len(cat.obs))
+	}
+}
+
+// runDiscoveryRequest is runDiscovery's more general form: lets a test drive
+// an arbitrary method/path/body through Discovery, for the GraphQL-path tests
+// below (runDiscovery itself is fixed to a plain GET with no body).
+func runDiscoveryRequest(cfg config.APIInventoryConfig, cat Catalog, method, path, body string) *httptest.ResponseRecorder {
+	_ = InitTrustedProxies(nil)
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	h := Discovery(cfg, cat, fakeLogger{})(next)
+	var r *http.Request
+	if body != "" {
+		r = httptest.NewRequest(method, path, strings.NewReader(body))
+	} else {
+		r = httptest.NewRequest(method, path, nil)
+	}
+	r.RemoteAddr = "1.2.3.4:5555"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
+func TestDiscovery_GraphQLNamedOperationGetsOwnCatalogEntry(t *testing.T) {
+	cat := &fakeCatalog{}
+	cfg := config.APIInventoryConfig{Enabled: true, GraphQLPath: "/graphql"}
+	body := `{"query":"query GetUser { user(id: 42) { id name } }"}`
+	runDiscoveryRequest(cfg, cat, http.MethodPost, "/graphql", body)
+
+	if len(cat.obs) != 1 {
+		t.Fatalf("observations = %d, want 1", len(cat.obs))
+	}
+	want := "/graphql/query/GetUser"
+	if cat.obs[0].Path != want {
+		t.Fatalf("Path = %q, want %q", cat.obs[0].Path, want)
+	}
+}
+
+func TestDiscovery_GraphQLDifferentOperationsGetDifferentEntries(t *testing.T) {
+	cat := &fakeCatalog{}
+	cfg := config.APIInventoryConfig{Enabled: true, GraphQLPath: "/graphql"}
+	runDiscoveryRequest(cfg, cat, http.MethodPost, "/graphql", `{"query":"query GetUser { user(id: 1) { id } }"}`)
+	runDiscoveryRequest(cfg, cat, http.MethodPost, "/graphql", `{"query":"mutation CreateOrder { createOrder(item: \"x\") { id } }"}`)
+
+	if len(cat.obs) != 2 {
+		t.Fatalf("observations = %d, want 2", len(cat.obs))
+	}
+	if cat.obs[0].Path == cat.obs[1].Path {
+		t.Fatalf("two different GraphQL operations must not collapse to the same catalog path, both got %q", cat.obs[0].Path)
+	}
+}
+
+func TestDiscovery_GraphQLAnonymousOperation(t *testing.T) {
+	cat := &fakeCatalog{}
+	cfg := config.APIInventoryConfig{Enabled: true, GraphQLPath: "/graphql"}
+	runDiscoveryRequest(cfg, cat, http.MethodPost, "/graphql", `{"query":"{ me { id } }"}`)
+
+	want := "/graphql/query/anonymous"
+	if cat.obs[0].Path != want {
+		t.Fatalf("Path = %q, want %q", cat.obs[0].Path, want)
+	}
+}
+
+func TestDiscovery_GraphQLMalformedBodyFallsBackToPlainPath(t *testing.T) {
+	cat := &fakeCatalog{}
+	cfg := config.APIInventoryConfig{Enabled: true, GraphQLPath: "/graphql"}
+	// Not valid GraphQL at all (e.g. a REST-style JSON payload posted to the
+	// same path) — must not break the request or the catalog entry.
+	runDiscoveryRequest(cfg, cat, http.MethodPost, "/graphql", `{"foo":"bar"}`)
+
+	if len(cat.obs) != 1 {
+		t.Fatalf("observations = %d, want 1", len(cat.obs))
+	}
+	if cat.obs[0].Path != "/graphql" {
+		t.Fatalf("Path = %q, want plain /graphql fallback", cat.obs[0].Path)
+	}
+}
+
+func TestDiscovery_GraphQLPathUnsetDoesNotParseBody(t *testing.T) {
+	// GraphQLPath empty (default) — behavior must be byte-for-byte identical
+	// to before this feature existed, even for a request that happens to look
+	// like GraphQL.
+	cat := &fakeCatalog{}
+	cfg := config.APIInventoryConfig{Enabled: true} // GraphQLPath: ""
+	runDiscoveryRequest(cfg, cat, http.MethodPost, "/graphql", `{"query":"query GetUser { user(id: 1) { id } }"}`)
+
+	if cat.obs[0].Path != "/graphql" {
+		t.Fatalf("Path = %q, want raw /graphql (GraphQL parsing must be opt-in)", cat.obs[0].Path)
+	}
+}
+
+func TestDiscovery_GraphQLBodyStillReachesUpstream(t *testing.T) {
+	// Regression guard: peeking the body for GraphQL parsing must not consume
+	// it — the proxied backend still needs the exact original bytes.
+	_ = InitTrustedProxies(nil)
+	cfg := config.APIInventoryConfig{Enabled: true, GraphQLPath: "/graphql"}
+	body := `{"query":"query GetUser { user(id: 1) { id } }"}`
+	var gotBody string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+	})
+	h := Discovery(cfg, &fakeCatalog{}, fakeLogger{})(next)
+	r := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
+	r.RemoteAddr = "1.2.3.4:5555"
+	h.ServeHTTP(httptest.NewRecorder(), r)
+
+	if gotBody != body {
+		t.Fatalf("upstream body = %q, want %q (body must survive the GraphQL peek)", gotBody, body)
+	}
+}
+
+// TestDiscovery_GraphQLOperationGetsPIIAttribution proves the ROADMAP.md B5
+// "DLP is not GraphQL-field-aware" gap is narrower than documented: DLP
+// enriches the SAME *discovery.Observation Discovery seeds into the request
+// context (observationFrom), and Discovery already resolves a per-operation
+// path for GraphQL before DLP ever runs (Discovery wraps DLP in the real
+// chain — see chain.go's ordering comment). So a PII finding on a GraphQL
+// response lands on the correct per-operation catalog entry today, with no
+// GraphQL-specific code in DLP at all.
+func TestDiscovery_GraphQLOperationGetsPIIAttribution(t *testing.T) {
+	cat := &fakeCatalog{}
+	discCfg := config.APIInventoryConfig{Enabled: true, GraphQLPath: "/graphql"}
+	dlpCfg := config.DLPConfig{Enabled: true}
+
+	_ = InitTrustedProxies(nil)
+	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// A credit-card-shaped value in the body — DLP's default classifiers
+		// detect this by content, independent of GraphQL/REST.
+		_, _ = w.Write([]byte(`{"data":{"user":{"card":"4111111111111111"}}}`))
+	})
+	// Discovery wraps DLP, matching the real chain's ordering.
+	h := Discovery(discCfg, cat, fakeLogger{})(DLP(dlpCfg, fakeLogger{}, &fakeStore{})(backend))
+
+	r := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"query GetUser { user(id: 1) { card } }"}`))
+	r.RemoteAddr = "1.2.3.4:1"
+	h.ServeHTTP(httptest.NewRecorder(), r)
+
+	if len(cat.obs) != 1 {
+		t.Fatalf("observations = %d, want 1", len(cat.obs))
+	}
+	obs := cat.obs[0]
+	if obs.Path != "/graphql/query/GetUser" {
+		t.Fatalf("Path = %q, want the per-operation path", obs.Path)
+	}
+	if !obs.PII {
+		t.Fatal("expected the PII finding to be attached to this GraphQL operation's observation")
 	}
 }
 

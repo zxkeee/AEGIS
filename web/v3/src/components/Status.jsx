@@ -2,6 +2,7 @@ import { Reveal, SectionHeader, Badge, TextLink } from '../lib/ui.jsx'
 
 const DONE = [
   ['The full control chain', 'WAF, DLP, JWT identity, BOLA detection, passive discovery, multi-tenancy.'],
+  ['GraphQL coverage', 'BOLA, discovery, and PII detection cover GraphQL operations, not just REST paths.'],
   ['Schema enforcement', 'Rejects undocumented body fields against your OpenAPI contract — closes mass assignment.'],
   ['Adversarial testing', 'WAF-evasion fuzzing and dynamic scans against a running instance.'],
   ['Fails safe by design', 'Every control has a documented fail-open or fail-closed choice.'],

@@ -21,6 +21,7 @@ func TestChainOrder(t *testing.T) {
 	want := []string{
 		"TenantResolve",
 		"CleanHeaders",
+		"LicenseRateLimit",
 		"UpstreamFingerprint",
 		"TLSFingerprint",
 		"SecurityHeaders",

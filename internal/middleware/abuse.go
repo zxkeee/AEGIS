@@ -13,6 +13,7 @@ import (
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
+	"api-gateway/internal/gql"
 	"api-gateway/internal/secevent"
 )
 
@@ -28,7 +29,17 @@ import (
 // propagated by the JWT middleware, so it must run AFTER authentication. In the
 // default detect-only mode it records events without disrupting traffic; in
 // block mode it denies the offending request.
-func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middleware {
+//
+// graphQLPath, when set, is the same path configured for the Discovery
+// middleware (security.api_inventory.graphql_path) — one setting shared by
+// both, so an operator doesn't declare "where GraphQL lives" twice. A POST to
+// this path has its body parsed as a GraphQL operation (internal/gql), and
+// id-shaped arguments on its top-level fields (e.g. `id: 42` in
+// `user(id: 42) { ... }`) become BOLA candidates the same way a path segment,
+// query parameter, or JSON body field already do — see ROADMAP.md B5. Empty
+// (default) disables this: zero behavior change for a gateway that doesn't
+// front GraphQL.
+func AbuseDetection(cfg config.AbuseConfig, graphQLPath string, log Logger, st abuseStore) Middleware {
 	if !cfg.Enabled {
 		return passthrough
 	}
@@ -124,7 +135,7 @@ func AbuseDetection(cfg config.AbuseConfig, log Logger, st abuseStore) Middlewar
 			// (/orders/{id}) and query-string IDs (?order_id={id}): the latter used
 			// to be a complete blind spot, since the value never appears in the path
 			// template extractObjectIDs looks at.
-			candidates := bolaTargets(r.Method, r.URL.Path, r.URL.Query(), bodyObjectIDs(r))
+			candidates := bolaTargets(r.Method, r.URL.Path, r.URL.Query(), bodyObjectIDs(r), peekGraphQLOperation(r, graphQLPath))
 
 			blocked := false
 			for _, cand := range candidates {
@@ -567,7 +578,7 @@ type bolaCandidate struct {
 //
 // False positives across all targets are bounded by enum_threshold (default
 // 50), the per-consumer adaptive baseline, and the allowlist.
-func bolaTargets(method, rawPath string, query url.Values, bodyIDs map[string][]string) []bolaCandidate {
+func bolaTargets(method, rawPath string, query url.Values, bodyIDs map[string][]string, gqlOp *gql.Operation) []bolaCandidate {
 	var out []bolaCandidate
 
 	tmpl := discovery.NormalizePath(rawPath)
@@ -612,7 +623,57 @@ func bolaTargets(method, rawPath string, query url.Values, bodyIDs map[string][]
 		out = append(out, bolaCandidate{endpoint: method + " " + bScope, scope: bScope, ids: ids})
 	}
 
+	// GraphQL case (ROADMAP.md B5): the URL path is always the same
+	// "/graphql"-shaped tmpl no matter which operation ran, so the object-ID
+	// key has to come from the operation itself, not the path. Scoped by
+	// operation (CatalogKey: "query.GetUser") AND field name, not just field
+	// name alone — two unrelated operations that both happen to have a field
+	// called "user" must not share one enumeration counter or one owner
+	// binding just because the argument name coincides.
+	if gqlOp != nil {
+		opKey := gqlOp.CatalogKey()
+		for _, f := range gqlOp.TopFields {
+			var ids []string
+			for argName, val := range f.Args {
+				if !looksLikeIDField(argName) {
+					continue
+				}
+				ids = append(ids, idShapedValues(val)...)
+			}
+			if len(ids) == 0 {
+				continue
+			}
+			gScope := tmpl + ":gql." + opKey + "." + f.Name
+			out = append(out, bolaCandidate{endpoint: method + " " + gScope, scope: gScope, ids: ids})
+		}
+	}
+
 	return out
+}
+
+// peekGraphQLOperation parses r's body as a GraphQL operation when r targets
+// graphQLPath, restoring the body afterward either way (the proxy still
+// needs the exact original bytes). Returns nil — not an error, silently —
+// for anything that isn't a clean single-operation GraphQL request: wrong
+// path/method, no body, oversized body, or a parse failure. BOLA detection is
+// best-effort on top of passive parsing; a miss here must fall back to
+// "no GraphQL candidates this request," never block or alter it.
+func peekGraphQLOperation(r *http.Request, graphQLPath string) *gql.Operation {
+	if graphQLPath == "" || r.URL.Path != graphQLPath || r.Method != http.MethodPost || r.Body == nil {
+		return nil
+	}
+	buf, tooBig, rest := readBounded(r.Body, bodyIDCap)
+	if tooBig {
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), rest))
+		return nil
+	}
+	r.Body = io.NopCloser(bytes.NewReader(buf))
+
+	op, err := gql.Parse(buf)
+	if err != nil {
+		return nil
+	}
+	return op
 }
 
 // bodyIDCap bounds how much of a JSON request body is buffered for BOLA
@@ -707,6 +768,14 @@ func idShapedValues(v any) []string {
 		}
 	case json.Number:
 		if s := t.String(); looksLikeObjectID(s) {
+			return []string{s}
+		}
+	case int64:
+		// GraphQL integer arguments (internal/gql, via ast.Value.Value) come
+		// through as plain int64, not json.Number — bodyObjectIDs's source
+		// (encoding/json with UseNumber) never produces this type, so this
+		// case is GraphQL-only today, not dead code for the JSON path.
+		if s := strconv.FormatInt(t, 10); looksLikeObjectID(s) {
 			return []string{s}
 		}
 	case []any:

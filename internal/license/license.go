@@ -197,6 +197,48 @@ func verify(pub ed25519.PublicKey, data []byte) (Claims, error) {
 	return c, nil
 }
 
+// ErrLicenseTermExpired is returned by Reissue when the presented license's
+// ExpiresAt has already passed. Self-service reissuance covers a hardware
+// change WITHIN an active term only — it deliberately does not let anyone
+// extend an already-expired license for free by claiming "hardware changed."
+// A real renewal (new/later ExpiresAt) is a commercial decision, not
+// something a signature alone should authorize.
+var ErrLicenseTermExpired = errors.New("license term has already expired; self-service reissuance only covers " +
+	"hardware changes within an active term — contact the vendor to renew")
+
+// Reissue re-signs oldLicenseData for a new machine: it proves the caller
+// already possesses a genuine, currently-signed license (oldLicenseData's
+// signature must verify against priv's own public key — the same trust check
+// Load performs) and, if that license's term has not already expired, issues
+// an otherwise-identical license with HardwareID replaced by newHardwareID
+// and IssuedAt re-stamped to now. ExpiresAt is carried over UNCHANGED — this
+// is a hardware swap, not a renewal; nothing here grants extra term.
+//
+// This is the one operation in this package that needs the PRIVATE key
+// online and reachable, which is a real, deliberate change in risk posture
+// from the fully-offline cmd/licensegen flow: see docs/licensing.md's
+// "self-service reissuance" section for the operational tradeoffs before
+// exposing this behind a running service (cmd/licenseserver).
+func Reissue(priv ed25519.PrivateKey, oldLicenseData []byte, newHardwareID string) (string, error) {
+	if newHardwareID == "" {
+		return "", errors.New("new hardware id must not be empty")
+	}
+	pub, ok := priv.Public().(ed25519.PublicKey)
+	if !ok {
+		return "", errors.New("invalid private key")
+	}
+	claims, err := verify(pub, oldLicenseData)
+	if err != nil {
+		return "", fmt.Errorf("presented license does not verify against this server's key: %w", err)
+	}
+	if !claims.ExpiresAt.IsZero() && time.Now().After(claims.ExpiresAt) {
+		return "", ErrLicenseTermExpired
+	}
+	claims.HardwareID = newHardwareID
+	claims.IssuedAt = time.Now().UTC()
+	return Sign(priv, claims)
+}
+
 // Load reads and verifies a license file at path against the embedded
 // package-level public key, returning a Status that is always safe to act on
 // (never returns an error — a license problem is data for a log line and a

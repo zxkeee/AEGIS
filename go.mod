@@ -15,6 +15,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jcchavezs/mergefs v0.1.1
 	github.com/redis/go-redis/v9 v9.19.0
+	github.com/vektah/gqlparser/v2 v2.5.36
 	golang.org/x/crypto v0.53.0
 	golang.org/x/oauth2 v0.36.0
 	gopkg.in/yaml.v3 v3.0.1

@@ -12,12 +12,13 @@ import (
 	"time"
 
 	"api-gateway/internal/config"
+	"api-gateway/internal/gql"
 )
 
 func runAbuse(cfg config.AbuseConfig, st Store, method, path, subject, roles string) *httptest.ResponseRecorder {
 	_ = InitTrustedProxies(nil)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	h := AbuseDetection(cfg, fakeLogger{}, st)(next)
+	h := AbuseDetection(cfg, "", fakeLogger{}, st)(next)
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(method, path, nil)
 	r.RemoteAddr = "1.2.3.4:1"
@@ -36,7 +37,7 @@ func runAbuse(cfg config.AbuseConfig, st Store, method, path, subject, roles str
 func runAbuseStatus(cfg config.AbuseConfig, st Store, method, path, subject, roles string, status int) *httptest.ResponseRecorder {
 	_ = InitTrustedProxies(nil)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) })
-	h := AbuseDetection(cfg, fakeLogger{}, st)(next)
+	h := AbuseDetection(cfg, "", fakeLogger{}, st)(next)
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(method, path, nil)
 	r.RemoteAddr = "1.2.3.4:1"
@@ -65,7 +66,7 @@ func runAbuseBody(cfg config.AbuseConfig, st Store, path, subject, roles string,
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	})
-	h := AbuseDetection(cfg, fakeLogger{}, st)(next)
+	h := AbuseDetection(cfg, "", fakeLogger{}, st)(next)
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, path, nil)
 	r.RemoteAddr = "1.2.3.4:1"
@@ -230,7 +231,7 @@ func runAbuseBodyID(cfg config.AbuseConfig, st Store, path, subject, identity, r
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	})
-	h := AbuseDetection(cfg, fakeLogger{}, st)(next)
+	h := AbuseDetection(cfg, "", fakeLogger{}, st)(next)
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, path, nil)
 	r.RemoteAddr = "1.2.3.4:1"
@@ -637,13 +638,13 @@ func TestAbuse_EventsCarrySeverityAndWhy(t *testing.T) {
 // would have been caught. bolaTargets must track every qualifying value.
 func TestBolaTargets_QueryBatchDefeatsThreshold(t *testing.T) {
 	q := url.Values{"id": {"1", "2", "3"}}
-	ids := idsFor(t, bolaTargets(http.MethodGet, "/api/v1/orders", q, nil), "?id=")
+	ids := idsFor(t, bolaTargets(http.MethodGet, "/api/v1/orders", q, nil, nil), "?id=")
 	if len(ids) != 3 {
 		t.Fatalf("repeated ?id=1&id=2&id=3: got %d ids %v, want 3", len(ids), ids)
 	}
 
 	q2 := url.Values{"ids": {"10,20,30"}}
-	ids2 := idsFor(t, bolaTargets(http.MethodGet, "/api/v1/orders", q2, nil), "?ids=")
+	ids2 := idsFor(t, bolaTargets(http.MethodGet, "/api/v1/orders", q2, nil, nil), "?ids=")
 	if len(ids2) != 3 {
 		t.Fatalf("comma-joined ?ids=10,20,30: got %d ids %v, want 3", len(ids2), ids2)
 	}
@@ -651,7 +652,7 @@ func TestBolaTargets_QueryBatchDefeatsThreshold(t *testing.T) {
 	// Free-text params must still be ignored (no false positives from a
 	// multi-valued non-ID param).
 	q3 := url.Values{"tag": {"red", "blue"}}
-	cands3 := bolaTargets(http.MethodGet, "/api/v1/orders", q3, nil)
+	cands3 := bolaTargets(http.MethodGet, "/api/v1/orders", q3, nil, nil)
 	for _, c := range cands3 {
 		if strings.Contains(c.scope, "?tag=") {
 			t.Fatalf("free-text ?tag=red&tag=blue must not be treated as an ID candidate, got %+v", c)
@@ -706,7 +707,7 @@ func TestAbuseDetection_BodyIDEnumeration(t *testing.T) {
 	st := &fakeStore{trackObject: func() (int64, error) { return 60, nil }}
 	_ = InitTrustedProxies(nil)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	h := AbuseDetection(cfg, fakeLogger{}, st)(next)
+	h := AbuseDetection(cfg, "", fakeLogger{}, st)(next)
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/orders/action", strings.NewReader(`{"order_id":9001}`))
 	r.Header.Set("Content-Type", "application/json")
@@ -725,6 +726,132 @@ func TestAbuseDetection_BodyIDEnumeration(t *testing.T) {
 	if !found {
 		t.Fatalf("expected a bola_enumeration event for body field order_id, got %+v", st.forensic)
 	}
+}
+
+// ── GraphQL BOLA (ROADMAP.md B5) ────────────────────────────────────────────
+
+func TestBolaTargets_GraphQLArgumentBecomesCandidate(t *testing.T) {
+	op, err := gql.Parse([]byte(`{"query":"query GetUser { user(id: 42) { id name } }"}`))
+	if err != nil {
+		t.Fatalf("gql.Parse: %v", err)
+	}
+	cands := bolaTargets(http.MethodPost, "/graphql", nil, nil, op)
+	ids := idsFor(t, cands, "gql.query.GetUser.user")
+	if len(ids) != 1 || ids[0] != "42" {
+		t.Fatalf("ids = %v, want [\"42\"]", ids)
+	}
+}
+
+func TestBolaTargets_GraphQLDifferentOperationsDoNotShareScope(t *testing.T) {
+	op1, err := gql.Parse([]byte(`{"query":"query GetUser { user(id: 1) { id } }"}`))
+	if err != nil {
+		t.Fatalf("gql.Parse: %v", err)
+	}
+	op2, err := gql.Parse([]byte(`{"query":"query GetOrder { user(id: 2) { id } }"}`)) // same field name "user", different op
+	if err != nil {
+		t.Fatalf("gql.Parse: %v", err)
+	}
+	c1 := bolaTargets(http.MethodPost, "/graphql", nil, nil, op1)
+	c2 := bolaTargets(http.MethodPost, "/graphql", nil, nil, op2)
+	if c1[0].scope == c2[0].scope {
+		t.Fatalf("two different operations sharing a field name must not share a BOLA scope, both got %q", c1[0].scope)
+	}
+}
+
+func TestBolaTargets_GraphQLNonIDArgumentIgnored(t *testing.T) {
+	op, err := gql.Parse([]byte(`{"query":"query Search { products(category: \"shoes\") { id } }"}`))
+	if err != nil {
+		t.Fatalf("gql.Parse: %v", err)
+	}
+	cands := bolaTargets(http.MethodPost, "/graphql", nil, nil, op)
+	if len(cands) != 0 {
+		t.Fatalf("a non-id-shaped argument name must not produce a BOLA candidate, got %+v", cands)
+	}
+}
+
+func TestBolaTargets_NilGraphQLOperationProducesNoGraphQLCandidates(t *testing.T) {
+	cands := bolaTargets(http.MethodGet, "/graphql", nil, nil, nil)
+	if len(cands) != 0 {
+		t.Fatalf("nil gqlOp must add nothing, got %+v", cands)
+	}
+}
+
+func TestAbuseDetection_GraphQLEnumeration(t *testing.T) {
+	cfg := config.AbuseConfig{Enabled: true, BlockMode: false, EnumThreshold: 50, Window: time.Minute}
+	st := &fakeStore{trackObject: func() (int64, error) { return 60, nil }}
+	_ = InitTrustedProxies(nil)
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	h := AbuseDetection(cfg, "/graphql", fakeLogger{}, st)(next)
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"query GetUser { user(id: 42) { id } }"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.RemoteAddr = "1.2.3.4:1"
+	r.Header.Set("X-Gateway-Subject", "scraper")
+	h.ServeHTTP(rec, r)
+
+	found := false
+	for _, ev := range st.forensic {
+		if ev.Reason != "bola_enumeration" {
+			continue
+		}
+		if ep, _ := ev.Extra["endpoint"].(string); strings.Contains(ep, "gql.query.GetUser.user") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a bola_enumeration event scoped to the GraphQL operation, got %+v", st.forensic)
+	}
+}
+
+func TestAbuseDetection_GraphQLPathUnsetIgnoresGraphQLBody(t *testing.T) {
+	// graphQLPath empty (default): a request that would otherwise look like
+	// GraphQL must not be parsed as such — zero behavior change when the
+	// feature isn't opted into.
+	cfg := config.AbuseConfig{Enabled: true, BlockMode: false, EnumThreshold: 50, Window: time.Minute}
+	st := &fakeStore{trackObject: func() (int64, error) { return 60, nil }}
+	_ = InitTrustedProxies(nil)
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	h := AbuseDetection(cfg, "", fakeLogger{}, st)(next) // graphQLPath: ""
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"query GetUser { user(id: 42) { id } }"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.RemoteAddr = "1.2.3.4:1"
+	r.Header.Set("X-Gateway-Subject", "scraper")
+	h.ServeHTTP(rec, r)
+
+	for _, ev := range st.forensic {
+		if strings.Contains(fmtExtra(ev.Extra["endpoint"]), "gql.") {
+			t.Fatalf("GraphQL parsing must be opt-in; got a gql-scoped event with graphQLPath unset: %+v", ev)
+		}
+	}
+}
+
+func TestPeekGraphQLOperation_BodyReachesDownstream(t *testing.T) {
+	body := `{"query":"query GetUser { user(id: 1) { id } }"}`
+	r := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
+	op := peekGraphQLOperation(r, "/graphql")
+	if op == nil || op.Name != "GetUser" {
+		t.Fatalf("op = %+v, want a parsed GetUser operation", op)
+	}
+	got, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("read restored body: %v", err)
+	}
+	if string(got) != body {
+		t.Fatalf("body after peek = %q, want %q (must be restored byte-for-byte)", got, body)
+	}
+}
+
+func TestPeekGraphQLOperation_WrongPathReturnsNil(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/other", strings.NewReader(`{"query":"{ me { id } }"}`))
+	if op := peekGraphQLOperation(r, "/graphql"); op != nil {
+		t.Fatalf("expected nil for a request not targeting graphQLPath, got %+v", op)
+	}
+}
+
+func fmtExtra(v any) string {
+	s, _ := v.(string)
+	return s
 }
 
 // idsFor collects the ids of every candidate whose scope mentions want.

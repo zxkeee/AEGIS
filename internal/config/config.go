@@ -112,7 +112,13 @@ type GatewayConfig struct {
 	// treatment as a config.Validate rejection — startup refuses to boot; a
 	// hot-reload is rejected and the previous config keeps serving. There is
 	// no degraded free-run mode; see docs/licensing.md.
-	LicensePath    string             `yaml:"license_path"`
+	LicensePath string `yaml:"license_path"`
+	// LicenseMaxRPS is set by cmd/gateway/main.go from the active license's
+	// Claims.MaxRPS after verification (loadValidatedConfig) — NOT an operator
+	// field (`yaml:"-"`), the same pattern as WAFConfig.Observe etc. 0 means
+	// no cap (most licenses today are issued without one). See
+	// middleware.LicenseRateLimit.
+	LicenseMaxRPS  int                `yaml:"-"`
 	ForensicDSN    string             `yaml:"forensic_dsn"` // PostgreSQL DSN for persistent forensic logs
 	TrustedProxies []string           `yaml:"trusted_proxies"`
 	TLS            TLSConfig          `yaml:"tls"`
@@ -519,6 +525,15 @@ type ChallengeConfig struct {
 type APIInventoryConfig struct {
 	Enabled    bool `yaml:"enabled"`
 	AlertOnNew bool `yaml:"alert_on_new"`
+	// GraphQLPath is the exact request path (e.g. "/graphql") that the Discovery
+	// middleware treats as a GraphQL endpoint: POST bodies there are parsed
+	// (internal/gql) so the catalog records one entry PER OPERATION instead of
+	// collapsing every query/mutation into a single "/graphql" endpoint — see
+	// ROADMAP.md B5. Empty (default) disables this entirely: nothing changes for
+	// a gateway that doesn't front GraphQL. A body that fails to parse (not
+	// GraphQL, or malformed) falls back to the plain path — this is passive
+	// discovery, so a parse failure must never affect the proxied request.
+	GraphQLPath string `yaml:"graphql_path"`
 }
 
 type ThreatFeedConfig struct {

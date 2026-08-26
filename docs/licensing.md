@@ -169,6 +169,35 @@ next restart, not a graceful degrade — that trade-off is intentional (see
 above) but it does mean license expiry needs the same on-call attention as a
 TLS cert or a Redis password rotation.
 
+### The mid-run expiry design note
+
+A long-lived gateway whose `gateway.yaml` is never edited again — the
+steady-state case for a production proxy — would otherwise only ever re-check
+its license as a side effect of a config hot-reload, i.e. never. So
+`licenseRecheckLoop` (`cmd/gateway/main.go`) re-runs `LoadWithGrace` on a
+timer and pushes the fresh result to `GET /api/license` and the console
+banner.
+
+**What it deliberately does not do is stop traffic.** When a license goes
+invalid mid-run, the gateway keeps serving and logs a loud, explicit
+licensing-breach error instead of tearing down the chain. Same reasoning as
+the hardware-change grace period: a same-minute production outage over a
+licensing technicality is a worse outcome than a bounded, noisy window of
+non-compliance. The re-check makes the status *current and loud*, not
+*enforcing*.
+
+**Known limitation, stated plainly:** the tier and feature entitlements above
+are applied by `loadValidatedConfig` — that is, at boot and on config
+hot-reload, the two moments where coercing the config is meaningful. The
+periodic re-check does not re-apply them. So if someone swaps a
+`production` `.lic` for a `trial` one *without* touching `gateway.yaml`, the
+re-check will report the new trial license (loudly, and in the console), but
+the running process keeps enforcing until the next reload or restart. That is
+consistent with the "never change traffic behaviour mid-run" rule above —
+silently switching a running gateway into detect-only would be its own
+outage-shaped surprise — but it does mean tier is a boot-time decision, not a
+continuously-enforced one. Don't describe it to a customer as the latter.
+
 ### Extending a pilot, or converting to production
 
 Re-run `licensegen -issue` with a longer `-days` (or `-days 0` for
@@ -177,17 +206,48 @@ never-expiring file unless that is the actual deal) and `-tier production`,
 and send the new file. There is no in-place renewal; the customer replaces
 the file and the gateway picks it up on the next hot-reload or restart.
 
+### `Tier`, `Features`, and `MaxRPS` are real, enforced entitlements
+
+Issuing a `-tier trial` or `-tier pilot` license is not just a label: those
+tiers **cannot enforce**, ever, regardless of the customer's own config.
+`license.Claims.RequiresObserve()` forces `Observe: true` the same way an
+invalid-hardware grace period or an explicit pilot opt-in does — a trial
+customer literally cannot turn on blocking by editing their YAML. Only
+`-tier production` (or an unset/internal tier, for your own use) enforces
+what the operator configures.
+
+`-features` gates specific config surfaces the same way: today,
+`multitenancy.enabled: true` and `oidc.enabled: true` each require the
+matching feature (`multitenancy`, `sso`) to be present in the license's
+`Features` list, or **the gateway refuses to boot** — same hard-gate
+treatment as an invalid license, not a silent downgrade. A license issued
+with `-features` omitted (empty list) is **unrestricted** — this is
+deliberate backward compatibility: every license issued before this existed
+keeps working exactly as before, nothing retroactively breaks.
+
+```bash
+go run ./cmd/licensegen -issue -key aegis-license.key -licensee "Acme Corp" \
+  -tier production -days 365 -features multitenancy,sso -hardware-id <fp> -out acme.lic
+```
+
+`-max-rps` becomes a real ceiling on the gateway's total throughput
+(`middleware.LicenseRateLimit`, wired near-outermost in the chain): once
+active requests-per-second across ALL routes/tenants exceeds it, further
+requests get `429` until the 1-second window rolls over. This is a
+**commercial constraint, not a security control** — it has no `fail_closed`
+option and always fails open on a Redis outage, same reasoning as
+behavioral scoring staying fail-open elsewhere in this codebase: a licensing
+technicality must never turn into a customer-facing outage. `-max-rps 0`
+(the default) means unlimited.
+
 ## 3. What this does NOT do
 
 - It does not stop someone from disassembling the binary and patching out the
   check. Nothing short of a hardware dongle does, and that is not worth the
   cost for this product's scale. The legal + visible-degradation combination
   is the actual deterrent.
-- It does not enforce `Tier` or `Features` or `MaxRPS` anywhere yet —
-  `Claims` carries them so the caller *can* gate on them later, but today
-  only validity, expiry, and hardware-lock actually decide whether the
-  gateway starts. Don't advertise per-feature license gating to a customer
-  until that's actually wired.
+- `Tier`, `Features`, and `MaxRPS` ARE now enforced (see §2a below) — this
+  bullet used to say they weren't; that's stale as of the entitlement work.
 - Node-locking only checks the *primary* machine's network hardware; it does
   not detect running the same license inside multiple VMs cloned from one
   image with a preserved MAC, or other virtualization tricks. It raises the
@@ -197,14 +257,64 @@ the file and the gateway picks it up on the next hot-reload or restart.
   nudge; the MSA/pilot agreement with the customer is what actually protects
   you if someone violates the terms.
 
-## 4. Open follow-ups (tracked here, not yet built)
+## 4. Self-service reissuance on hardware change (`cmd/licenseserver`)
 
-- Admin API endpoint (`GET /api/license`) + a console banner so an operator
-  sees license status without reading gateway logs.
-- Per-tier feature gating (e.g. `sso`/`multitenancy` behind `Claims.Features`).
+The manual flow above (customer emails a fingerprint, you run `licensegen` by
+hand) doesn't scale past a handful of customers. `cmd/licenseserver` is a
+small standalone HTTP service that automates exactly the "hardware changed,
+same commercial term" case:
+
+```bash
+go run ./cmd/licenseserver -key aegis-license.key -listen :8443
+```
+
+The customer's gateway (or a small script they run) POSTs to `/reissue`:
+
+```bash
+curl -X POST https://license.yourdomain.example/reissue \
+  -H 'Content-Type: application/json' \
+  -d '{"license": "<contents of their current .lic file>", "hardware_id": "<new fingerprint>"}'
+```
+
+and gets back `{"license": "<new .lic contents>"}` with no human involved.
+
+**What it checks** (`license.Reissue`): the presented license's signature
+must verify against this server's own key (proof the caller already holds a
+genuine license — not just anyone can request one for any licensee), and its
+`ExpiresAt` must not already be in the past. Everything else (Licensee, Tier,
+Features, MaxRPS, **ExpiresAt**) carries over unchanged — this fixes a
+hardware swap, it does not grant a free extension. An already-expired license
+gets `402 Payment Required` with a message pointing at a real renewal instead
+of a silent reissue.
+
+**The real tradeoff — read before deploying this anywhere:** every other tool
+in this repo (`cmd/licensegen`) keeps the private key fully offline. This
+service needs the key loaded in memory and reachable over the network to do
+its job. That is a genuine, deliberate increase in exposure, not a detail:
+
+- Run it on infrastructure you control tightly, not co-located with a
+  customer's environment, not on a shared/general-purpose box.
+- Put it behind TLS and, ideally, behind AEGIS itself (or another
+  reverse proxy/WAF) rather than exposed raw — the built-in per-IP rate
+  limiter (`-rate-limit`, default 10/hour) is a floor, not a substitute for
+  one.
+- Treat this process with the same operational care as a CA's signing
+  service, because that is functionally what it is: whoever compromises
+  this host's memory can mint licenses, same as whoever steals the offline
+  key file.
+- If you don't want that exposure at all, don't run this — the manual
+  `licensegen` flow (fully offline key) remains the safer default and is
+  still perfectly fine at low customer volume.
+
+## 5. Other open follow-ups (tracked here, not yet built)
+
+- Per-tier feature gating (e.g. `sso`/`multitenancy` behind `Claims.Features`)
+  — `Claims` carries this data but nothing enforces it yet.
 - A revocation list, if a private key is ever suspected compromised or a
   customer's license needs to be pulled mid-term (today: only expiry ends a
-  license; nothing revokes one early).
-- Self-service re-issuance on hardware change (today: customer emails a new
-  fingerprint, you run `licensegen` by hand — fine at pilot volume, will not
-  scale past a handful of customers).
+  license; nothing revokes one early — this applies to `licenseserver`'s key
+  too, and matters more there given the higher exposure).
+- Per-customer accountability on `licenseserver` (today: any caller holding a
+  valid old license can reissue for any new hardware id — there's no
+  additional shared secret/API key per customer, to keep the flow genuinely
+  self-service; consider adding one if abuse becomes a real concern).

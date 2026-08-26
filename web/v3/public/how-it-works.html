@@ -98,7 +98,7 @@
     <section id="why">
       <h2><span class="sec-num">02</span>Why AEGIS</h2>
       <p>Normally this is three products from three vendors: an <strong>API Gateway</strong> (proxy, load balancing), a <strong>WAAP</strong> layer (firewall, rate limits, bot mitigation, DLP, identity), and an <strong>ASPM</strong> platform (catalog, risk, analytics). AEGIS is all three in one deployment — one place these three layers can't silently disagree with each other.</p>
-      <p>The differentiator isn't the firewall — everyone has a signature firewall. It's that AEGIS builds an <strong>API catalog and a "who calls what" graph</strong> from day one, and object-level leak detection is built directly on top of that graph (section 06). Most WAF-only competitors have no such foundation to build on.</p>
+      <p>The differentiator isn't the firewall — everyone has a signature firewall. It's that AEGIS builds an <strong>API catalog and a "who calls what" graph</strong> from day one, and object-level leak detection is built directly on top of that graph (section 06). Most WAF-only competitors have no such foundation to build on — and most of what does exist stops at REST. AEGIS parses GraphQL operations too, so the same graph and the same detector cover both.</p>
       <p>AEGIS is <strong>self-hosted, no mandatory cloud</strong>. The only dependencies are Redis and PostgreSQL — infrastructure most companies already run. Nothing phones home.</p>
     </section>
 
@@ -109,7 +109,7 @@
       <table class="group-table">
         <thead><tr><th>#</th><th>Stage</th><th>What runs here</th></tr></thead>
         <tbody>
-          <tr><td class="n">01</td><td class="name">Resolve</td><td>TenantResolve, CleanHeaders — identity of the request itself, before anything downstream trusts it</td></tr>
+          <tr><td class="n">01</td><td class="name">Resolve</td><td>TenantResolve, CleanHeaders, LicenseRateLimit — identity of the request itself, before anything downstream trusts it</td></tr>
           <tr><td class="n">02</td><td class="name">Fingerprint</td><td>UpstreamFingerprint, TLSFingerprint — real ClientHello fingerprint, not a spoofable header</td></tr>
           <tr><td class="n">03</td><td class="name">Harden</td><td>SecurityHeaders, RequestID, PathSanity, CORS</td></tr>
           <tr><td class="n">04</td><td class="name">Filter</td><td>IPGuard, ThreatFeed, RateLimit, BotProtection, Challenge — is this an automated attacker?</td></tr>
@@ -121,28 +121,29 @@
       </table>
 
       <details class="steps">
-        <summary>Show all 20 individual middleware, in exact order (source-verified)</summary>
+        <summary>Show all 21 individual middleware, in exact order (source-verified)</summary>
         <div class="steps-list">
           <span class="n">01</span><span class="t">TenantResolve</span>
           <span class="n">02</span><span class="t">CleanHeaders</span>
-          <span class="n">03</span><span class="t">UpstreamFingerprint</span>
-          <span class="n">04</span><span class="t">TLSFingerprint</span>
-          <span class="n">05</span><span class="t">SecurityHeaders</span>
-          <span class="n">06</span><span class="t">RequestID</span>
-          <span class="n">07</span><span class="t">PathSanity</span>
-          <span class="n">08</span><span class="t">CORS</span>
-          <span class="n">09</span><span class="t">IPGuard</span>
-          <span class="n">10</span><span class="t">ThreatFeed</span>
-          <span class="n">11</span><span class="t">RateLimit</span>
-          <span class="n">12</span><span class="t">BotProtection</span>
-          <span class="n">13</span><span class="t">Challenge</span>
-          <span class="n">14</span><span class="t">WAF</span>
-          <span class="n">15</span><span class="t">Discovery</span>
-          <span class="n">16</span><span class="t">Auth</span>
-          <span class="n">17</span><span class="t">SchemaValidation</span>
-          <span class="n">18</span><span class="t">AbuseDetection</span>
-          <span class="n">19</span><span class="t">DLP</span>
-          <span class="n">20</span><span class="t">BehaviorAnalysis</span>
+          <span class="n">03</span><span class="t">LicenseRateLimit</span>
+          <span class="n">04</span><span class="t">UpstreamFingerprint</span>
+          <span class="n">05</span><span class="t">TLSFingerprint</span>
+          <span class="n">06</span><span class="t">SecurityHeaders</span>
+          <span class="n">07</span><span class="t">RequestID</span>
+          <span class="n">08</span><span class="t">PathSanity</span>
+          <span class="n">09</span><span class="t">CORS</span>
+          <span class="n">10</span><span class="t">IPGuard</span>
+          <span class="n">11</span><span class="t">ThreatFeed</span>
+          <span class="n">12</span><span class="t">RateLimit</span>
+          <span class="n">13</span><span class="t">BotProtection</span>
+          <span class="n">14</span><span class="t">Challenge</span>
+          <span class="n">15</span><span class="t">WAF</span>
+          <span class="n">16</span><span class="t">Discovery</span>
+          <span class="n">17</span><span class="t">Auth</span>
+          <span class="n">18</span><span class="t">SchemaValidation</span>
+          <span class="n">19</span><span class="t">AbuseDetection</span>
+          <span class="n">20</span><span class="t">DLP</span>
+          <span class="n">21</span><span class="t">BehaviorAnalysis</span>
         </div>
       </details>
       <p style="font-size:13px;color:var(--muted)">This exact order is pinned by a named-step test in CI — reordering it without meaning to fails the build. <a href="/articles/chain-order.html">Why the order itself is part of the contract →</a></p>
@@ -168,6 +169,7 @@
       <h2><span class="sec-num">06</span>The flagship detector</h2>
       <p>A signature WAF cannot catch Broken Object Level Authorization (BOLA/IDOR) — a request for someone else's data by ID looks syntactically identical to a request for your own. AEGIS catches it two ways: bulk enumeration (many object IDs, fast, measured against a per-consumer learned baseline instead of one fixed number for everyone), and the harder case — a single wrong object ID with no volume pattern at all, caught by passively learning who owns what from real traffic and evaluating strictly after the response, on a 2xx only, so a backend's own 403/404 is never mistaken for a leak.</p>
       <p>With a confirmed owner on record, a later cross-owner request to the same object is denied before it's forwarded — not just logged after the fact.</p>
+      <p>This isn't REST-only. A GraphQL body — <code>query GetUser { user(id: 42) { ssn } }</code> — is parsed the same way: the id-shaped argument on a top-level field becomes an object-ownership candidate exactly like a path segment or JSON body field would, scoped by operation <em>and</em> field so two unrelated queries sharing a field name never share one counter. The same parsing feeds passive discovery (each operation is its own catalog entry, not one flat <code>/graphql</code> bucket) and PII detection (a leak on <code>GetUser</code>'s response attributes to <code>GetUser</code>, not to "GraphQL" in general).</p>
       <p><a href="/articles/bola-detection.html">Read: the full mechanism, with the actual detection code →</a><br />
       <a href="/articles/adaptive-baseline.html">Read: why a fixed threshold is always wrong for someone →</a></p>
     </section>
@@ -198,6 +200,7 @@
       <p>Engineered and tested — and honest about what's still open, not smoothed over:</p>
       <div class="check-list">
         <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Full control chain, source-verified</div><div class="d">WAF, DLP, JWT identity, BOLA/BFLA detection, passive discovery, multi-tenancy — every claim on this page checked against the actual code.</div></div></div>
+        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">REST and GraphQL alike</div><div class="d">BOLA, passive discovery, and PII attribution all parse GraphQL operations — the same detector and the same catalog, one code path for both, not a separate GraphQL module. Nested fields and fragments aren't walked yet.</div></div></div>
         <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Chaos-tested, not just documented</div><div class="d">Redis and PostgreSQL killed live under sustained load — 100% success both times.</div></div></div>
         <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Schema enforcement</div><div class="d">Rejects undocumented body fields against your OpenAPI contract — closes mass assignment.</div></div></div>
         <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Fails safe by design</div><div class="d">Every control has a documented, deliberate fail-open or fail-closed choice — not a default nobody examined.</div></div></div>

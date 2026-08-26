@@ -5,7 +5,7 @@ const TILES = [
   [ShieldCheck, 'Web app firewall', 'OWASP CRS + XXE screen'],
   [EyeSlash, 'Data masking', 'Cards, IDs, emails redacted'],
   [Fingerprint, 'Signed identity', 'JWT verified, forwarded signed'],
-  [UserFocus, 'BOLA / BFLA', 'Cross-owner access caught'],
+  [UserFocus, 'BOLA / BFLA', 'Cross-owner access, REST + GraphQL'],
   [MapTrifold, 'Passive discovery', 'Live endpoint catalog'],
   [Buildings, 'Multi-tenant isolation', 'Cache and database scoped'],
 ]

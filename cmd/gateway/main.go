@@ -453,6 +453,26 @@ func loadValidatedConfig(path string) (config.GatewayConfig, []*net.IPNet, licen
 		return config.GatewayConfig{}, nil, licStatus, fmt.Errorf(
 			"no valid license: %s (see docs/licensing.md — issue one with cmd/licensegen)", licStatus.Reason)
 	}
+	// Tier entitlement: "trial"/"pilot" are pre-commercial and may only ever
+	// run in Observe mode, regardless of what the operator's config says —
+	// same hard-line treatment as an invalid license, just expressed as a
+	// config coercion instead of a boot failure (a paying "production" tier
+	// keeps whatever the operator configured).
+	if licStatus.Claims.RequiresObserve() {
+		cfg.Observe = true
+	}
+	// Feature entitlement: a config that turns on a paid feature (multi-
+	// tenancy, SSO) the license doesn't include is a hard boot/reload
+	// rejection, not a silent downgrade — an operator must never be able to
+	// believe an unentitled feature is protecting live traffic when it
+	// structurally isn't running.
+	if err := license.CheckFeatureGates(licStatus.Claims, cfg.Multitenancy.Enabled, cfg.OIDC.Enabled); err != nil {
+		return config.GatewayConfig{}, nil, licStatus, fmt.Errorf("license feature entitlement: %w", err)
+	}
+	// Threaded into the chain as a runtime-only field (see its doc comment) so
+	// middleware.LicenseRateLimit can enforce it without BuildHandlerChain
+	// needing its own extra parameter.
+	cfg.LicenseMaxRPS = licStatus.Claims.MaxRPS
 	// Observe/pilot mode coercion runs AFTER validation, so the returned config is
 	// already in its guaranteed non-disruptive shape before any chain is built —
 	// on startup and on every hot-reload alike.

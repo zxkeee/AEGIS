@@ -1,14 +1,24 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"time"
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
+	"api-gateway/internal/gql"
 	"api-gateway/internal/tenant"
 )
+
+// graphQLBodyCap bounds how much of a candidate GraphQL request body
+// Discovery buffers to parse. Mirrors gql.Parse's own cap (a body over this
+// can't be a valid single operation worth attributing anyway) — kept as its
+// own constant so this file doesn't need to know gql's internals, just that
+// something bounded is required before buffering client-controlled bytes.
+const graphQLBodyCap = 64 * 1024
 
 // Catalog is the dependency the Discovery middleware records observations to.
 // Implemented by *discovery.Catalog.
@@ -41,10 +51,19 @@ func Discovery(cfg config.APIInventoryConfig, cat Catalog, log Logger) Middlewar
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			path := r.URL.Path
+			if cfg.GraphQLPath != "" && path == cfg.GraphQLPath && r.Method == http.MethodPost && r.Body != nil {
+				if opPath, ok := graphQLOperationPath(r, cfg.GraphQLPath); ok {
+					path = opPath
+				}
+				// ok == false: not parseable as GraphQL (or over the size cap) —
+				// r.Body has already been restored either way; fall back to the
+				// plain configured path, same as if GraphQLPath were unset.
+			}
 			obs := &discovery.Observation{
 				Tenant:     tenant.From(r.Context()),
 				Method:     r.Method,
-				Path:       r.URL.Path,
+				Path:       path,
 				ConsumerIP: RealIP(r),
 			}
 			ctx := context.WithValue(r.Context(), obsKey, obs)
@@ -74,6 +93,35 @@ func Discovery(cfg config.APIInventoryConfig, cat Catalog, log Logger) Middlewar
 			})
 		})
 	}
+}
+
+// graphQLOperationPath peeks r.Body (bounded, then always restored — the
+// proxy still needs the exact original bytes downstream) and, if it parses
+// as a single GraphQL operation, returns a synthetic per-operation path such
+// as "/graphql/query/GetUser" instead of the bare configured GraphQLPath.
+// This is what turns "every GraphQL call is the same catalog entry" into
+// "each operation is its own entry" — see ROADMAP.md B5. ok is false for
+// anything that isn't cleanly parseable as one operation (not GraphQL at
+// all, malformed, ambiguous multi-operation document, oversized body) —
+// callers fall back to the plain path; a parse miss must never affect the
+// proxied request itself.
+func graphQLOperationPath(r *http.Request, basePath string) (path string, ok bool) {
+	buf, tooBig, rest := readBounded(r.Body, graphQLBodyCap)
+	if tooBig {
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), rest))
+		return "", false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(buf))
+
+	op, err := gql.Parse(buf)
+	if err != nil {
+		return "", false
+	}
+	name := op.Name
+	if name == "" {
+		name = "anonymous"
+	}
+	return basePath + "/" + op.Type + "/" + name, true
 }
 
 // consumerLabel picks the strongest available consumer identity for logging.

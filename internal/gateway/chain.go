@@ -83,11 +83,19 @@ func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Stor
 	return []step{
 		{"TenantResolve", middleware.TenantResolve(cfg.Multitenancy, cfg.Routes, log, st)}, // P0-3: resolve tenant first
 		{"CleanHeaders", middleware.CleanHeaders()},                                        // SEC: strip spoofed X-Gateway-* / X-JA3 headers
-		{"UpstreamFingerprint", middleware.UpstreamFingerprint(cfg.Security.Bot)},          // trust upstream (Cloudflare) JA3 from trusted proxies
-		{"TLSFingerprint", middleware.TLSFingerprint()},                                    // SEC (P0-4): inject real ClientHello fingerprint
-		{"SecurityHeaders", middleware.SecurityHeaders()},                                  // ARCH-6: security headers on every response
-		{"RequestID", middleware.RequestID()},                                              // ARCH-4: request ID for log correlation
-		{"PathSanity", middleware.PathSanity(log, st)},                                     // SEC: reject traversal/encoded-separator paths before any prefix policy
+		// Commercial RPS ceiling: near-outermost so an over-cap request costs the
+		// least, but deliberately AFTER CleanHeaders — its deny path calls RealIP(),
+		// and no control should read a client-supplied forwarding header before
+		// CleanHeaders has sanitized the family. (Harmless today, since RealIP only
+		// trusts XFF from a trusted_proxies peer either way, but this keeps the
+		// "nothing reads identity headers before CleanHeaders" invariant total
+		// rather than "total except one licensing control".)
+		{"LicenseRateLimit", middleware.LicenseRateLimit(cfg.LicenseMaxRPS, log, st)},
+		{"UpstreamFingerprint", middleware.UpstreamFingerprint(cfg.Security.Bot)}, // trust upstream (Cloudflare) JA3 from trusted proxies
+		{"TLSFingerprint", middleware.TLSFingerprint()},                           // SEC (P0-4): inject real ClientHello fingerprint
+		{"SecurityHeaders", middleware.SecurityHeaders()},                         // ARCH-6: security headers on every response
+		{"RequestID", middleware.RequestID()},                                     // ARCH-4: request ID for log correlation
+		{"PathSanity", middleware.PathSanity(log, st)},                            // SEC: reject traversal/encoded-separator paths before any prefix policy
 		{"CORS", middleware.CORS(cfg.Security.CORS)},
 		{"IPGuard", middleware.IPGuard(cfg.Security.IPGuard, log, st)},
 		{"ThreatFeed", middleware.ThreatFeed(cfg.Security.ThreatFeed, log, st)},
@@ -97,8 +105,8 @@ func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Stor
 		{"WAF", wafMW},
 		{"Discovery", middleware.Discovery(cfg.Security.Inventory, cat, log)}, // passive API discovery
 		{"Auth", authMW},
-		{"SchemaValidation", middleware.SchemaValidation(cfg.Security.Schema, schemaSpecFor, log, st)}, // positive security: validate against OpenAPI contract
-		{"AbuseDetection", middleware.AbuseDetection(cfg.Security.Abuse, log, st)},                     // BOLA/BFLA (needs verified roles)
+		{"SchemaValidation", middleware.SchemaValidation(cfg.Security.Schema, schemaSpecFor, log, st)},                 // positive security: validate against OpenAPI contract
+		{"AbuseDetection", middleware.AbuseDetection(cfg.Security.Abuse, cfg.Security.Inventory.GraphQLPath, log, st)}, // BOLA/BFLA (needs verified roles)
 		{"DLP", dlpMW},
 		{"BehaviorAnalysis", middleware.BehaviorAnalysis(cfg.Security.Behavior, log, st)},
 	}

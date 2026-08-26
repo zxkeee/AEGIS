@@ -1,7 +1,7 @@
 import { Reveal, SectionHeader } from '../lib/ui.jsx'
 
 const ROWS = [
-  ['01', 'Resolve', 'TenantResolve, CleanHeaders'],
+  ['01', 'Resolve', 'TenantResolve, CleanHeaders, LicenseRateLimit'],
   ['02', 'Fingerprint', 'UpstreamFingerprint, TLSFingerprint'],
   ['03', 'Harden', 'SecurityHeaders, RequestID, PathSanity, CORS'],
   ['04', 'Filter', 'IPGuard, ThreatFeed, RateLimit, BotProtection, Challenge'],

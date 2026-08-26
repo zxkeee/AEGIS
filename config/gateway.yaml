@@ -193,6 +193,11 @@ security:
   api_inventory:
     enabled: true
     alert_on_new: false
+    # Set to your GraphQL endpoint's exact path (e.g. "/graphql") to catalog
+    # each operation separately instead of collapsing all GraphQL traffic into
+    # one "/graphql" entry. Empty (default) disables this — no effect on a
+    # gateway that doesn't front GraphQL. See docs/graphql.md.
+    graphql_path: ""
 
   threat_feed:
     enabled: false

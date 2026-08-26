@@ -32,6 +32,13 @@ import (
 // without depending on a real release build's embedded key.
 func issueTestLicense(t *testing.T) string {
 	t.Helper()
+	return issueTestLicenseWithClaims(t, license.Claims{Licensee: "test", Tier: "internal"})
+}
+
+// issueTestLicenseWithClaims is issueTestLicense's general form, for tests
+// exercising tier/feature entitlement (RequiresObserve, CheckFeatureGates).
+func issueTestLicenseWithClaims(t *testing.T, claims license.Claims) string {
+	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generate test license key: %v", err)
@@ -39,7 +46,10 @@ func issueTestLicense(t *testing.T) string {
 	restore := license.SetPublicKeyForTesting(base64.StdEncoding.EncodeToString(pub))
 	t.Cleanup(restore)
 
-	signed, err := license.Sign(priv, license.Claims{Licensee: "test", Tier: "internal"})
+	if claims.Licensee == "" {
+		claims.Licensee = "test"
+	}
+	signed, err := license.Sign(priv, claims)
 	if err != nil {
 		t.Fatalf("sign test license: %v", err)
 	}
@@ -243,6 +253,111 @@ observe: false
 	}
 	if licStatus.Valid {
 		t.Fatal("expected no license to be configured in this test env")
+	}
+}
+
+// TestLoadValidatedConfig_TrialTierForcesObserveEvenWithObserveFalse is the
+// tier-entitlement boundary: a "trial" license may not enforce, full stop —
+// the operator's own `observe: false` must not override it.
+func TestLoadValidatedConfig_TrialTierForcesObserveEvenWithObserveFalse(t *testing.T) {
+	licPath := issueTestLicenseWithClaims(t, license.Claims{Tier: "trial"})
+	p := filepath.Join(t.TempDir(), "gateway.yaml")
+	body := `
+admin_auth: true
+admin_secret: "a-strong-admin-secret-32-characters!!"
+redis: {password: "redis-pass"}
+observe: false
+license_path: "` + licPath + `"
+`
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, _, err := loadValidatedConfig(p)
+	if err != nil {
+		t.Fatalf("loadValidatedConfig: %v", err)
+	}
+	if !cfg.Observe {
+		t.Fatal("a trial-tier license must force Observe=true regardless of observe: false in config")
+	}
+}
+
+// TestLoadValidatedConfig_ProductionTierRespectsConfig is the counterpart:
+// a production-tier license must NOT force Observe — the operator's config
+// decides.
+func TestLoadValidatedConfig_ProductionTierRespectsConfig(t *testing.T) {
+	licPath := issueTestLicenseWithClaims(t, license.Claims{Tier: "production"})
+	p := filepath.Join(t.TempDir(), "gateway.yaml")
+	body := `
+admin_auth: true
+admin_secret: "a-strong-admin-secret-32-characters!!"
+redis: {password: "redis-pass"}
+observe: false
+license_path: "` + licPath + `"
+`
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, _, err := loadValidatedConfig(p)
+	if err != nil {
+		t.Fatalf("loadValidatedConfig: %v", err)
+	}
+	if cfg.Observe {
+		t.Fatal("a production-tier license must not force Observe when the operator set observe: false")
+	}
+}
+
+// TestLoadValidatedConfig_UnentitledMultitenancyFailsBoot is the feature-
+// entitlement boundary: a license without the "multitenancy" feature must
+// not let a config enabling it boot.
+func TestLoadValidatedConfig_UnentitledMultitenancyFailsBoot(t *testing.T) {
+	licPath := issueTestLicenseWithClaims(t, license.Claims{Tier: "production", Features: []string{"sso"}}) // no "multitenancy"
+	p := filepath.Join(t.TempDir(), "gateway.yaml")
+	body := `
+admin_auth: true
+admin_secret: "a-strong-admin-secret-32-characters!!"
+redis: {password: "redis-pass"}
+license_path: "` + licPath + `"
+multitenancy:
+  enabled: true
+  tenants:
+    - id: acme
+      hosts: ["acme.example.com"]
+`
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, _, _, err := loadValidatedConfig(p); err == nil {
+		t.Fatal("expected boot to fail: multitenancy enabled but not licensed")
+	}
+}
+
+// TestLoadValidatedConfig_UnrestrictedLicenseAllowsMultitenancy confirms the
+// backward-compatible default: a license with no Features set at all (every
+// license issued before feature-gating existed) must not suddenly break an
+// existing multitenancy deployment.
+func TestLoadValidatedConfig_UnrestrictedLicenseAllowsMultitenancy(t *testing.T) {
+	licPath := issueTestLicenseWithClaims(t, license.Claims{Tier: "production"}) // Features: nil
+	p := filepath.Join(t.TempDir(), "gateway.yaml")
+	body := `
+admin_auth: true
+admin_secret: "a-strong-admin-secret-32-characters!!"
+redis: {password: "redis-pass"}
+license_path: "` + licPath + `"
+multitenancy:
+  enabled: true
+  tenants:
+    - id: acme
+      hosts: ["acme.example.com"]
+`
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, _, _, err := loadValidatedConfig(p); err != nil {
+		t.Fatalf("an unrestricted (no Features) license must not block multitenancy: %v", err)
 	}
 }
 

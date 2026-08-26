@@ -76,12 +76,26 @@ if cw.status &lt; 200 || cw.status &gt;= 300 {
 
   <p>If you key ownership by <code>GET /orders/{id}</code> specifically, an attacker who has never <em>read</em> an object but sends a <code>DELETE</code> to it sails straight through your ownership check, because the detector has no record for that method. Keying ownership by the object itself, separately from the verb applied to it, means an owner learned from an innocuous read also protects the object against a cross-owner write it's never seen before.</p>
 
+  <h2>The object ID isn't always in the URL</h2>
+  <p>Everything above is written in terms of path segments, because that's the shape most people picture. But GraphQL breaks that picture completely: every operation goes through one endpoint, usually <code>POST /graphql</code>, and the object ID lives in an argument inside the request body rather than anywhere in the URL.</p>
+
+  <pre><code>POST /graphql
+{"query": "query GetUser { user(id: 42) { ssn } }"}
+<span class="cmt">// path is "/graphql" for every request — the ID 42 is in the body</span></code></pre>
+
+  <p>A detector keyed purely on the URL sees one endpoint with infinite traffic and no object IDs at all — which means, on a GraphQL API, it silently detects nothing while looking perfectly healthy. So AEGIS parses the operation: the id-shaped arguments on each top-level field become object-ownership candidates, feeding the exact same ownership and enumeration tracking a REST path segment would. Nothing about the detector above changes; only where the ID is read from.</p>
+
+  <p>One subtlety worth calling out: the tracking key is scoped by <em>operation and field</em>, not by field name alone. Two unrelated queries that both happen to expose a field called <code>user</code> must not share one enumeration counter or one ownership record — otherwise normal traffic on one query poisons the baseline for the other.</p>
+
+  <p>The same parse also fixes discovery: each operation becomes its own catalog entry instead of every GraphQL call collapsing into a single <code>/graphql</code> row, and a PII finding in a response attributes to the operation that returned it.</p>
+
   <h2>What this doesn't claim to be</h2>
   <p>Worth being direct about the limits, since overclaiming a detector is how teams stop trusting it:</p>
   <ul>
     <li><strong>Without a configured <code>owner_fields</code></strong> (telling the gateway which response field names the true owner), this runs as a heuristic — "first accessor" ownership affinity — not a confirmed fact. It's flagged at a lower severity for exactly that reason.</li>
     <li><strong>Cold start.</strong> The first consumer to touch a fresh object is assumed to be its owner. If that assumption is wrong, the detector is wrong until the response body confirms otherwise.</li>
     <li><strong>Shared objects.</strong> A small number of legitimate co-owners (support staff, a shared team resource) needs either an allowlist or a shared-object threshold, or you'll flag ordinary shared access.</li>
+    <li><strong>GraphQL parsing stops at the top level.</strong> Only the arguments on an operation's top-level fields are read as object IDs. An ID that appears solely inside a nested selection, or one reachable only through a fragment spread, is not extracted today — the detector under-reports there rather than misattributing, but it does under-report.</li>
     <li><strong>This is a safety net, not a substitute</strong> for your backend doing authorization correctly. It catches what slips through — it doesn't replace the check that should have caught it first.</li>
   </ul>
 

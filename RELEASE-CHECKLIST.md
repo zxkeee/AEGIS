@@ -377,16 +377,31 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       first time a mismatch is seen it grants a persisted 72h grace window
       (`license.LoadWithGrace`/`DefaultHardwareGrace`) — fully functional,
       loud `WARN` in logs and in the console banner — then hard-fails once the
-      window elapses if not re-issued (free of charge, for the remaining
-      term — a manual process today). See `docs/licensing.md` for the
+      window elapses if not re-issued. See `docs/licensing.md` for the
       workflow and the Docker/k8s container-MAC caveat. **`GET /api/license`
       + console banner**: `Server.SetLicenseStatus` records the outcome from
       every boot/hot-reload; the console (`LicenseBanner.tsx`) polls it and
       shows nothing when healthy, a warning ~14 days before expiry, and a hard
       warning during a hardware-grace window or an invalid status — so an
-      operator doesn't have to read gateway logs to know. Remaining: real
-      usage metering, tier/feature enforcement beyond validity+expiry+
-      hardware, revocation, self-service re-issuance.
+      operator doesn't have to read gateway logs to know. **Self-service
+      reissuance** (`cmd/licenseserver`): a standalone HTTP service with the
+      private key held in memory (a deliberate, documented change in exposure
+      from the fully-offline `licensegen` flow — see `docs/licensing.md`'s
+      explicit deployment guidance) automates the "hardware changed, same
+      term" case via `POST /reissue`: verifies the old license's signature,
+      rejects an already-expired term (`402`, no free extension), carries
+      every other claim over unchanged, re-signs for the new fingerprint.
+      Per-IP rate-limited. **Tier/feature/RPS entitlement now enforced**:
+      `trial`/`pilot` tiers force `Observe` regardless of the operator's own
+      config (`Claims.RequiresObserve`); `Claims.Features` gates
+      `multitenancy`/`oidc` — enabling either without the matching feature is
+      a hard boot/reload rejection (`license.CheckFeatureGates`), empty
+      `Features` stays fully permissive for backward compatibility;
+      `Claims.MaxRPS` is a real global throughput ceiling
+      (`middleware.LicenseRateLimit`, fails open on a store error — a
+      commercial constraint, not a security control). Remaining: real usage
+      metering (billing-grade consumption tracking), revocation (for both the
+      offline and the `licenseserver` key).
 
 ---
 
