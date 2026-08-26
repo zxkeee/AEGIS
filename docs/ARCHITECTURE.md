@@ -81,24 +81,27 @@ admin plane — приватная панель управления. Разны
   │
   1  TenantResolve        резолвит tenant (route/host), режет клиентские X-Tenant-*
   2  CleanHeaders         срезает поддельные X-Gateway-* / X-JA3 / X-Forwarded-*
-  3  UpstreamFingerprint  доверяет JA3 от upstream (Cloudflare) ТОЛЬКО с trusted_proxies
-  4  TLSFingerprint       вычисляет реальный JA3 из ClientHello (если гейт терминирует TLS)
-  5  SecurityHeaders      HSTS, X-Frame-Options, CSP-совместимые заголовки на ответ
-  6  RequestID            X-Request-ID для корреляции логов (клиентский — санитайзится)
-  7  PathSanity           отклоняет traversal / закодированные разделители ДО любых prefix-политик
-  8  CORS                 CORS-политика data plane
-  9  IPGuard              CIDR-aware блок/allow-листы IP (fail_closed опционально)
-  10 ThreatFeed           блок по внешним threat-фидам
-  11 RateLimit            fixed-window rate limit на Redis (per-route, fail_closed опц.)
-  12 BotProtection        детект ботов/сканеров (UA, JA3-консистентность)
-  13 Challenge            anti-bot challenge (проверенно fail-open при недоступности стора)
-  14 WAF                  Coraza: starter-правила ИЛИ полный OWASP CRS v4 + XXE-предфильтр (fail_closed опц.)
-  ── Discovery ──         пассивно фиксирует наблюдение (внутри WAF/bot, снаружи auth/DLP)
-  15 Auth                 JWT (HMAC или JWKS), подписывает identity вниз (X-Gateway-*)
-  16 SchemaValidation     positive security: валидация против OpenAPI-контракта (per-tenant спека)
-  17 AbuseDetection       BOLA/BFLA (нужны проверенные роли из JWT → идёт после Auth)
-  18 DLP                  маскирует PII/PCI в ответах
-  19 BehaviorAnalysis     поведенческий скоринг → авто-бан (fail-open намеренно)
+  3  LicenseRateLimit     коммерческий потолок RPS из лицензии (fail-OPEN: не security-контроль)
+  4  UpstreamFingerprint  доверяет JA3 от upstream (Cloudflare) ТОЛЬКО с trusted_proxies
+  5  TLSFingerprint       вычисляет реальный JA3 из ClientHello (если гейт терминирует TLS)
+  6  SecurityHeaders      HSTS, X-Frame-Options, CSP-совместимые заголовки на ответ
+  7  RequestID            X-Request-ID для корреляции логов (клиентский — санитайзится)
+  8  PathSanity           отклоняет traversal / закодированные разделители ДО любых prefix-политик
+  9  CORS                 CORS-политика data plane
+  10 IPGuard              CIDR-aware блок/allow-листы IP (fail_closed опционально)
+  11 ThreatFeed           блок по внешним threat-фидам
+  12 RateLimit            fixed-window rate limit на Redis (per-route, fail_closed опц.)
+  13 BotProtection        детект ботов/сканеров (UA, JA3-консистентность)
+  14 Challenge            anti-bot challenge (проверенно fail-open при недоступности стора)
+  15 WAF                  Coraza: starter-правила ИЛИ полный OWASP CRS v4 + XXE-предфильтр (fail_closed опц.)
+  ── Discovery ──         пассивно фиксирует наблюдение (внутри WAF/bot, снаружи auth/DLP);
+                          на graphql_path парсит операцию → каталог по операции, не по /graphql
+  16 Auth                 JWT (HMAC или JWKS), подписывает identity вниз (X-Gateway-*)
+  17 SchemaValidation     positive security: валидация против OpenAPI-контракта (per-tenant спека)
+  18 AbuseDetection       BOLA/BFLA (нужны проверенные роли из JWT → идёт после Auth);
+                          object-ID берётся из пути, query, JSON-тела И аргументов GraphQL-операции
+  19 DLP                  маскирует PII/PCI в ответах
+  20 BehaviorAnalysis     поведенческий скоринг → авто-бан (fail-open намеренно)
   │
   ▼
 Reverse proxy (internal/proxy) → backend
@@ -108,6 +111,12 @@ Reverse proxy (internal/proxy) → backend
 - `TenantResolve` **первый** — всё ниже читает tenant из контекста.
 - `CleanHeaders` рано — срезает поддельную идентичность/forwarding **до того**,
   как кто-либо им поверит.
+- `LicenseRateLimit` **после** `CleanHeaders`, а не перед ним: его deny-путь
+  зовёт `RealIP()`, а ни один контроль не должен читать клиентский forwarding-
+  заголовок до санитизации. Сегодня безвредно (`RealIP` и так доверяет XFF
+  только от `trusted_proxies`), но так инвариант «никто не читает identity-
+  заголовки раньше CleanHeaders» остаётся тотальным, а не «тотальным, кроме
+  одного лицензионного контроля».
 - `PathSanity` до prefix-политик — чтобы `..%2f` не обошёл route/tenant matching.
   Все сайты сравнения путей по префиксу (route-gate, posture, tenant, JWT
   `Exclude`) обязаны идти через сегмент-безопасный `config.PathHasPrefix`, а не
@@ -412,6 +421,32 @@ Ed25519-лицензии (`licensee`, `tier`, `expiry`, `features`, `max_rps`,
 просрочке. В Docker/k8s без закреплённого MAC обычный редеплой контейнера
 выглядит как «смена железа» — см. `docs/licensing.md`.
 
+**Энфорсмент прав (tier / features / max_rps).** Поля в claims не декоративные:
+`trial`/`pilot` — предкоммерческие тарифы, их `RequiresObserve()` принудительно
+переводит гейтвей в Observe **вне зависимости** от конфига оператора (enforce
+на триале невозможен в принципе, а не «не рекомендуется»). `CheckFeatureGates`
+отклоняет **старт/reload**, если конфиг включает неоплаченную фичу
+(`multitenancy`, `oidc`) — не тихий даунгрейд: оператор не должен считать, что
+контроль защищает трафик, когда он структурно не запущен. Пустой список
+`features` — безрестрикционный, поэтому все ранее выданные лицензии продолжают
+работать без изменений. `max_rps` — реальный глобальный потолок
+(`middleware.LicenseRateLimit`, шаг 3 цепочки), и он **fail-OPEN** при
+недоступности стора: это коммерческое ограничение, а не security-контроль, и
+лицензионная формальность не имеет права превращаться в аутэйдж.
+
+Граница, которую стоит знать: tier/features применяются в `loadValidatedConfig`,
+т.е. на старте и на hot-reload. Периодическая перепроверка их **не** переприменяет
+(она по дизайну только делает статус громким и актуальным, не трогая поведение
+трафика на ходу) — значит tier это решение на момент старта, а не непрерывно
+энфорсимое свойство. Подробности и почему так — `docs/licensing.md`.
+
+**Self-service переиздание.** `cmd/licenseserver` автоматизирует случай «сменилось
+железо, срок тот же»: `POST /reissue` проверяет подпись предъявленной лицензии
+этим же ключом, отклоняет уже просроченную (402 — бесплатного продления нет),
+переносит остальные claims без изменений и переподписывает под новый отпечаток.
+Держит приватный ключ в памяти — осознанный отход от полностью офлайнового
+`licensegen`, с прописанными в `docs/licensing.md` ограничениями развёртывания.
+
 **Видимость.** `GET /api/license` (`Server.SetLicenseStatus`, обновляется на
 каждом boot/reload/периодической перепроверке) + баннер в консоли
 (`web/console/src/components/LicenseBanner.tsx`) — молчит, когда всё в
@@ -428,10 +463,11 @@ grace-периода или при невалидном статусе. Стат
 ## 14. Тестирование и CI
 
 - `make test` — `go test ./... -v -race`. Интеграционные тесты (`store`,
-  `discovery`, `iam`, `api`) скипаются без env-переменных Redis/PostgreSQL; в CI
+  `discovery`, `iam`, `api`, `forensic`, `retention`, `audit`) скипаются без env-переменных Redis/PostgreSQL; в CI
   поднимаются service-контейнерами.
 - **Coverage gate** (`scripts/coverage-gate.sh`) — пер-пакетные пороги,
-  ratchet к 70% (включая `internal/license`, floor 90%).
+  ratchet к 70% (включая `internal/license` floor 90%, `internal/gql` 90%,
+  `internal/forensic` 80%).
 - **Lint-инварианты** (`scripts/lint-invariants.sh`) — 4 проектных
   security-правила, которые обычный линтер не выразит:
   1. запрет сырого `strings.HasPrefix` на переменной-пути (не только буквально
@@ -500,6 +536,7 @@ grace-периода или при невалидном статусе. Стат
 ```
 cmd/gateway/main.go        точка входа: два сервера, lifecycle, hot-reload, лицензия
 cmd/licensegen/             офлайн-утилита выпуска подписанных лицензий
+cmd/licenseserver/          self-service переиздание лицензии при смене железа (ключ онлайн!)
 internal/gateway/chain.go  сборка data-plane цепочки (порядок middleware)
 internal/middleware/       все middleware + ports.go (интерфейсы) + fakes_test.go
 internal/proxy/            reverse proxy, LB, circuit breaker, retry, methods/strip_prefix
@@ -514,6 +551,7 @@ internal/config/           конфиг, env-override секретов, Validate
 internal/tenant/           листовой пакет tenant.With/From
 internal/tlsfp/            JA3 из ClientHello
 internal/classify/         типизированный детект PII (Luhn, SSN, email, phone)
+internal/gql/              парсер GraphQL-over-HTTP (операция/поля/аргументы) для discovery+BOLA
 internal/api/              admin API: хендлеры каталога/posture/auth/tenants/license/…
 sdk/gatewayverify/         reference-SDK для backend'ов (проверка подписи)
 web/                        отдельный маркетинговый сайт + pilot-форма (свой периметр, раздел 12)
