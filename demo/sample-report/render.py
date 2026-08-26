@@ -117,11 +117,18 @@ code {{ font-family:"SF Mono",Menlo,Consolas,monospace; font-size:9pt; backgroun
 
     # Executive summary
     a("<h2>What we found</h2>")
+    # Deliberately NOT posture.coverage_pct as a headline number. Coverage counts
+    # auth + WAF + rate-limit as "protecting" an endpoint, and a passive
+    # assessment runs in observe mode, where the enforcement-only controls are
+    # switched off by design — so coverage reads 0% during a pilot regardless of
+    # how well the estate is configured. The unprotected count is the number that
+    # survives both modes, because it describes the customer's own configuration
+    # rather than what AEGIS happens to be enforcing while it watches.
     a(f"""<div class="kpis">
   <div class="kpi bad"><div class="n">{crit}</div><div class="l">Critical findings</div></div>
   <div class="kpi bad"><div class="n">{len(idor)}</div><div class="l">Confirmed data leaks</div></div>
   <div class="kpi"><div class="n">{posture.get('total', 0)}</div><div class="l">APIs discovered</div></div>
-  <div class="kpi"><div class="n">{posture.get('coverage_pct', 0)}%</div><div class="l">Protection coverage</div></div>
+  <div class="kpi bad"><div class="n">{posture.get('unprotected', 0)}</div><div class="l">With no auth at all</div></div>
 </div>""")
 
     a(f"""<p>AEGIS ran in front of the API in passive mode: it inspected and recorded, and
@@ -172,6 +179,12 @@ because the requests are syntactically perfect.</p>""")
     a("<p>Every endpoint below was discovered from traffic — nothing was declared in "
       "advance. <em>Unprotected</em> means none of authentication, rate limiting or "
       "firewall applies to it.</p>")
+    a("<p>One caveat worth stating rather than hiding: this assessment ran in passive "
+      "mode, so AEGIS enforced nothing while it watched. The <em>partial</em> and "
+      "<em>protected</em> labels therefore describe what was active during the "
+      "assessment, not the ceiling of what the estate could enforce. "
+      "<em>Unprotected</em> is unaffected by that — an endpoint with no authentication "
+      "has none either way, which is why the summary above leads with that number.</p>")
     a("<table><tr><th>Endpoint</th><th>Posture</th><th>Requests</th>"
       "<th>Anonymous</th><th>Responses with PII</th><th>Risk</th></tr>")
     for e in sorted(eps, key=lambda x: -x.get("risk_score", 0)):

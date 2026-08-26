@@ -61,7 +61,7 @@ go run "$ROOT/cmd/licensegen" -genkey -out "$BIN/sample" >"$BIN/genkey.txt" 2>&1
 PUBKEY="$(grep -oE '^  [A-Za-z0-9+/=]{40,}$' "$BIN/genkey.txt" | tr -d ' ')"
 go build -ldflags "-X api-gateway/internal/license.publicKeyB64=$PUBKEY" -o "$BIN/gateway" "$ROOT/cmd/gateway"
 go run "$ROOT/cmd/licensegen" -issue -key "$BIN/sample.key" \
-  -licensee "Sample Report Stand" -tier production -days 1 -out "$BIN/sample.lic" >/dev/null
+  -licensee "Sample Report Stand" -tier trial -days 1 -out "$BIN/sample.lic" >/dev/null
 export AEGIS_LICENSE_PATH="$BIN/sample.lic"
 
 go build -o "$BIN/backend" "$HERE/backend"

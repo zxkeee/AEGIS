@@ -18,6 +18,43 @@
 
 ---
 
+## See it work first
+
+Everything below is reference material — you do not have to read any of it to
+find out whether AEGIS catches anything interesting. One command stands it up in
+front of a deliberately flawed API, sends ordinary traffic through it, and prints
+what it found:
+
+```bash
+./quickstart.sh
+```
+
+Needs `go`, `curl`, `redis-server` and a reachable PostgreSQL (the API catalog
+lives there). Roughly two minutes, nothing is installed, Ctrl-C removes it all.
+It ends on something like:
+
+```
+  CRITICAL  Sensitive data exposed to unauthenticated callers
+         GET /api/v1/customers/{id}   API3:2023
+         endpoint returned PCI/PII (credit_card, email) on 5 response(s)
+         while 5 request(s) arrived without authentication
+
+  CRITICAL  Confirmed IDOR — a user reading other users' records
+         4 objects; the owner was read from each response body
+```
+
+None of that is configured in advance — it is discovered from the traffic.
+
+**Prefer to read the output rather than run it?**
+[docs/assets/AEGIS-Sample-Findings-Report.pdf](./docs/assets/AEGIS-Sample-Findings-Report.pdf)
+is the same run written up as the report a pilot hands back. It is generated, not
+written: see [`demo/sample-report/`](./demo/sample-report/).
+
+**Want the one-thing-a-WAF-cannot-do version?** `./demo/idor-demo.sh` is a
+90-second walkthrough of a single IDOR being detected and then blocked.
+
+---
+
 > This document is the authoritative technical reference for AEGIS. It is written
 > for platform engineers, security engineers, SREs and architects who need to
 > understand precisely how the system behaves, how to operate it, and how to

@@ -45,7 +45,7 @@ code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:9pt; background
   <div class="kpi bad"><div class="n">2</div><div class="l">Critical findings</div></div>
   <div class="kpi bad"><div class="n">4</div><div class="l">Confirmed data leaks</div></div>
   <div class="kpi"><div class="n">6</div><div class="l">APIs discovered</div></div>
-  <div class="kpi"><div class="n">16%</div><div class="l">Protection coverage</div></div>
+  <div class="kpi bad"><div class="n">3</div><div class="l">With no auth at all</div></div>
 </div>
 <p>AEGIS ran in front of the API in passive mode: it inspected and recorded, and
 blocked nothing. In that window it discovered <strong>6 live endpoints</strong>,
@@ -86,6 +86,7 @@ because the requests are syntactically perfect.</p>
 </div>
 <h2>API inventory and protection posture</h2>
 <p>Every endpoint below was discovered from traffic — nothing was declared in advance. <em>Unprotected</em> means none of authentication, rate limiting or firewall applies to it.</p>
+<p>One caveat worth stating rather than hiding: this assessment ran in passive mode, so AEGIS enforced nothing while it watched. The <em>partial</em> and <em>protected</em> labels therefore describe what was active during the assessment, not the ceiling of what the estate could enforce. <em>Unprotected</em> is unaffected by that — an endpoint with no authentication has none either way, which is why the summary above leads with that number.</p>
 <table><tr><th>Endpoint</th><th>Posture</th><th>Requests</th><th>Anonymous</th><th>Responses with PII</th><th>Risk</th></tr>
 <tr><td><code>GET /api/v1/customers/{id}</code></td>
 <td><span class="tag crit">unprotected</span></td><td>6</td>
@@ -108,9 +109,9 @@ because the requests are syntactically perfect.</p>
 <td>0</td><td>9</td>
 <td>20</td></tr>
 <tr><td><code>POST /api/v1/payments</code></td>
-<td><span class="tag ok">protected</span></td><td>5</td>
+<td><span class="tag warn">partial</span></td><td>5</td>
 <td>0</td><td>0</td>
-<td>0</td></tr>
+<td>10</td></tr>
 </table>
 <h2>Who is calling what</h2>
 <p>Consumer identity is taken from the verified JWT where one is present, and falls back to source address where none is.</p>
