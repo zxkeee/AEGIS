@@ -1,0 +1,77 @@
+# Northwind Payments — the OpenAPI spec as the (fictional) team maintains it.
+#
+# It is deliberately BEHIND production, which is the normal state of affairs in
+# a real estate rather than an unusual failure: v1 is documented, the half-done
+# v2 migration is not, the partner API was added by a different team, the admin
+# surface was never considered public enough to document, and nobody documents
+# /internal.
+#
+# AEGIS compares this against what it actually observes and reports the gap
+# (GET /api/discovery/drift, plus undocumented_* findings on the catalog).
+# Path templates use the gateway's own {id} normalisation so documented and
+# observed surfaces compare exactly.
+openapi: 3.0.3
+info:
+  title: Northwind Payments API
+  version: "1.4.0"
+  description: Public customer and order API. Fictional, for the AEGIS sample report.
+
+paths:
+  /api/v1/customers/{id}:
+    get:
+      summary: Fetch a customer
+      responses: { "200": { description: OK } }
+
+  /api/v1/orders:
+    get:
+      summary: List orders
+      responses: { "200": { description: OK } }
+
+  /api/v1/orders/{id}:
+    get:
+      summary: Fetch an order
+      responses: { "200": { description: OK } }
+
+  /api/v1/invoices:
+    get:
+      summary: List invoices
+      responses: { "200": { description: OK } }
+
+  /api/v1/invoices/{id}:
+    get:
+      summary: Fetch an invoice
+      responses: { "200": { description: OK } }
+
+  # Documented for POST only — production also serves GET, which AEGIS reports
+  # as an undocumented method rather than an undocumented endpoint.
+  /api/v1/payments:
+    post:
+      summary: Take a payment
+      responses: { "200": { description: OK } }
+
+  /api/v1/products:
+    get:
+      summary: List products
+      responses: { "200": { description: OK } }
+
+  /api/v1/products/{id}:
+    get:
+      summary: Fetch a product
+      responses: { "200": { description: OK } }
+
+  /health:
+    get:
+      summary: Liveness probe
+      responses: { "200": { description: OK } }
+
+# Not documented anywhere above, but live in production:
+#   /api/v1/customers/{id}/cards      (added for the mobile app)
+#   /api/v1/refunds, /api/v1/refunds/{id}
+#   /api/v1/shipments/{id}
+#   /api/v1/subscriptions/{id}
+#   /api/v1/webhooks
+#   /api/v1/payments/{id}
+#   /api/v2/*                          (migration in progress)
+#   /api/partner/v1/*                  (partner team)
+#   /api/v1/admin/*                    (considered internal)
+#   /internal/*                        (considered internal)

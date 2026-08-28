@@ -1,14 +1,15 @@
 # AEGIS — config for the sample-report stand (demo/sample-report/generate.sh).
 #
 # Fronts the deliberately flawed "Northwind Payments" backend. The per-route
-# control mix is intentionally uneven, because that unevenness is exactly what a
-# real estate looks like and what the posture report is meant to surface:
+# control mix is intentionally uneven, because a uniform estate is not what a
+# posture report is for and not what anyone actually has:
 #
-#   /api/v1/payments   auth + WAF + rate-limit  -> protected
-#   /api/v1/orders     auth + WAF               -> partial
-#   /api/v1/invoices   auth                     -> partial
-#   /api/v1/customers  none (the bug)           -> unprotected, and it serves PII
-#   /internal          none (the bug)           -> unprotected, and it dumps PII
+#   /api/v1/payments        auth + WAF + rate-limit   the one route done properly
+#   /api/v1/orders, v2      auth + WAF                no rate limit
+#   /api/v1/invoices, …     auth only
+#   /api/partner/v1         none — but callers do send tokens (latent exposure)
+#   /api/v1/customers       none (the bug) — and it serves PII
+#   /internal               none (the bug) — and it dumps PII
 #
 # Secrets come from the environment: AEGIS_ADMIN_SECRET, AEGIS_REDIS_PASSWORD,
 # AEGIS_JWT_SECRET, AEGIS_LICENSE_PATH. Plaintext HTTP on purpose (local stand).
@@ -33,7 +34,10 @@ logging:
   level: "warn"
   format: "json"
 
-discovery: {}
+discovery:
+  # The team's own OpenAPI document, deliberately behind production. Drives the
+  # documented-vs-observed drift findings.
+  spec_path: "demo/sample-report/openapi.yaml"
 
 security:
   auth:
@@ -57,33 +61,121 @@ security:
 
   abuse:
     enabled: true
-    block_mode: false          # detect-only: we want the finding recorded, not the request blocked
+    block_mode: false          # detect-only: record the finding, don't block the request
     object_ownership: true     # single-object IDOR detection
     owner_fields: ["user_id"]  # confirm the object's true owner from the response body
-    enum_threshold: 4          # low, so a short demo sweep registers as enumeration
+    enum_threshold: 25         # generous: only a real sweep should trip it, not normal browsing
     window: 5m
+    # Adaptive baselines are deliberately OFF here. They compare a consumer
+    # against its own learned norm, and a 30-second synthetic run establishes no
+    # norm worth comparing against — with one, ordinary browsing (a user opening
+    # a dozen invoices) trips as "4x baseline" and lands in the report as a
+    # critical false positive. On a real week-long pilot the baseline is real and
+    # adaptive is the better setting; for a scripted sample the absolute ceiling
+    # is the honest one.
+    adaptive: false
+    # Privileged surface. The backend does not check roles itself, so this is the
+    # only thing that would notice a non-admin reaching it (BFLA / OWASP API5).
+    privileged:
+      - path: "/api/v1/admin"
+        required_roles: ["admin"]
 
+# NOTE on trailing slashes: net/http's ServeMux matches a pattern WITHOUT a
+# trailing slash exactly, and one WITH a trailing slash as a subtree. AEGIS's
+# posture engine, by contrast, matches routes by segment-prefix. A collection
+# that also serves items therefore needs BOTH forms declared, or the item paths
+# get auth applied by posture and a 404 from the proxy.
 routes:
-  # Fully protected: auth + WAF + rate limit.
+  # The one route configured the way everything should be.
   - path: "/api/v1/payments"
     upstreams: ["http://127.0.0.1:19100"]
     require_auth: true
     waf: true
     rate_limit:
       enabled: true
-      requests: 100
+      requests: 5000
       window: 60s
 
-  # Partial: auth + WAF, no rate limit.
+  - path: "/api/v1/payments/"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: true
+    waf: true
+    rate_limit:
+      enabled: true
+      requests: 5000
+      window: 60s
+
+  - path: "/api/v1/orders"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: true
+    waf: true
+
   - path: "/api/v1/orders/"
     upstreams: ["http://127.0.0.1:19100"]
     require_auth: true
     waf: true
 
-  # Partial: auth only.
+  - path: "/api/v2/"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: true
+    waf: true
+
+  - path: "/api/v1/admin/"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: true
+    waf: true
+
+  - path: "/api/v1/invoices"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: true
+    waf: false
+
   - path: "/api/v1/invoices/"
     upstreams: ["http://127.0.0.1:19100"]
     require_auth: true
+    waf: false
+
+  - path: "/api/v1/refunds"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: true
+    waf: false
+
+  - path: "/api/v1/refunds/"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: true
+    waf: false
+
+  - path: "/api/v1/products"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: false
+    waf: true
+
+  - path: "/api/v1/products/"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: false
+    waf: true
+
+  - path: "/api/v1/shipments/"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: true
+    waf: false
+
+  - path: "/api/v1/subscriptions/"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: true
+    waf: false
+
+  - path: "/api/v1/webhooks"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: true
+    waf: false
+
+  # Partner API: no auth enforced, though every real caller does send a token.
+  # That combination is what produces a *latent* exposure finding rather than a
+  # confirmed one.
+  - path: "/api/partner/v1/"
+    upstreams: ["http://127.0.0.1:19100"]
+    require_auth: false
     waf: false
 
   # THE BUG: serves customer PII, requires nothing.

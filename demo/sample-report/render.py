@@ -15,7 +15,7 @@ import html
 import json
 import pathlib
 import sys
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 
 HERE = pathlib.Path(__file__).resolve().parent
 OUT = HERE / "out"
@@ -100,6 +100,21 @@ def main():
 
     idor = [v for k, v in abuse.items() if k[0] == "bola_object_ownership"]
     enum = [v for k, v in abuse.items() if k[0] == "bola_enumeration"]
+    # BFLA carries no object_id, so the (reason, object, endpoint) dedup key
+    # collapses every occurrence into one. Count the raw events for the total and
+    # keep a deduped example for the wording.
+    bfla = [v for k, v in abuse.items() if k[0] == "bfla_privileged_access"]
+    bfla_calls = sum(1 for e in events
+                     if e.get("reason") == "bfla_privileged_access"
+                     and not any((e.get("path") or "").startswith(p) for p in ADMIN_PATH_PREFIXES))
+
+    # Catalog findings split by kind: the data-exposure ones are the headline,
+    # the documented-vs-observed drift is a section of its own because 19 rows of
+    # "not in your spec" buried among criticals reads as noise rather than as the
+    # separate, actionable inventory problem it is.
+    rows = findings.get("findings", [])
+    exposure = [r for r in rows if r["finding"]["code"].startswith("sensitive_data")]
+    drift = [r for r in rows if r["finding"]["code"].startswith("undocumented")]
 
     crit = findings.get("by_severity", {}).get("critical", 0)
     warn = findings.get("by_severity", {}).get("warning", 0)
@@ -225,7 +240,7 @@ footer {{ margin-top:10mm; padding-top:3mm; border-top:1px solid var(--line);
   <div class="kpi bad"><div class="n">{crit}</div><div class="l">Critical<br>findings</div></div>
   <div class="kpi bad"><div class="n">{len(idor)}</div><div class="l">Confirmed<br>data leaks</div></div>
   <div class="kpi"><div class="n">{posture.get('total', 0)}</div><div class="l">APIs<br>discovered</div></div>
-  <div class="kpi bad"><div class="n">{posture.get('unprotected', 0)}</div><div class="l">With no<br>auth at all</div></div>
+  <div class="kpi bad"><div class="n">{len(drift)}</div><div class="l">Not in your<br>API spec</div></div>
 </div>""")
 
     a(f"""<p>AEGIS ran in front of the API in passive mode: it inspected and recorded, and
@@ -234,15 +249,15 @@ of which <strong>{posture.get('unprotected', 0)} enforce no authentication, rate
 Two of them return customer payment-card and email data to callers presenting no
 credential whatsoever.</p>""")
 
-    a(f"""<p>Separately, the gateway observed <strong>{len(idor)} confirmed cases</strong> of one
-authenticated user reading another user's records — not inferred from volume, but
+    a(f"""<p>Separately, the gateway observed <strong>{len(idor)} confirmed cases</strong> of an
+authenticated caller reading records it does not own — not inferred from volume, but
 confirmed by comparing the owner id in each response body against the caller's
 verified identity. This is the class of flaw a signature firewall cannot detect,
 because the requests are syntactically perfect.</p>""")
 
     # ── Findings ─────────────────────────────────────────────────────────────
     a("<h2>Critical findings</h2>")
-    for row in findings.get("findings", []):
+    for row in exposure:
         f = row["finding"]
         sev = f.get("severity", "warning")
         cls = "crit" if sev == "critical" else "warn"
@@ -255,12 +270,19 @@ because the requests are syntactically perfect.</p>""")
 </div>""")
 
     if idor:
-        ex = idor[0]["extra"]
+        # Describe the consumer responsible for most of it, not whichever event
+        # happened to be logged first: a stray single detection elsewhere would
+        # otherwise be quoted underneath a count belonging to someone else.
+        by_consumer = Counter(v["extra"].get("consumer") for v in idor)
+        worst, worst_n = by_consumer.most_common(1)[0]
+        ex = next(v for v in idor if v["extra"].get("consumer") == worst)["extra"]
+        others = len(idor) - worst_n
+        tail = f" ({others} further detection{'' if others == 1 else 's'} elsewhere)" if others else ""
         a(f"""<div class="finding">
   <div class="hd"><span class="ttl">Broken object level authorization — confirmed</span>
     <span class="tag crit">critical · API1:2023</span></div>
   <div class="where"><code>{esc(ex.get('endpoint'))}</code>
-     &nbsp;{len(idor)} objects read by a caller who does not own them</div>
+     &nbsp;{worst_n} objects read by one caller that does not own them{esc(tail)}</div>
   <div class="why">{esc(ex.get('why'))}</div>
 </div>""")
 
@@ -270,6 +292,33 @@ because the requests are syntactically perfect.</p>""")
     <span class="tag crit">critical · API1:2023</span></div>
   <div class="why">{esc(enum[0]['extra'].get('why'))}</div>
 </div>""")
+
+    if bfla:
+        ex = bfla[0]["extra"]
+        a(f"""<div class="finding">
+  <div class="hd"><span class="ttl">Privileged endpoints reachable without the role</span>
+    <span class="tag crit">critical · API5:2023</span></div>
+  <div class="where">{bfla_calls} call{'' if bfla_calls == 1 else 's'} to the admin surface by a consumer lacking the required role</div>
+  <div class="why">{esc(ex.get('why'))}</div>
+</div>""")
+
+    # ── Spec drift ───────────────────────────────────────────────────────────
+    if drift:
+        a("<h2>Endpoints your API spec does not mention</h2>")
+        a(f"""<p>The OpenAPI document shipped alongside this API describes part of it.
+AEGIS compared that document against what actually served traffic and found
+<strong>{len(drift)} live endpoints absent from it</strong>. Undocumented surface is not a
+vulnerability by itself, but it is the surface nobody reviews, rate-limits or
+threat-models — OWASP tracks it as API9 for that reason.</p>""")
+        a("<table><tr><th>Endpoint</th><th>Issue</th></tr>")
+        for row in drift[:14]:
+            f = row["finding"]
+            kind = "method not documented" if f["code"] == "undocumented_method" else "not in the spec"
+            a(f"""<tr><td><code>{esc(row.get('method'))} {esc(row.get('path_template'))}</code></td>
+<td>{esc(kind)}</td></tr>""")
+        a("</table>")
+        if len(drift) > 14:
+            a(f'<p><em>{len(drift) - 14} further undocumented endpoints omitted for length.</em></p>')
 
     # ── Inventory ────────────────────────────────────────────────────────────
     a("<h2>API inventory and posture</h2>")
@@ -283,7 +332,8 @@ because the requests are syntactically perfect.</p>""")
       "no authentication has none either way, which is why the summary leads with that number.</p>")
     a("<table><tr><th>Endpoint</th><th>Posture</th><th>Req</th>"
       "<th>Anon</th><th>PII responses</th><th>Risk</th></tr>")
-    for e in sorted(eps, key=lambda x: -x.get("risk_score", 0)):
+    shown = sorted(eps, key=lambda x: -x.get("risk_score", 0))[:14]
+    for e in shown:
         p = e.get("posture", "")
         cls = {"unprotected": "crit", "partial": "warn", "protected": "ok"}.get(p, "warn")
         a(f"""<tr><td><code>{esc(e.get('method'))} {esc(e.get('path_template'))}</code></td>
@@ -291,13 +341,16 @@ because the requests are syntactically perfect.</p>""")
 <td>{esc(e.get('anon_count', 0))}</td><td>{esc(e.get('pii_count', 0))}</td>
 <td>{esc(e.get('risk_score', 0))}</td></tr>""")
     a("</table>")
+    if len(eps) > len(shown):
+        a(f'<p><em>Highest-risk {len(shown)} of {len(eps)} discovered endpoints shown.</em></p>')
 
     # ── Consumers ────────────────────────────────────────────────────────────
     a("<h2>Who is calling what</h2>")
     a("<p>Consumer identity is taken from the verified JWT where one is present, and "
       "falls back to source address where none is.</p>")
     a("<table><tr><th>Consumer</th><th>Identified by</th><th>Requests</th><th>Endpoints</th></tr>")
-    for c in sorted(cons, key=lambda x: -x.get("request_count", 0)):
+    top_cons = sorted(cons, key=lambda x: -x.get("request_count", 0))[:10]
+    for c in top_cons:
         kind = "verified token" if c.get("kind") == "jwt" else "source address (no credential)"
         a(f"""<tr><td><code>{esc(c.get('label'))}</code></td><td>{esc(kind)}</td>
 <td>{esc(c.get('request_count', 0))}</td><td>{esc(c.get('endpoints_touched', 0))}</td></tr>""")

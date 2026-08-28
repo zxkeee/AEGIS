@@ -13,7 +13,7 @@ the code moves.
 ## Run it
 
 ```bash
-./demo/sample-report/generate.sh      # stand up, drive traffic, export to out/
+./demo/sample-report/generate.sh      # stand up, drive ~2,700 requests, export to out/
 python3 demo/sample-report/render.py  # out/ -> docs/assets/…Report.html
 ```
 
@@ -27,14 +27,24 @@ down on exit.
 
 ## What the scenario contains
 
-`backend/main.go` is "Northwind Payments", fictional and deliberately flawed.
-The weaknesses are the ones that actually show up in real estates:
+`backend/main.go` is "Northwind Payments", fictional and deliberately flawed. It
+is estate-shaped on purpose — a v1 that grew, a half-done v2 migration, a partner
+API, an admin surface, an "internal" namespace — because a five-endpoint toy
+produces a report a CISO reads as a lab demo rather than a picture of their own
+systems. The run discovers ~28 endpoints from ~2,700 requests by 11 consumers.
 
-| Endpoint | The flaw |
+| Planted flaw | What AEGIS reports |
 |---|---|
-| `GET /api/v1/customers/{id}` | Returns PII (email, phone, PAN); the route in front of it requires nothing. The "internal-only" endpoint that was never locked down. |
-| `GET /api/v1/orders/{id}` | Requires auth, but hands any order to any authenticated caller — a textbook IDOR. The true owner is in the body as `user_id`. |
-| `GET /internal/reports/export` | Bulk customer dump, unauthenticated, because "it's on an internal path". |
+| `/api/v1/customers/{id}`, `/…/cards`, `/internal/reports/export` return PII behind routes that require nothing | `sensitive_data_no_auth`, critical, OWASP API3 |
+| `/api/v1/orders/{id}` hands any order to any authenticated caller | `bola_object_ownership`, confirmed from the response body, OWASP API1 |
+| One batch job walks order ids | `bola_enumeration` against the absolute ceiling |
+| `/api/v1/admin/*` reachable by a consumer holding only `user` | `bfla_privileged_access`, OWASP API5 |
+| `openapi.yaml` is behind production | 19 × `undocumented_endpoint` / `undocumented_method`, OWASP API9 |
+
+Ordinary traffic reads its *own* objects (see `ownOrder` in `traffic/main.go`).
+That matters: if everybody reads everybody's records, "confirmed IDOR" stops
+distinguishing anything and the finding is noise. With it, 34 of 35 detections
+belong to the one job that genuinely misbehaves.
 
 `gateway.yaml` gives each route a different control mix on purpose (protected /
 partial / unprotected), because a uniform estate is not what a posture report is
@@ -42,6 +52,20 @@ for.
 
 All data is synthetic: RFC 2606 `example.com` addresses and the standard test
 card numbers. No real person or company appears anywhere.
+
+## Deliberate configuration choices
+
+`abuse.adaptive` is **off**. Adaptive baselines compare a consumer against its
+own learned norm, and a 30-second scripted run establishes no norm worth
+comparing against — with it on, ordinary browsing (a user opening a dozen
+invoices) trips as "4× baseline" and lands in the report as a critical false
+positive. On a real week-long pilot the baseline is real and adaptive is the
+better setting; for a sample the absolute ceiling is the honest one.
+
+The deliberate order sweep is kept modest for the same reason `GET
+/api/block-log` matters: that endpoint returns the last 100 events and ignores a
+`limit` parameter, so a larger sweep silently pushes every BFLA detection out of
+the exported window.
 
 ## Two failure modes the script guards against
 

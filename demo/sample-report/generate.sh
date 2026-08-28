@@ -66,6 +66,7 @@ export AEGIS_LICENSE_PATH="$BIN/sample.lic"
 
 go build -o "$BIN/backend" "$HERE/backend"
 go build -o "$BIN/mint" "$ROOT/demo/mint-jwt"
+go build -o "$BIN/traffic" "$HERE/traffic"
 
 # ── 2. Boot ───────────────────────────────────────────────────────────────────
 say "2/5  Starting Redis, the fictional backend and AEGIS"
@@ -80,45 +81,27 @@ for _ in $(seq 1 40); do
 done
 curl -fsS "$ADMIN/health" >/dev/null || { echo "gateway failed to start:"; tail -20 "$BIN/gateway.log"; exit 1; }
 
-ALICE="$("$BIN/mint" -secret "$AEGIS_JWT_SECRET" -sub alice.renner@example.com -uid 7)"
-BOB="$("$BIN/mint" -secret "$AEGIS_JWT_SECRET" -sub bob.kessler@example.com -uid 9)"
+# A dozen consumers with distinct identities, because "who calls what" is only
+# worth a page in the report if there is actually a graph to show. uid is the
+# ownership claim; sub is an unrelated email, which is the realistic case.
+mint() { "$BIN/mint" -secret "$AEGIS_JWT_SECRET" -sub "$1" -uid "$2" -roles "$3" -ttl 2h; }
+T_WEB=$(mint web-checkout@northwind.example 7 user)
+T_MOBILE=$(mint mobile-app@northwind.example 9 user)
+T_SUPPORT=$(mint support-tools@northwind.example 11 user)
+T_PARTNER=$(mint partner-integration@acme-partner.example 12 partner)
+T_ANALYTICS=$(mint analytics-batch@northwind.example 13 user)
+T_BILLING=$(mint billing-worker@northwind.example 14 service)
+T_RECON=$(mint reconciliation@northwind.example 15 service)
+T_OPS=$(mint ops-console@northwind.example 16 admin)
+T_MARKET=$(mint marketing-sync@northwind.example 17 user)
+T_LEGACY=$(mint legacy-importer@northwind.example 18 service)
 
-# ── 3. Traffic ────────────────────────────────────────────────────────────────
-# Deliberately mundane: the report is more convincing when the findings fall out
-# of ordinary-looking usage rather than an obvious attack script.
-say "3/5  Driving traffic (legitimate use, plus the two real problems)"
-
-# Normal authenticated business traffic.
-for i in 1001 1003; do
-  curl -s -o /dev/null -H "Authorization: Bearer $ALICE" "$GW/api/v1/orders/$i"
-done
-curl -s -o /dev/null -H "Authorization: Bearer $BOB" "$GW/api/v1/orders/1002"
-for i in 501 502 503; do
-  curl -s -o /dev/null -H "Authorization: Bearer $ALICE" "$GW/api/v1/invoices/$i"
-done
-for _ in 1 2 3 4 5; do
-  curl -s -o /dev/null -X POST -H "Authorization: Bearer $ALICE" \
-    -H 'Content-Type: application/json' -d '{"amount":"25.00"}' "$GW/api/v1/payments"
-done
-
-# Problem 1: the customer endpoint serves PII and asks for nothing. A partner
-# integration (no token at all) has been reading it for months.
-for id in 7 9 11 12 13; do
-  curl -s -o /dev/null "$GW/api/v1/customers/$id"
-done
-
-# Problem 2: an authenticated user reads an order that is not theirs. One
-# request, no volume signature — the case a signature WAF cannot see.
-curl -s -o /dev/null -H "Authorization: Bearer $BOB" "$GW/api/v1/orders/1001"
-
-# The same caller then walks a short range of order ids.
-for i in 1002 1003 1004 1005; do
-  curl -s -o /dev/null -H "Authorization: Bearer $BOB" "$GW/api/v1/orders/$i"
-done
-
-# The "internal" bulk export, reachable without a credential.
-curl -s -o /dev/null "$GW/internal/reports/export"
-curl -s -o /dev/null "$GW/health"
+say "3/5  Driving traffic (ordinary business use, plus the real problems)"
+"$BIN/traffic" -gw "$GW" -n 2400 \
+  -tokens "web-checkout=7:$T_WEB,mobile-app=9:$T_MOBILE,support-tools=11:$T_SUPPORT,\
+partner-integration=12:$T_PARTNER,analytics-batch=13:$T_ANALYTICS,billing-worker=14:$T_BILLING,\
+reconciliation=15:$T_RECON,ops-console=16:$T_OPS,marketing-sync=17:$T_MARKET,legacy-importer=18:$T_LEGACY,\
+anonymous-partner,uptime-robot"
 
 # ── 3b. Prove the traffic actually landed ─────────────────────────────────────
 # Without this the script is happy to "succeed" while every request 404s (a
@@ -143,8 +126,8 @@ ok=1
 probe /health 200                      || ok=0
 probe /api/v1/customers/7 200          || ok=0
 probe /internal/reports/export 200     || ok=0
-probe /api/v1/orders/1002 200 "$BOB"   || ok=0
-probe /api/v1/invoices/501 200 "$ALICE" || ok=0
+probe /api/v1/orders/1002 200 "$T_WEB"   || ok=0
+probe /api/v1/invoices/501 200 "$T_WEB" || ok=0
 [ "$ok" = "1" ] || { echo; echo "Traffic is not reaching the backend — the report would be empty/misleading. Aborting."; exit 1; }
 
 # ── 4. Let the catalog flush ──────────────────────────────────────────────────
@@ -179,7 +162,7 @@ fetch "$ADMIN/api/posture/summary"   "$OUT/posture.json"    || fail=1
 fetch "$ADMIN/api/catalog?limit=100" "$OUT/catalog.json"    || fail=1
 fetch "$ADMIN/api/consumers"         "$OUT/consumers.json"  || fail=1
 fetch "$ADMIN/api/compliance"        "$OUT/compliance.json" || fail=1
-fetch "$ADMIN/api/block-log?limit=50" "$OUT/block-log.json" || fail=1
+fetch "$ADMIN/api/block-log" "$OUT/block-log.json" || fail=1
 fetch "$ADMIN/api/report?format=csv"   "$OUT/catalog.csv"  csv || fail=1
 fetch "$ADMIN/api/findings?format=csv" "$OUT/findings.csv" csv || fail=1
 [ "$fail" = "0" ] || { echo; echo "One or more exports failed — the report would be incomplete. Aborting."; exit 1; }

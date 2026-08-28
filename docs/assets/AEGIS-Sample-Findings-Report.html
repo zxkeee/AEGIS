@@ -104,18 +104,18 @@ footer { margin-top:10mm; padding-top:3mm; border-top:1px solid var(--line);
 <p class="dek">Northwind Payments — a fictional estate. Every figure below was exported from a real gateway run, not written by hand.</p>
 <h2>What we found</h2>
 <div class="kpis">
-  <div class="kpi bad"><div class="n">2</div><div class="l">Critical<br>findings</div></div>
-  <div class="kpi bad"><div class="n">4</div><div class="l">Confirmed<br>data leaks</div></div>
-  <div class="kpi"><div class="n">6</div><div class="l">APIs<br>discovered</div></div>
-  <div class="kpi bad"><div class="n">3</div><div class="l">With no<br>auth at all</div></div>
+  <div class="kpi bad"><div class="n">4</div><div class="l">Critical<br>findings</div></div>
+  <div class="kpi bad"><div class="n">35</div><div class="l">Confirmed<br>data leaks</div></div>
+  <div class="kpi"><div class="n">28</div><div class="l">APIs<br>discovered</div></div>
+  <div class="kpi bad"><div class="n">19</div><div class="l">Not in your<br>API spec</div></div>
 </div>
 <p>AEGIS ran in front of the API in passive mode: it inspected and recorded, and
-blocked nothing. In that window it discovered <strong>6 live endpoints</strong>,
-of which <strong>3 enforce no authentication, rate limiting or firewall at all</strong>.
+blocked nothing. In that window it discovered <strong>28 live endpoints</strong>,
+of which <strong>8 enforce no authentication, rate limiting or firewall at all</strong>.
 Two of them return customer payment-card and email data to callers presenting no
 credential whatsoever.</p>
-<p>Separately, the gateway observed <strong>4 confirmed cases</strong> of one
-authenticated user reading another user's records — not inferred from volume, but
+<p>Separately, the gateway observed <strong>35 confirmed cases</strong> of an
+authenticated caller reading records it does not own — not inferred from volume, but
 confirmed by comparing the owner id in each response body against the caller's
 verified identity. This is the class of flaw a signature firewall cannot detect,
 because the requests are syntactically perfect.</p>
@@ -125,87 +125,203 @@ because the requests are syntactically perfect.</p>
     <span class="tag crit">critical · API3:2023</span></div>
   <div class="where"><code>GET /api/v1/customers/{id}</code>
      &nbsp;risk 75</div>
-  <div class="why">endpoint returned PCI/PII (credit_card, email) on 6 response(s) while 6 request(s) arrived without authentication</div>
+  <div class="why">endpoint returned PCI/PII (credit_card, email) on 61 response(s) while 61 request(s) arrived without authentication</div>
+</div>
+<div class="finding">
+  <div class="hd"><span class="ttl">Sensitive data exposed to unauthenticated callers</span>
+    <span class="tag crit">critical · API3:2023</span></div>
+  <div class="where"><code>GET /api/partner/v1/customers/{id}</code>
+     &nbsp;risk 75</div>
+  <div class="why">endpoint returned PCI/PII (credit_card, email) on 45 response(s) while 45 request(s) arrived without authentication</div>
+</div>
+<div class="finding">
+  <div class="hd"><span class="ttl">Sensitive data exposed to unauthenticated callers</span>
+    <span class="tag crit">critical · API3:2023</span></div>
+  <div class="where"><code>GET /api/v1/customers/{id}/cards</code>
+     &nbsp;risk 75</div>
+  <div class="why">endpoint returned PCI (credit_card) on 18 response(s) while 18 request(s) arrived without authentication</div>
 </div>
 <div class="finding">
   <div class="hd"><span class="ttl">Sensitive data exposed to unauthenticated callers</span>
     <span class="tag crit">critical · API3:2023</span></div>
   <div class="where"><code>GET /internal/reports/export</code>
      &nbsp;risk 75</div>
-  <div class="why">endpoint returned PCI/PII (credit_card, email) on 2 response(s) while 2 request(s) arrived without authentication</div>
+  <div class="why">endpoint returned PCI/PII (credit_card, email) on 13 response(s) while 13 request(s) arrived without authentication</div>
 </div>
 <div class="finding">
   <div class="hd"><span class="ttl">Broken object level authorization — confirmed</span>
     <span class="tag crit">critical · API1:2023</span></div>
   <div class="where"><code>GET /api/v1/orders/{id}</code>
-     &nbsp;4 objects read by a caller who does not own them</div>
-  <div class="why">consumer &#x27;bob.kessler@example.com&#x27; GET object &#x27;1005&#x27; (/api/v1/orders/{id}) owned by &#x27;12&#x27; (from response body) — confirmed IDOR (BOLA)</div>
+     &nbsp;34 objects read by one caller that does not own them (1 further detection elsewhere)</div>
+  <div class="why">consumer &#x27;analytics-batch@northwind.example&#x27; GET object &#x27;1036&#x27; (/api/v1/orders/{id}) owned by &#x27;37&#x27; (from response body) — confirmed IDOR (BOLA)</div>
 </div>
 <div class="finding">
   <div class="hd"><span class="ttl">Object enumeration by a single consumer</span>
     <span class="tag crit">critical · API1:2023</span></div>
-  <div class="why">consumer &#x27;bob.kessler@example.com&#x27; accessed 5 distinct object IDs on &#x27;GET /api/v1/orders/{id}&#x27; (hard ceiling 4)</div>
+  <div class="why">consumer &#x27;ip:127.0.0.1&#x27; accessed 58 distinct object IDs on &#x27;GET /api/v1/customers/{id}&#x27; (hard ceiling 25)</div>
 </div>
+<div class="finding">
+  <div class="hd"><span class="ttl">Privileged endpoints reachable without the role</span>
+    <span class="tag crit">critical · API5:2023</span></div>
+  <div class="where">18 calls to the admin surface by a consumer lacking the required role</div>
+  <div class="why">consumer &#x27;support-tools@northwind.example&#x27; called privileged path &#x27;/api/v1/admin&#x27; holding none of the required roles admin</div>
+</div>
+<h2>Endpoints your API spec does not mention</h2>
+<p>The OpenAPI document shipped alongside this API describes part of it.
+AEGIS compared that document against what actually served traffic and found
+<strong>19 live endpoints absent from it</strong>. Undocumented surface is not a
+vulnerability by itself, but it is the surface nobody reviews, rate-limits or
+threat-models — OWASP tracks it as API9 for that reason.</p>
+<table><tr><th>Endpoint</th><th>Issue</th></tr>
+<tr><td><code>GET /api/partner/v1/customers/{id}</code></td>
+<td>not in the spec</td></tr>
+<tr><td><code>GET /api/v1/customers/{id}/cards</code></td>
+<td>not in the spec</td></tr>
+<tr><td><code>GET /internal/reports/export</code></td>
+<td>not in the spec</td></tr>
+<tr><td><code>GET /internal/jobs/status</code></td>
+<td>not in the spec</td></tr>
+<tr><td><code>GET /internal/metrics</code></td>
+<td>not in the spec</td></tr>
+<tr><td><code>GET /api/partner/v1/settlements</code></td>
+<td>not in the spec</td></tr>
+<tr><td><code>POST /api/v1/products</code></td>
+<td>method not documented</td></tr>
+<tr><td><code>GET /api/v1/shipments/{id}</code></td>
+<td>not in the spec</td></tr>
+<tr><td><code>GET /api/v1/subscriptions/{id}</code></td>
+<td>not in the spec</td></tr>
+<tr><td><code>GET /api/v1/refunds/{id}</code></td>
+<td>not in the spec</td></tr>
+<tr><td><code>GET /api/v1/webhooks</code></td>
+<td>not in the spec</td></tr>
+<tr><td><code>POST /api/v1/refunds</code></td>
+<td>not in the spec</td></tr>
+<tr><td><code>GET /api/v2/orders/{id}</code></td>
+<td>not in the spec</td></tr>
+<tr><td><code>GET /api/v2/products</code></td>
+<td>not in the spec</td></tr>
+</table>
+<p><em>5 further undocumented endpoints omitted for length.</em></p>
 <h2>API inventory and posture</h2>
 <p>Every endpoint below was discovered from traffic — nothing was declared in advance. <em>Unprotected</em> means none of authentication, rate limiting or firewall applies to it.</p>
 <p>One caveat stated rather than hidden: this assessment ran in passive mode, so AEGIS enforced nothing while it watched. The <em>partial</em> and <em>protected</em> labels therefore describe what was active during the assessment, not the ceiling of what the estate could enforce. <em>Unprotected</em> is unaffected — an endpoint with no authentication has none either way, which is why the summary leads with that number.</p>
 <table><tr><th>Endpoint</th><th>Posture</th><th>Req</th><th>Anon</th><th>PII responses</th><th>Risk</th></tr>
 <tr><td><code>GET /api/v1/customers/{id}</code></td>
-<td><span class="tag crit">unprotected</span></td><td>6</td>
-<td>6</td><td>6</td>
+<td><span class="tag crit">unprotected</span></td><td>61</td>
+<td>61</td><td>61</td>
+<td>75</td></tr>
+<tr><td><code>GET /api/partner/v1/customers/{id}</code></td>
+<td><span class="tag crit">unprotected</span></td><td>45</td>
+<td>45</td><td>45</td>
+<td>75</td></tr>
+<tr><td><code>GET /api/v1/customers/{id}/cards</code></td>
+<td><span class="tag crit">unprotected</span></td><td>18</td>
+<td>18</td><td>18</td>
 <td>75</td></tr>
 <tr><td><code>GET /internal/reports/export</code></td>
-<td><span class="tag crit">unprotected</span></td><td>2</td>
-<td>2</td><td>2</td>
+<td><span class="tag crit">unprotected</span></td><td>13</td>
+<td>13</td><td>13</td>
 <td>75</td></tr>
 <tr><td><code>GET /health</code></td>
-<td><span class="tag crit">unprotected</span></td><td>2</td>
-<td>2</td><td>0</td>
+<td><span class="tag crit">unprotected</span></td><td>126</td>
+<td>126</td><td>0</td>
 <td>50</td></tr>
+<tr><td><code>GET /internal/jobs/status</code></td>
+<td><span class="tag crit">unprotected</span></td><td>20</td>
+<td>20</td><td>0</td>
+<td>50</td></tr>
+<tr><td><code>GET /internal/metrics</code></td>
+<td><span class="tag crit">unprotected</span></td><td>20</td>
+<td>20</td><td>0</td>
+<td>50</td></tr>
+<tr><td><code>GET /api/partner/v1/settlements</code></td>
+<td><span class="tag crit">unprotected</span></td><td>10</td>
+<td>10</td><td>0</td>
+<td>50</td></tr>
+<tr><td><code>GET /api/v1/products</code></td>
+<td><span class="tag warn">partial</span></td><td>438</td>
+<td>438</td><td>0</td>
+<td>35</td></tr>
+<tr><td><code>GET /api/v1/products/{id}</code></td>
+<td><span class="tag warn">partial</span></td><td>290</td>
+<td>290</td><td>0</td>
+<td>35</td></tr>
+<tr><td><code>POST /api/v1/products</code></td>
+<td><span class="tag warn">partial</span></td><td>16</td>
+<td>16</td><td>0</td>
+<td>35</td></tr>
 <tr><td><code>GET /api/v1/invoices/{id}</code></td>
-<td><span class="tag warn">partial</span></td><td>4</td>
+<td><span class="tag warn">partial</span></td><td>174</td>
 <td>0</td><td>0</td>
 <td>25</td></tr>
-<tr><td><code>GET /api/v1/orders/{id}</code></td>
-<td><span class="tag warn">partial</span></td><td>9</td>
-<td>0</td><td>9</td>
-<td>20</td></tr>
-<tr><td><code>POST /api/v1/payments</code></td>
-<td><span class="tag warn">partial</span></td><td>5</td>
+<tr><td><code>GET /api/v1/invoices</code></td>
+<td><span class="tag warn">partial</span></td><td>116</td>
 <td>0</td><td>0</td>
-<td>10</td></tr>
+<td>25</td></tr>
+<tr><td><code>GET /api/v1/shipments/{id}</code></td>
+<td><span class="tag warn">partial</span></td><td>115</td>
+<td>0</td><td>0</td>
+<td>25</td></tr>
 </table>
+<p><em>Highest-risk 14 of 28 discovered endpoints shown.</em></p>
 <h2>Who is calling what</h2>
 <p>Consumer identity is taken from the verified JWT where one is present, and falls back to source address where none is.</p>
 <table><tr><th>Consumer</th><th>Identified by</th><th>Requests</th><th>Endpoints</th></tr>
-<tr><td><code>alice.renner@example.com</code></td><td>verified token</td>
-<td>11</td><td>3</td></tr>
 <tr><td><code>127.0.0.1</code></td><td>source address (no credential)</td>
-<td>10</td><td>3</td></tr>
-<tr><td><code>bob.kessler@example.com</code></td><td>verified token</td>
-<td>7</td><td>1</td></tr>
+<td>1057</td><td>11</td></tr>
+<tr><td><code>analytics-batch@northwind.example</code></td><td>verified token</td>
+<td>199</td><td>14</td></tr>
+<tr><td><code>support-tools@northwind.example</code></td><td>verified token</td>
+<td>174</td><td>17</td></tr>
+<tr><td><code>legacy-importer@northwind.example</code></td><td>verified token</td>
+<td>162</td><td>14</td></tr>
+<tr><td><code>web-checkout@northwind.example</code></td><td>verified token</td>
+<td>158</td><td>14</td></tr>
+<tr><td><code>ops-console@northwind.example</code></td><td>verified token</td>
+<td>157</td><td>14</td></tr>
+<tr><td><code>marketing-sync@northwind.example</code></td><td>verified token</td>
+<td>155</td><td>14</td></tr>
+<tr><td><code>mobile-app@northwind.example</code></td><td>verified token</td>
+<td>150</td><td>14</td></tr>
+<tr><td><code>reconciliation@northwind.example</code></td><td>verified token</td>
+<td>149</td><td>14</td></tr>
+<tr><td><code>billing-worker@northwind.example</code></td><td>verified token</td>
+<td>145</td><td>14</td></tr>
 </table>
 <h2>Regulatory mapping</h2>
-<p>The findings above map onto 6 controls across OWASP API Top 10, NIS2 and ISO/IEC 27001:2022. This is a mapping aid for an audit conversation, not a certification.</p>
+<p>The findings above map onto 10 controls across OWASP API Top 10, NIS2 and ISO/IEC 27001:2022. This is a mapping aid for an audit conversation, not a certification.</p>
 <table><tr><th>Framework</th><th>Control</th><th>Title</th><th>Severity</th><th>Issues</th></tr>
 <tr><td>OWASP API Top 10</td><td><code>API1:2023</code></td>
 <td>Broken Object Level Authorization</td><td><span class="tag crit">critical</span></td>
 <td>2</td></tr>
 <tr><td>OWASP API Top 10</td><td><code>API3:2023</code></td>
 <td>Excessive data exposure</td><td><span class="tag crit">critical</span></td>
-<td>2</td></tr>
+<td>4</td></tr>
+<tr><td>OWASP API Top 10</td><td><code>API5:2023</code></td>
+<td>Broken Function Level Authorization</td><td><span class="tag crit">critical</span></td>
+<td>1</td></tr>
+<tr><td>OWASP API Top 10</td><td><code>API9:2023</code></td>
+<td>Improper Inventory Management</td><td><span class="tag warn">warning</span></td>
+<td>19</td></tr>
 <tr><td>NIS2</td><td><code>Art. 21(2)(h)</code></td>
 <td>Cryptography and encryption of data</td><td><span class="tag crit">critical</span></td>
-<td>2</td></tr>
+<td>4</td></tr>
 <tr><td>NIS2</td><td><code>Art. 21(2)(i)</code></td>
-<td>Access control policies</td><td><span class="tag crit">critical</span></td>
-<td>2</td></tr>
+<td>Asset management</td><td><span class="tag crit">critical</span></td>
+<td>22</td></tr>
 <tr><td>ISO 27001:2022</td><td><code>A.5.34</code></td>
 <td>Privacy and protection of PII</td><td><span class="tag crit">critical</span></td>
-<td>2</td></tr>
+<td>4</td></tr>
+<tr><td>ISO 27001:2022</td><td><code>A.8.2</code></td>
+<td>Privileged access rights</td><td><span class="tag crit">critical</span></td>
+<td>1</td></tr>
 <tr><td>ISO 27001:2022</td><td><code>A.8.3</code></td>
 <td>Information access restriction</td><td><span class="tag crit">critical</span></td>
 <td>2</td></tr>
+<tr><td>ISO 27001:2022</td><td><code>A.5.9</code></td>
+<td>Inventory of information and associated assets</td><td><span class="tag warn">warning</span></td>
+<td>19</td></tr>
 </table>
 <h2>How this report was produced</h2>
 <div class="note">
