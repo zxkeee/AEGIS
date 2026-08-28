@@ -1,6 +1,10 @@
 package gateway
 
 import (
+	"bytes"
+	"io"
+	"os"
+	"strings"
 	"testing"
 
 	"api-gateway/internal/config"
@@ -140,4 +144,94 @@ func TestExactMatchRoutes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBuildHandlerChain_WarnsAboutExactMatchRoutes pins that the warning is
+// actually WIRED IN, not merely implemented.
+//
+// exactMatchRoutes is covered on its own above, but that proves nothing about
+// whether anyone calls it: deleting the call from BuildHandlerChain left the
+// entire suite green when this was checked by mutation. The whole value of the
+// warning is that it reaches an operator at startup, so the call site is the
+// thing worth pinning.
+//
+// The logger writes to os.Stdout with no seam to inject, so the test captures
+// the real descriptor.
+func TestBuildHandlerChain_WarnsAboutExactMatchRoutes(t *testing.T) {
+	cfg := config.GatewayConfig{
+		Routes: []config.RouteConfig{
+			{Path: "/api/v1/customers", Upstreams: []string{"http://127.0.0.1:9"}},
+		},
+	}
+	postureEng := discovery.NewPostureEngine(cfg)
+
+	out := captureStdout(t, func() {
+		if _, _, err := BuildHandlerChain(cfg, logger.New("warn"), nil, nil, postureEng); err != nil {
+			t.Fatalf("BuildHandlerChain: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "trailing slash") {
+		t.Fatalf("startup output does not warn about the exact-match route.\ngot: %s", out)
+	}
+	if !strings.Contains(out, "/api/v1/customers") {
+		t.Fatalf("warning does not name the offending route.\ngot: %s", out)
+	}
+}
+
+// TestBuildHandlerChain_SilentOnWellFormedRoutes is the other half: a config
+// that declares both forms must not produce the warning, or operators learn to
+// ignore it.
+func TestBuildHandlerChain_SilentOnWellFormedRoutes(t *testing.T) {
+	cfg := config.GatewayConfig{
+		Routes: []config.RouteConfig{
+			{Path: "/api/v1/customers", Upstreams: []string{"http://127.0.0.1:9"}},
+			{Path: "/api/v1/customers/", Upstreams: []string{"http://127.0.0.1:9"}},
+			{Path: "/health", Upstreams: []string{"http://127.0.0.1:9"}},
+		},
+	}
+	postureEng := discovery.NewPostureEngine(cfg)
+
+	out := captureStdout(t, func() {
+		if _, _, err := BuildHandlerChain(cfg, logger.New("warn"), nil, nil, postureEng); err != nil {
+			t.Fatalf("BuildHandlerChain: %v", err)
+		}
+	})
+
+	if strings.Contains(out, "trailing slash") {
+		t.Fatalf("warned about a correctly-declared config.\ngot: %s", out)
+	}
+}
+
+// captureStdout runs fn with os.Stdout redirected to a pipe and returns what was
+// written. The pipe is drained concurrently so a chatty fn cannot fill the pipe
+// buffer and deadlock.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
+	fn()
+
+	os.Stdout = orig
+	if err := w.Close(); err != nil {
+		t.Fatalf("close pipe: %v", err)
+	}
+	out := <-done
+	if err := r.Close(); err != nil {
+		t.Fatalf("close pipe reader: %v", err)
+	}
+	return out
 }
