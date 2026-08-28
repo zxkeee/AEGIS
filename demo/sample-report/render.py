@@ -98,12 +98,26 @@ def main():
         key = (e.get("reason"), extra.get("object_id"), extra.get("endpoint"))
         abuse.setdefault(key, {**e, "extra": extra})
 
-    idor = [v for k, v in abuse.items() if k[0] == "bola_object_ownership"]
-    enum = [v for k, v in abuse.items() if k[0] == "bola_enumeration"]
+    # Sorted, not in arrival order. The block log arrives in whatever order
+    # concurrent requests finished, so anything that picks "the first" detection
+    # to quote picks a different one on every run. The counts are identical
+    # either way, but the diff of two regenerated reports then shows churn that
+    # has nothing to do with the product — which destroys the one property this
+    # artifact depends on: if a figure moves, the product moved.
+    def _stable(entries):
+        return sorted(entries, key=lambda v: (
+            str(v["extra"].get("consumer") or ""),
+            str(v["extra"].get("endpoint") or ""),
+            str(v["extra"].get("object_id") or ""),
+            str(v["extra"].get("why") or ""),
+        ))
+
+    idor = _stable([v for k, v in abuse.items() if k[0] == "bola_object_ownership"])
+    enum = _stable([v for k, v in abuse.items() if k[0] == "bola_enumeration"])
     # BFLA carries no object_id, so the (reason, object, endpoint) dedup key
     # collapses every occurrence into one. Count the raw events for the total and
     # keep a deduped example for the wording.
-    bfla = [v for k, v in abuse.items() if k[0] == "bfla_privileged_access"]
+    bfla = _stable([v for k, v in abuse.items() if k[0] == "bfla_privileged_access"])
     bfla_calls = sum(1 for e in events
                      if e.get("reason") == "bfla_privileged_access"
                      and not any((e.get("path") or "").startswith(p) for p in ADMIN_PATH_PREFIXES))
@@ -112,7 +126,15 @@ def main():
     # the documented-vs-observed drift is a section of its own because 19 rows of
     # "not in your spec" buried among criticals reads as noise rather than as the
     # separate, actionable inventory problem it is.
-    rows = findings.get("findings", [])
+    #
+    # Both lists are sorted for the same reason as the abuse events: Postgres
+    # returns equal-ranked rows in no guaranteed order, and only 14 drift rows
+    # are shown, so without a total order a regenerated report can silently swap
+    # which endpoints appear at all.
+    rows = sorted(findings.get("findings", []),
+                  key=lambda r: (-r.get("risk_score", 0),
+                                 str(r.get("path_template") or ""),
+                                 str(r.get("method") or "")))
     exposure = [r for r in rows if r["finding"]["code"].startswith("sensitive_data")]
     drift = [r for r in rows if r["finding"]["code"].startswith("undocumented")]
 
@@ -332,7 +354,11 @@ threat-models — OWASP tracks it as API9 for that reason.</p>""")
       "no authentication has none either way, which is why the summary leads with that number.</p>")
     a("<table><tr><th>Endpoint</th><th>Posture</th><th>Req</th>"
       "<th>Anon</th><th>PII responses</th><th>Risk</th></tr>")
-    shown = sorted(eps, key=lambda x: -x.get("risk_score", 0))[:14]
+    # Tie-break on the endpoint itself: many endpoints share a risk score, and
+    # without a total order their rows swap places between otherwise identical runs.
+    shown = sorted(eps, key=lambda x: (-x.get("risk_score", 0),
+                                       str(x.get("path_template") or ""),
+                                       str(x.get("method") or "")))[:14]
     for e in shown:
         p = e.get("posture", "")
         cls = {"unprotected": "crit", "partial": "warn", "protected": "ok"}.get(p, "warn")
@@ -349,7 +375,8 @@ threat-models — OWASP tracks it as API9 for that reason.</p>""")
     a("<p>Consumer identity is taken from the verified JWT where one is present, and "
       "falls back to source address where none is.</p>")
     a("<table><tr><th>Consumer</th><th>Identified by</th><th>Requests</th><th>Endpoints</th></tr>")
-    top_cons = sorted(cons, key=lambda x: -x.get("request_count", 0))[:10]
+    top_cons = sorted(cons, key=lambda x: (-x.get("request_count", 0),
+                                           str(x.get("label") or "")))[:10]
     for c in top_cons:
         kind = "verified token" if c.get("kind") == "jwt" else "source address (no credential)"
         a(f"""<tr><td><code>{esc(c.get('label'))}</code></td><td>{esc(kind)}</td>

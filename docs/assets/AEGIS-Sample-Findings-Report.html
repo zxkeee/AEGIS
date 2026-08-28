@@ -121,6 +121,13 @@ verified identity. This is the class of flaw a signature firewall cannot detect,
 because the requests are syntactically perfect.</p>
 <h2>Critical findings</h2>
 <div class="finding">
+  <div class="hd"><span class="ttl">Sensitive data on an endpoint that does not require authentication</span>
+    <span class="tag warn">warning · API3:2023</span></div>
+  <div class="where"><code>GET /api/partner/v1/customers/{id}</code>
+     &nbsp;risk 75</div>
+  <div class="why">endpoint returned PCI/PII (credit_card, email) on 45 response(s) and authentication is not enforced by its configuration</div>
+</div>
+<div class="finding">
   <div class="hd"><span class="ttl">Sensitive data exposed to unauthenticated callers</span>
     <span class="tag crit">critical · API3:2023</span></div>
   <div class="where"><code>GET /api/v1/customers/{id}</code>
@@ -142,23 +149,16 @@ because the requests are syntactically perfect.</p>
   <div class="why">endpoint returned PCI/PII (credit_card, email) on 13 response(s) while 13 request(s) arrived without authentication</div>
 </div>
 <div class="finding">
-  <div class="hd"><span class="ttl">Sensitive data on an endpoint that does not require authentication</span>
-    <span class="tag warn">warning · API3:2023</span></div>
-  <div class="where"><code>GET /api/partner/v1/customers/{id}</code>
-     &nbsp;risk 75</div>
-  <div class="why">endpoint returned PCI/PII (credit_card, email) on 45 response(s) and authentication is not enforced by its configuration</div>
-</div>
-<div class="finding">
   <div class="hd"><span class="ttl">Broken object level authorization — confirmed</span>
     <span class="tag crit">critical · API1:2023</span></div>
-  <div class="where"><code>GET /api/v1/orders/{id}</code>
+  <div class="where"><code>GET /api/v1/invoices/{id}</code>
      &nbsp;45 objects read by one caller that does not own them (94 further detections elsewhere)</div>
-  <div class="why">consumer &#x27;analytics-batch@northwind.example&#x27; GET object &#x27;1036&#x27; (/api/v1/orders/{id}) owned by &#x27;37&#x27; (from response body) — confirmed IDOR (BOLA)</div>
+  <div class="why">consumer &#x27;analytics-batch@northwind.example&#x27; GET object &#x27;19&#x27; (/api/v1/invoices/{id}) owned by 1 other consumer(s) and never accessed by it — possible IDOR (BOLA, heuristic)</div>
 </div>
 <div class="finding">
   <div class="hd"><span class="ttl">Object enumeration by a single consumer</span>
     <span class="tag crit">critical · API1:2023</span></div>
-  <div class="why">consumer &#x27;ip:127.0.0.1&#x27; accessed 58 distinct object IDs on &#x27;GET /api/v1/customers/{id}&#x27; (hard ceiling 25)</div>
+  <div class="why">consumer &#x27;analytics-batch@northwind.example&#x27; accessed 44 distinct object IDs on &#x27;GET /api/v1/orders/{id}&#x27; (hard ceiling 25)</div>
 </div>
 <div class="finding">
   <div class="hd"><span class="ttl">Privileged endpoints reachable without the role</span>
@@ -179,27 +179,27 @@ threat-models — OWASP tracks it as API9 for that reason.</p>
 <td>not in the spec</td></tr>
 <tr><td><code>GET /internal/reports/export</code></td>
 <td>not in the spec</td></tr>
+<tr><td><code>GET /api/partner/v1/settlements</code></td>
+<td>not in the spec</td></tr>
 <tr><td><code>GET /internal/jobs/status</code></td>
 <td>not in the spec</td></tr>
 <tr><td><code>GET /internal/metrics</code></td>
 <td>not in the spec</td></tr>
-<tr><td><code>GET /api/partner/v1/settlements</code></td>
-<td>not in the spec</td></tr>
 <tr><td><code>POST /api/v1/products</code></td>
 <td>method not documented</td></tr>
+<tr><td><code>POST /api/v1/refunds</code></td>
+<td>not in the spec</td></tr>
+<tr><td><code>GET /api/v1/refunds/{id}</code></td>
+<td>not in the spec</td></tr>
 <tr><td><code>GET /api/v1/shipments/{id}</code></td>
 <td>not in the spec</td></tr>
 <tr><td><code>GET /api/v1/subscriptions/{id}</code></td>
 <td>not in the spec</td></tr>
-<tr><td><code>GET /api/v1/refunds/{id}</code></td>
-<td>not in the spec</td></tr>
 <tr><td><code>GET /api/v1/webhooks</code></td>
-<td>not in the spec</td></tr>
-<tr><td><code>POST /api/v1/refunds</code></td>
 <td>not in the spec</td></tr>
 <tr><td><code>GET /api/v2/orders/{id}</code></td>
 <td>not in the spec</td></tr>
-<tr><td><code>GET /api/v2/products</code></td>
+<tr><td><code>GET /api/v1/admin/refunds/approve</code></td>
 <td>not in the spec</td></tr>
 </table>
 <p><em>5 further undocumented endpoints omitted for length.</em></p>
@@ -207,13 +207,13 @@ threat-models — OWASP tracks it as API9 for that reason.</p>
 <p>Every endpoint below was discovered from traffic — nothing was declared in advance. <em>Unprotected</em> means none of authentication, rate limiting or firewall applies to it.</p>
 <p>One caveat stated rather than hidden: this assessment ran in passive mode, so AEGIS enforced nothing while it watched. The <em>partial</em> and <em>protected</em> labels therefore describe what was active during the assessment, not the ceiling of what the estate could enforce. <em>Unprotected</em> is unaffected — an endpoint with no authentication has none either way, which is why the summary leads with that number.</p>
 <table><tr><th>Endpoint</th><th>Posture</th><th>Req</th><th>Anon</th><th>PII responses</th><th>Risk</th></tr>
-<tr><td><code>GET /api/v1/customers/{id}</code></td>
-<td><span class="tag crit">unprotected</span></td><td>61</td>
-<td>61</td><td>61</td>
-<td>75</td></tr>
 <tr><td><code>GET /api/partner/v1/customers/{id}</code></td>
 <td><span class="tag crit">unprotected</span></td><td>45</td>
 <td>0</td><td>45</td>
+<td>75</td></tr>
+<tr><td><code>GET /api/v1/customers/{id}</code></td>
+<td><span class="tag crit">unprotected</span></td><td>61</td>
+<td>61</td><td>61</td>
 <td>75</td></tr>
 <tr><td><code>GET /api/v1/customers/{id}/cards</code></td>
 <td><span class="tag crit">unprotected</span></td><td>18</td>
@@ -223,6 +223,10 @@ threat-models — OWASP tracks it as API9 for that reason.</p>
 <td><span class="tag crit">unprotected</span></td><td>13</td>
 <td>13</td><td>13</td>
 <td>75</td></tr>
+<tr><td><code>GET /api/partner/v1/settlements</code></td>
+<td><span class="tag crit">unprotected</span></td><td>10</td>
+<td>0</td><td>0</td>
+<td>50</td></tr>
 <tr><td><code>GET /health</code></td>
 <td><span class="tag crit">unprotected</span></td><td>126</td>
 <td>126</td><td>0</td>
@@ -235,32 +239,28 @@ threat-models — OWASP tracks it as API9 for that reason.</p>
 <td><span class="tag crit">unprotected</span></td><td>20</td>
 <td>20</td><td>0</td>
 <td>50</td></tr>
-<tr><td><code>GET /api/partner/v1/settlements</code></td>
-<td><span class="tag crit">unprotected</span></td><td>10</td>
-<td>0</td><td>0</td>
-<td>50</td></tr>
 <tr><td><code>GET /api/v1/products</code></td>
 <td><span class="tag warn">partial</span></td><td>438</td>
 <td>224</td><td>0</td>
-<td>35</td></tr>
-<tr><td><code>GET /api/v1/products/{id}</code></td>
-<td><span class="tag warn">partial</span></td><td>290</td>
-<td>118</td><td>0</td>
 <td>35</td></tr>
 <tr><td><code>POST /api/v1/products</code></td>
 <td><span class="tag warn">partial</span></td><td>16</td>
 <td>16</td><td>0</td>
 <td>35</td></tr>
-<tr><td><code>GET /api/v1/invoices/{id}</code></td>
-<td><span class="tag warn">partial</span></td><td>174</td>
-<td>0</td><td>0</td>
-<td>25</td></tr>
+<tr><td><code>GET /api/v1/products/{id}</code></td>
+<td><span class="tag warn">partial</span></td><td>290</td>
+<td>118</td><td>0</td>
+<td>35</td></tr>
 <tr><td><code>GET /api/v1/invoices</code></td>
 <td><span class="tag warn">partial</span></td><td>116</td>
 <td>0</td><td>0</td>
 <td>25</td></tr>
-<tr><td><code>GET /api/v1/shipments/{id}</code></td>
-<td><span class="tag warn">partial</span></td><td>115</td>
+<tr><td><code>GET /api/v1/invoices/{id}</code></td>
+<td><span class="tag warn">partial</span></td><td>174</td>
+<td>0</td><td>0</td>
+<td>25</td></tr>
+<tr><td><code>POST /api/v1/refunds</code></td>
+<td><span class="tag warn">partial</span></td><td>45</td>
 <td>0</td><td>0</td>
 <td>25</td></tr>
 </table>
@@ -278,9 +278,9 @@ threat-models — OWASP tracks it as API9 for that reason.</p>
 <td>206</td><td>16</td></tr>
 <tr><td><code>support-tools@northwind.example</code></td><td>verified token</td>
 <td>205</td><td>19</td></tr>
-<tr><td><code>marketing-sync@northwind.example</code></td><td>verified token</td>
-<td>195</td><td>16</td></tr>
 <tr><td><code>legacy-importer@northwind.example</code></td><td>verified token</td>
+<td>195</td><td>16</td></tr>
+<tr><td><code>marketing-sync@northwind.example</code></td><td>verified token</td>
 <td>195</td><td>16</td></tr>
 <tr><td><code>billing-worker@northwind.example</code></td><td>verified token</td>
 <td>193</td><td>16</td></tr>
