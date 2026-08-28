@@ -131,7 +131,11 @@ func main() {
 		}()
 	}
 
-	rng := rand.New(rand.NewSource(7)) // fixed seed: the report should be reproducible
+	// Fixed seed so the sample report is reproducible: two runs of the generator
+	// must produce the same traffic mix, or a change in the numbers cannot be
+	// read as a change in the product. Nothing here is a secret or a token —
+	// this only decides which fictional consumer calls which fictional endpoint.
+	rng := rand.New(rand.NewSource(7)) // #nosec G404 -- deterministic demo traffic, not security-relevant
 	pickConsumer := weightedConsumer(cs, rng)
 	pickEndpoint := weightedEndpoint(rng)
 
