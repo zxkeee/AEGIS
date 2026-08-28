@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/iam"
@@ -352,5 +353,59 @@ func TestRevokeJWT_RejectsNegativeTTL(t *testing.T) {
 	}
 	if revoked, _ := h.store.IsJTIRevoked(context.Background(), "abc-123"); revoked {
 		t.Fatal("jti must not be revoked when ttl_seconds is rejected")
+	}
+}
+
+// GET /api/block-log used to hardcode 100 entries and ignore ?limit entirely,
+// so anything older than the last hundred events was unreachable through the
+// API even though the ring buffer keeps a thousand. These pin the parameter.
+
+func TestBlockLog_HonoursLimit(t *testing.T) {
+	h, _ := redisHandlers(t)
+	for i := 0; i < 12; i++ {
+		h.store.PushForensic(context.Background(), store.ForensicEntry{
+			Timestamp: time.Now().UTC(), IP: "1.1.1.1", Path: "/x",
+			Method: "GET", Reason: "waf_block", Code: 403,
+		})
+	}
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/block-log?limit=5", nil)
+	h.getBlockLog(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var got []store.ForensicEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("entries = %d, want 5 (the requested limit must be honoured)", len(got))
+	}
+}
+
+func TestBlockLog_RejectsInvalidLimit(t *testing.T) {
+	h, _ := redisHandlers(t)
+	for _, bad := range []string{"0", "-3", "abc"} {
+		rec := httptest.NewRecorder()
+		h.getBlockLog(rec, httptest.NewRequest(http.MethodGet, "/api/block-log?limit="+bad, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("limit=%q: status = %d, want 400", bad, rec.Code)
+		}
+	}
+}
+
+func TestBlockLog_CapsLimitAtRingBufferSize(t *testing.T) {
+	// Asking for more than the buffer holds must not error — it just cannot
+	// return more than exists.
+	h, _ := redisHandlers(t)
+	h.store.PushForensic(context.Background(), store.ForensicEntry{
+		Timestamp: time.Now().UTC(), IP: "1.1.1.1", Path: "/x",
+		Method: "GET", Reason: "waf_block", Code: 403,
+	})
+	rec := httptest.NewRecorder()
+	h.getBlockLog(rec, httptest.NewRequest(http.MethodGet, "/api/block-log?limit=999999", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 }

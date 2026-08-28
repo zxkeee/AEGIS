@@ -162,7 +162,10 @@ fetch "$ADMIN/api/posture/summary"   "$OUT/posture.json"    || fail=1
 fetch "$ADMIN/api/catalog?limit=100" "$OUT/catalog.json"    || fail=1
 fetch "$ADMIN/api/consumers"         "$OUT/consumers.json"  || fail=1
 fetch "$ADMIN/api/compliance"        "$OUT/compliance.json" || fail=1
-fetch "$ADMIN/api/block-log" "$OUT/block-log.json" || fail=1
+# limit=1000 is the endpoint's ceiling (the forensic ring buffer's own size).
+# Without it the default of 100 truncates the export, and a modest order sweep
+# silently pushes every BFLA detection out of the exported window.
+fetch "$ADMIN/api/block-log?limit=1000" "$OUT/block-log.json" || fail=1
 fetch "$ADMIN/api/report?format=csv"   "$OUT/catalog.csv"  csv || fail=1
 fetch "$ADMIN/api/findings?format=csv" "$OUT/findings.csv" csv || fail=1
 [ "$fail" = "0" ] || { echo; echo "One or more exports failed — the report would be incomplete. Aborting."; exit 1; }

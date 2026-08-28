@@ -29,3 +29,28 @@ func RouteGate(enabled func(path string) bool, inner Middleware) Middleware {
 		})
 	}
 }
+
+// RouteSwitch is RouteGate with a second branch: instead of "apply the control
+// or pass straight through", it picks between two middlewares per request.
+//
+// It exists for auth. Gating JWT off entirely on routes that do not require it
+// meant identity was never extracted there — so a caller that DID present a
+// valid token was recorded as anonymous, because nothing had looked. That made
+// the catalog's anon_count mean "we did not check" while the findings layer
+// read it as "the caller had no credential", and reported PII on such a route
+// as "N requests arrived without authentication" when in fact every one of them
+// was authenticated (audit finding, 2026-08-28). Routes that do not require
+// auth now run a soft, identify-only pass instead of nothing at all.
+func RouteSwitch(cond func(path string) bool, whenTrue, whenFalse Middleware) Middleware {
+	return func(next http.Handler) http.Handler {
+		yes := whenTrue(next)
+		no := whenFalse(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if cond(r.URL.Path) {
+				yes.ServeHTTP(w, r)
+				return
+			}
+			no.ServeHTTP(w, r)
+		})
+	}
+}

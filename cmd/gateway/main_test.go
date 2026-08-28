@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"api-gateway/internal/api"
 	"api-gateway/internal/config"
@@ -23,6 +24,7 @@ import (
 	"api-gateway/internal/store"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // issueTestLicense sets up a throwaway Ed25519 keypair for the duration of
@@ -58,6 +60,102 @@ func issueTestLicenseWithClaims(t *testing.T, claims license.Claims) string {
 		t.Fatalf("write test license: %v", err)
 	}
 	return path
+}
+
+// TestChain_IdentifiesCallerOnRoutesThatDoNotRequireAuth is the regression test
+// for a finding that mattered commercially rather than technically.
+//
+// JWT auth used to be gated OFF entirely on routes whose effective controls did
+// not require it. Nothing then looked at the Authorization header there, so a
+// caller presenting a perfectly valid token was recorded as anonymous. The
+// catalog's anon_count therefore meant "not checked", while the findings layer
+// read it as "no credential present" and reported PII on such a route as
+// "N requests arrived without authentication" — a claim the customer can
+// disprove from their own access logs, which is the fastest way to lose their
+// trust in every other number in the report. It also left
+// sensitive_data_auth_not_required unreachable in production, since that
+// finding needs anon_count == 0 on a route that does not require auth.
+//
+// The chain now runs an identify-only pass on such routes: identity is
+// extracted, nothing is ever rejected.
+func TestChain_IdentifiesCallerOnRoutesThatDoNotRequireAuth(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer mr.Close()
+	st, err := store.New(mr.Addr(), "", 0)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	if err := middleware.InitTrustedProxies(nil); err != nil {
+		t.Fatalf("InitTrustedProxies: %v", err)
+	}
+
+	// The backend reports back what identity the gateway propagated to it.
+	var gotSubject string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSubject = r.Header.Get("X-Gateway-Subject")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	bu, _ := url.Parse(backend.URL)
+
+	const secret = "chain-identify-test-secret-32-chars!!"
+	noAuth := false
+	cfg := config.GatewayConfig{
+		Security: config.SecurityConfig{
+			// Auth is configured and globally on, but this route opts out of
+			// requiring it — the shape that produced the bug.
+			Auth: config.AuthConfig{Enabled: true, Secret: secret},
+		},
+		Routes: []config.RouteConfig{
+			{Path: "/open", Upstreams: []string{bu.String()}, RequireAuth: &noAuth},
+		},
+	}
+
+	log := logger.New("error")
+	handler, _, err := gateway.BuildHandlerChain(cfg, log, st, nil, discovery.NewPostureEngine(cfg))
+	if err != nil {
+		t.Fatalf("BuildHandlerChain: %v", err)
+	}
+
+	token := signHS256(t, secret, "partner@example.com")
+
+	// 1. A valid token on a route that does not require auth must still be read.
+	r := httptest.NewRequest(http.MethodGet, "/open", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	r.RemoteAddr = "1.2.3.4:1"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — an identify-only pass must never reject", rec.Code)
+	}
+	if gotSubject != "partner@example.com" {
+		t.Fatalf("propagated subject = %q, want partner@example.com — the caller was "+
+			"authenticated and must not be recorded as anonymous", gotSubject)
+	}
+
+	// 2. The same route must still serve callers with no token at all, and with
+	//    a broken one: identify-only means identify, never enforce.
+	for name, hdr := range map[string]string{"no token": "", "garbage token": "Bearer not.a.jwt"} {
+		gotSubject = "sentinel"
+		r2 := httptest.NewRequest(http.MethodGet, "/open", nil)
+		if hdr != "" {
+			r2.Header.Set("Authorization", hdr)
+		}
+		r2.RemoteAddr = "1.2.3.4:1"
+		rec2 := httptest.NewRecorder()
+		handler.ServeHTTP(rec2, r2)
+		if rec2.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200", name, rec2.Code)
+		}
+		if gotSubject != "" {
+			t.Fatalf("%s: propagated subject = %q, want empty", name, gotSubject)
+		}
+	}
 }
 
 // TestChain_PostureMatchesEnforcement is the guard against the headline bug class:
@@ -416,4 +514,20 @@ routes:
 			t.Fatalf("%s: unsafe config accepted", name)
 		}
 	}
+}
+
+// signHS256 mints a short-lived HS256 token. The gateway requires an exp claim
+// (a signed token with no expiry would otherwise live forever), so one is set.
+func signHS256(t *testing.T, secret, sub string) string {
+	t.Helper()
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": sub,
+		"iat": time.Now().Unix(),
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	s, err := tok.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+	return s
 }

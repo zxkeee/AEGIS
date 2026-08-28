@@ -43,8 +43,8 @@ systems. The run discovers ~28 endpoints from ~2,700 requests by 11 consumers.
 
 Ordinary traffic reads its *own* objects (see `ownOrder` in `traffic/main.go`).
 That matters: if everybody reads everybody's records, "confirmed IDOR" stops
-distinguishing anything and the finding is noise. With it, 34 of 35 detections
-belong to the one job that genuinely misbehaves.
+distinguishing anything and the finding is noise. With it, the 139 confirmed
+detections concentrate on the one job that genuinely misbehaves.
 
 `gateway.yaml` gives each route a different control mix on purpose (protected /
 partial / unprotected), because a uniform estate is not what a posture report is
@@ -62,10 +62,10 @@ invoices) trips as "4× baseline" and lands in the report as a critical false
 positive. On a real week-long pilot the baseline is real and adaptive is the
 better setting; for a sample the absolute ceiling is the honest one.
 
-The deliberate order sweep is kept modest for the same reason `GET
-/api/block-log` matters: that endpoint returns the last 100 events and ignores a
-`limit` parameter, so a larger sweep silently pushes every BFLA detection out of
-the exported window.
+The export pulls `GET /api/block-log?limit=1000` rather than the default 100.
+The ring buffer holds a thousand events and a single order sweep produces enough
+detections to fill the first hundred on its own — at the default, every BFLA
+detection fell out of the exported window and the report quietly under-counted.
 
 ## Two failure modes the script guards against
 
@@ -75,7 +75,9 @@ hard errors rather than silent successes:
 1. **Traffic not reaching the backend.** A route declared as `/api/v1/customers`
    matches only that exact path in `net/http`'s `ServeMux` — it does *not* cover
    `/api/v1/customers/7`. Prefix routes need the trailing slash. Step `3b`
-   probes representative paths and aborts if any is not `200`.
+   probes representative paths and aborts if any is not `200`; the gateway also
+   now warns about such routes at startup (`exactMatchRoutes` in
+   `internal/gateway/chain.go`), since this cost real debugging time twice.
 2. **Export silently rate-limited.** The admin plane throttles itself (5 req/s,
    brute-force protection), so a tight export loop gets `Access Denied` written
    into the artifact instead of JSON. `fetch()` paces, retries and validates each

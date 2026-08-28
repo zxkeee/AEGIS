@@ -79,3 +79,65 @@ func TestBuildHandlerChain_NilCatalog(t *testing.T) {
 		t.Fatal("BuildHandlerChain returned nil handler or gateway")
 	}
 }
+
+func TestExactMatchRoutes(t *testing.T) {
+	r := func(paths ...string) []config.RouteConfig {
+		out := make([]config.RouteConfig, 0, len(paths))
+		for _, p := range paths {
+			out = append(out, config.RouteConfig{Path: p, Upstreams: []string{"http://127.0.0.1:1"}})
+		}
+		return out
+	}
+
+	tests := []struct {
+		name   string
+		routes []config.RouteConfig
+		want   []string
+	}{
+		{
+			// The footgun itself: item paths under this route 404 at the proxy
+			// while the posture engine reports them as covered.
+			name:   "collection without trailing slash",
+			routes: r("/api/v1/customers"),
+			want:   []string{"/api/v1/customers"},
+		},
+		{
+			// Both forms declared — the operator clearly knows the distinction.
+			name:   "both forms declared is silent",
+			routes: r("/api/v1/orders", "/api/v1/orders/"),
+			want:   nil,
+		},
+		{
+			// A single-segment path is idiomatically an exact endpoint.
+			name:   "single-segment path is silent",
+			routes: r("/health", "/metrics"),
+			want:   nil,
+		},
+		{
+			name:   "subtree route is silent",
+			routes: r("/internal/"),
+			want:   nil,
+		},
+		{
+			// Only the genuine offenders, in declaration order: /api/v1/orders is
+			// paired with its subtree form and /health is single-segment.
+			name:   "reports every offender and nothing else",
+			routes: r("/api/v1/customers", "/api/v1/orders", "/api/v1/orders/", "/health", "/internal/reports"),
+			want:   []string{"/api/v1/customers", "/internal/reports"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := exactMatchRoutes(tt.routes)
+			if len(got) != len(tt.want) {
+				t.Fatalf("exactMatchRoutes = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("exactMatchRoutes = %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}

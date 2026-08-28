@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -293,8 +294,39 @@ func (h *handlers) getRoutes(w http.ResponseWriter, r *http.Request) {
 
 // ── Block Log (Forensics) ─────────────────────────────────────────────────────
 
+// blockLogDefaultLimit / blockLogMaxLimit bound GET /api/block-log.
+//
+// The limit used to be hardcoded at 100 with the query parameter ignored
+// entirely, so on a busy gateway every event older than the last hundred was
+// unreachable through the API even though the Redis ring buffer keeps a
+// thousand. That is not a cosmetic gap: security events are exactly what an
+// operator pages back through after an incident, and a silently-truncated
+// response looks identical to "nothing else happened" (audit finding,
+// 2026-08-28 — found when an entire class of BFLA detections vanished from an
+// export because a later burst had pushed them out of the window).
+//
+// The ceiling matches the ring buffer's own size; asking for more cannot return
+// more, and letting an unbounded value through would just build a large
+// response for no extra data.
+const (
+	blockLogDefaultLimit = 100
+	blockLogMaxLimit     = 1000
+)
+
 func (h *handlers) getBlockLog(w http.ResponseWriter, r *http.Request) {
-	entries, err := h.store.GetForensicLog(r.Context(), 100)
+	limit := int64(blockLogDefaultLimit)
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "limit must be a positive integer",
+			})
+			return
+		}
+		limit = min(int64(n), int64(blockLogMaxLimit))
+	}
+
+	entries, err := h.store.GetForensicLog(r.Context(), limit)
 	if err != nil {
 		h.writeStoreError(w, "admin: block log fetch failed", "failed to fetch block log", err)
 		return

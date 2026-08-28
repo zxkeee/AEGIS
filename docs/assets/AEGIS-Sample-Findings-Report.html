@@ -104,8 +104,8 @@ footer { margin-top:10mm; padding-top:3mm; border-top:1px solid var(--line);
 <p class="dek">Northwind Payments — a fictional estate. Every figure below was exported from a real gateway run, not written by hand.</p>
 <h2>What we found</h2>
 <div class="kpis">
-  <div class="kpi bad"><div class="n">4</div><div class="l">Critical<br>findings</div></div>
-  <div class="kpi bad"><div class="n">35</div><div class="l">Confirmed<br>data leaks</div></div>
+  <div class="kpi bad"><div class="n">3</div><div class="l">Critical<br>findings</div></div>
+  <div class="kpi bad"><div class="n">139</div><div class="l">Confirmed<br>data leaks</div></div>
   <div class="kpi"><div class="n">28</div><div class="l">APIs<br>discovered</div></div>
   <div class="kpi bad"><div class="n">19</div><div class="l">Not in your<br>API spec</div></div>
 </div>
@@ -114,7 +114,7 @@ blocked nothing. In that window it discovered <strong>28 live endpoints</strong>
 of which <strong>8 enforce no authentication, rate limiting or firewall at all</strong>.
 Two of them return customer payment-card and email data to callers presenting no
 credential whatsoever.</p>
-<p>Separately, the gateway observed <strong>35 confirmed cases</strong> of an
+<p>Separately, the gateway observed <strong>139 confirmed cases</strong> of an
 authenticated caller reading records it does not own — not inferred from volume, but
 confirmed by comparing the owner id in each response body against the caller's
 verified identity. This is the class of flaw a signature firewall cannot detect,
@@ -126,13 +126,6 @@ because the requests are syntactically perfect.</p>
   <div class="where"><code>GET /api/v1/customers/{id}</code>
      &nbsp;risk 75</div>
   <div class="why">endpoint returned PCI/PII (credit_card, email) on 61 response(s) while 61 request(s) arrived without authentication</div>
-</div>
-<div class="finding">
-  <div class="hd"><span class="ttl">Sensitive data exposed to unauthenticated callers</span>
-    <span class="tag crit">critical · API3:2023</span></div>
-  <div class="where"><code>GET /api/partner/v1/customers/{id}</code>
-     &nbsp;risk 75</div>
-  <div class="why">endpoint returned PCI/PII (credit_card, email) on 45 response(s) while 45 request(s) arrived without authentication</div>
 </div>
 <div class="finding">
   <div class="hd"><span class="ttl">Sensitive data exposed to unauthenticated callers</span>
@@ -149,11 +142,18 @@ because the requests are syntactically perfect.</p>
   <div class="why">endpoint returned PCI/PII (credit_card, email) on 13 response(s) while 13 request(s) arrived without authentication</div>
 </div>
 <div class="finding">
+  <div class="hd"><span class="ttl">Sensitive data on an endpoint that does not require authentication</span>
+    <span class="tag warn">warning · API3:2023</span></div>
+  <div class="where"><code>GET /api/partner/v1/customers/{id}</code>
+     &nbsp;risk 75</div>
+  <div class="why">endpoint returned PCI/PII (credit_card, email) on 45 response(s) and authentication is not enforced by its configuration</div>
+</div>
+<div class="finding">
   <div class="hd"><span class="ttl">Broken object level authorization — confirmed</span>
     <span class="tag crit">critical · API1:2023</span></div>
   <div class="where"><code>GET /api/v1/orders/{id}</code>
-     &nbsp;34 objects read by one caller that does not own them (1 further detection elsewhere)</div>
-  <div class="why">consumer &#x27;analytics-batch@northwind.example&#x27; GET object &#x27;1036&#x27; (/api/v1/orders/{id}) owned by &#x27;37&#x27; (from response body) — confirmed IDOR (BOLA)</div>
+     &nbsp;45 objects read by one caller that does not own them (94 further detections elsewhere)</div>
+  <div class="why">consumer &#x27;analytics-batch@northwind.example&#x27; GET object &#x27;1035&#x27; (/api/v1/orders/{id}) owned by &#x27;36&#x27; (from response body) — confirmed IDOR (BOLA)</div>
 </div>
 <div class="finding">
   <div class="hd"><span class="ttl">Object enumeration by a single consumer</span>
@@ -179,9 +179,9 @@ threat-models — OWASP tracks it as API9 for that reason.</p>
 <td>not in the spec</td></tr>
 <tr><td><code>GET /internal/reports/export</code></td>
 <td>not in the spec</td></tr>
-<tr><td><code>GET /internal/jobs/status</code></td>
-<td>not in the spec</td></tr>
 <tr><td><code>GET /internal/metrics</code></td>
+<td>not in the spec</td></tr>
+<tr><td><code>GET /internal/jobs/status</code></td>
 <td>not in the spec</td></tr>
 <tr><td><code>GET /api/partner/v1/settlements</code></td>
 <td>not in the spec</td></tr>
@@ -213,7 +213,7 @@ threat-models — OWASP tracks it as API9 for that reason.</p>
 <td>75</td></tr>
 <tr><td><code>GET /api/partner/v1/customers/{id}</code></td>
 <td><span class="tag crit">unprotected</span></td><td>45</td>
-<td>45</td><td>45</td>
+<td>0</td><td>45</td>
 <td>75</td></tr>
 <tr><td><code>GET /api/v1/customers/{id}/cards</code></td>
 <td><span class="tag crit">unprotected</span></td><td>18</td>
@@ -227,25 +227,25 @@ threat-models — OWASP tracks it as API9 for that reason.</p>
 <td><span class="tag crit">unprotected</span></td><td>126</td>
 <td>126</td><td>0</td>
 <td>50</td></tr>
-<tr><td><code>GET /internal/jobs/status</code></td>
+<tr><td><code>GET /internal/metrics</code></td>
 <td><span class="tag crit">unprotected</span></td><td>20</td>
 <td>20</td><td>0</td>
 <td>50</td></tr>
-<tr><td><code>GET /internal/metrics</code></td>
+<tr><td><code>GET /internal/jobs/status</code></td>
 <td><span class="tag crit">unprotected</span></td><td>20</td>
 <td>20</td><td>0</td>
 <td>50</td></tr>
 <tr><td><code>GET /api/partner/v1/settlements</code></td>
 <td><span class="tag crit">unprotected</span></td><td>10</td>
-<td>10</td><td>0</td>
+<td>0</td><td>0</td>
 <td>50</td></tr>
 <tr><td><code>GET /api/v1/products</code></td>
 <td><span class="tag warn">partial</span></td><td>438</td>
-<td>438</td><td>0</td>
+<td>224</td><td>0</td>
 <td>35</td></tr>
 <tr><td><code>GET /api/v1/products/{id}</code></td>
 <td><span class="tag warn">partial</span></td><td>290</td>
-<td>290</td><td>0</td>
+<td>118</td><td>0</td>
 <td>35</td></tr>
 <tr><td><code>POST /api/v1/products</code></td>
 <td><span class="tag warn">partial</span></td><td>16</td>
@@ -269,25 +269,25 @@ threat-models — OWASP tracks it as API9 for that reason.</p>
 <p>Consumer identity is taken from the verified JWT where one is present, and falls back to source address where none is.</p>
 <table><tr><th>Consumer</th><th>Identified by</th><th>Requests</th><th>Endpoints</th></tr>
 <tr><td><code>127.0.0.1</code></td><td>source address (no credential)</td>
-<td>1057</td><td>11</td></tr>
+<td>616</td><td>9</td></tr>
 <tr><td><code>analytics-batch@northwind.example</code></td><td>verified token</td>
-<td>199</td><td>14</td></tr>
-<tr><td><code>support-tools@northwind.example</code></td><td>verified token</td>
-<td>174</td><td>17</td></tr>
-<tr><td><code>legacy-importer@northwind.example</code></td><td>verified token</td>
-<td>162</td><td>14</td></tr>
+<td>236</td><td>16</td></tr>
+<tr><td><code>partner-integration@acme-partner.example</code></td><td>verified token</td>
+<td>223</td><td>18</td></tr>
 <tr><td><code>web-checkout@northwind.example</code></td><td>verified token</td>
-<td>158</td><td>14</td></tr>
-<tr><td><code>ops-console@northwind.example</code></td><td>verified token</td>
-<td>157</td><td>14</td></tr>
+<td>206</td><td>16</td></tr>
+<tr><td><code>support-tools@northwind.example</code></td><td>verified token</td>
+<td>205</td><td>19</td></tr>
+<tr><td><code>legacy-importer@northwind.example</code></td><td>verified token</td>
+<td>195</td><td>16</td></tr>
 <tr><td><code>marketing-sync@northwind.example</code></td><td>verified token</td>
-<td>155</td><td>14</td></tr>
-<tr><td><code>mobile-app@northwind.example</code></td><td>verified token</td>
-<td>150</td><td>14</td></tr>
-<tr><td><code>reconciliation@northwind.example</code></td><td>verified token</td>
-<td>149</td><td>14</td></tr>
+<td>195</td><td>16</td></tr>
+<tr><td><code>ops-console@northwind.example</code></td><td>verified token</td>
+<td>193</td><td>16</td></tr>
 <tr><td><code>billing-worker@northwind.example</code></td><td>verified token</td>
-<td>145</td><td>14</td></tr>
+<td>193</td><td>16</td></tr>
+<tr><td><code>mobile-app@northwind.example</code></td><td>verified token</td>
+<td>191</td><td>16</td></tr>
 </table>
 <h2>Regulatory mapping</h2>
 <p>The findings above map onto 10 controls across OWASP API Top 10, NIS2 and ISO/IEC 27001:2022. This is a mapping aid for an audit conversation, not a certification.</p>

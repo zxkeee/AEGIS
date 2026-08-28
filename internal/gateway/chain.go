@@ -8,6 +8,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strings"
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
@@ -46,15 +47,36 @@ func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Stor
 		return c
 	}
 
-	// authMW: enforce JWT when the effective controls require auth for the path.
-	// Built once with auth force-enabled (so JWKS init etc. run) only when auth is
-	// reachable — globally on, or switched on by at least one route override.
+	// authMW: enforce JWT when the effective controls require auth for the path,
+	// and IDENTIFY (never reject) when they do not. Built once with auth
+	// force-enabled (so JWKS init etc. run) only when auth is reachable —
+	// globally on, or switched on by at least one route override.
+	//
+	// The soft branch matters beyond convenience. Skipping JWT entirely on
+	// routes that do not require it meant nothing ever looked at the token, so a
+	// caller presenting a perfectly valid one was recorded as anonymous. The
+	// catalog's anon_count then meant "not checked" while the findings layer
+	// read it as "no credential present" and reported PII on such a route as
+	// "N requests arrived without authentication" — a claim a customer can
+	// disprove from their own logs in a minute. It also made
+	// sensitive_data_auth_not_required (the latent, warning-severity variant)
+	// unreachable, since its condition is anon_count == 0 on a route that does
+	// not require auth. Identifying without enforcing fixes all three.
 	authMW := middleware.Middleware(passthroughMW)
 	if cfg.Security.Auth.Enabled || anyRouteRequiresAuth(cfg.Routes) {
 		authCfg := cfg.Security.Auth
 		authCfg.Enabled = true
-		forced := middleware.NewJWTAuth(authCfg, log, st).Middleware()
-		authMW = middleware.RouteGate(func(p string) bool { return effective(p).AuthRequired }, forced)
+		enforcing := middleware.NewJWTAuth(authCfg, log, st).Middleware()
+
+		// Same config, Observe on: extracts and propagates identity from a valid
+		// token and passes everything else straight through, never returning 401.
+		softCfg := authCfg
+		softCfg.Observe = true
+		identifyOnly := middleware.NewJWTAuth(softCfg, log, st).Middleware()
+
+		authMW = middleware.RouteSwitch(
+			func(p string) bool { return effective(p).AuthRequired },
+			enforcing, identifyOnly)
 	}
 
 	// wafMW / dlpMW / rateMW: same pattern for the other route-overridable controls.
@@ -150,6 +172,8 @@ func BuildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st middlewa
 		schemaSpecFor = func(context.Context) *discovery.Spec { return spec }
 	}
 
+	warnExactMatchRoutes(cfg.Routes, log)
+
 	steps := chainSteps(cfg, log, st, cat, postureEng, schemaSpecFor)
 	mws := make([]middleware.Middleware, len(steps))
 	for i, s := range steps {
@@ -222,4 +246,55 @@ func anyRouteEnablesRateLimit(routes []config.RouteConfig) bool {
 		}
 	}
 	return false
+}
+
+// exactMatchRoutes returns routes that are almost certainly meant as subtrees
+// but are declared without a trailing slash.
+//
+// The two halves of AEGIS disagree about what a route path means. The proxy is
+// built on net/http's ServeMux, where a pattern WITHOUT a trailing slash matches
+// that path EXACTLY and a pattern WITH one matches the subtree. The posture
+// engine matches by segment prefix either way. So `/api/v1/customers` makes the
+// dashboard claim the item paths under it are covered, while every request to
+// `/api/v1/customers/7` gets a 404 from the proxy and never reaches the backend
+// at all.
+//
+// The heuristic stays quiet where the exact match is obviously intended: a
+// single-segment path (`/health`, `/metrics`) and any route whose subtree form
+// is also declared, which means the operator already knows the distinction.
+func exactMatchRoutes(routes []config.RouteConfig) []string {
+	declared := make(map[string]struct{}, len(routes))
+	for _, r := range routes {
+		declared[r.Path] = struct{}{}
+	}
+
+	var suspect []string
+	for _, r := range routes {
+		if strings.HasSuffix(r.Path, "/") {
+			continue
+		}
+		if _, ok := declared[r.Path+"/"]; ok {
+			continue
+		}
+		if strings.Count(strings.Trim(r.Path, "/"), "/") == 0 {
+			continue
+		}
+		suspect = append(suspect, r.Path)
+	}
+	return suspect
+}
+
+// warnExactMatchRoutes logs the exactMatchRoutes finding once per chain build.
+// It warns rather than refusing to start because the mismatch fails closed —
+// the risk is a confusing outage, not a silent exposure. It cost real debugging
+// time twice while building the sample stand, so it is worth one startup line.
+func warnExactMatchRoutes(routes []config.RouteConfig, log *logger.Logger) {
+	suspect := exactMatchRoutes(routes)
+	if len(suspect) == 0 {
+		return
+	}
+	log.Warn("routes declared without a trailing slash match that exact path only — sub-paths will 404", map[string]any{
+		"routes": suspect,
+		"hint":   "declare both forms (e.g. \"/api/v1/orders\" and \"/api/v1/orders/\") to serve a collection and its items",
+	})
 }
