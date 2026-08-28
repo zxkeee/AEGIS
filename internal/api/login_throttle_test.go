@@ -237,12 +237,27 @@ func TestBootstrapSecretThrottle_ExcessCallersWaitNotSkip(t *testing.T) {
 	for i := 0; i < capacity; i++ {
 		bootstrapSecretDelaySemaphore <- struct{}{}
 	}
+	// Drain the LOCAL channel, never the package variable. Reading the global
+	// here was a cross-test leak: under CI contention this AfterFunc could still
+	// be running after the test returned, by which point the variable pointed at
+	// the NEXT test's semaphore — so it stole that test's token, handed its
+	// throttle call a slot it should never have gotten, and turned a clean
+	// assertion failure into a 10-minute timeout (CI, 2026-08-28).
+	sem := bootstrapSecretDelaySemaphore
+	drained := make(chan struct{})
 	release := time.AfterFunc(holdTime, func() {
+		defer close(drained)
 		for i := 0; i < capacity; i++ {
-			<-bootstrapSecretDelaySemaphore
+			<-sem
 		}
 	})
-	defer release.Stop()
+	// Nothing this test started may outlive it: if the timer already fired,
+	// Stop() is a no-op and only the drained signal proves the goroutine is done.
+	defer func() {
+		if !release.Stop() {
+			<-drained
+		}
+	}()
 
 	start := time.Now()
 	bootstrapSecretThrottle(context.Background(), time.Millisecond) // trivial delay once it gets a slot
@@ -278,7 +293,15 @@ func TestBootstrapSecretThrottle_MaxQueueWaitBounded(t *testing.T) {
 
 	// Hold the only slot for far longer than bootstrapSecretMaxQueueWait.
 	bootstrapSecretDelaySemaphore <- struct{}{}
-	defer func() { <-bootstrapSecretDelaySemaphore }()
+	// Non-blocking: on a failing assertion this defer must not deadlock. A
+	// blocking receive here is what turned the failure above into a 600s test
+	// timeout, which reports as "hung" and buries the actual assertion message.
+	defer func() {
+		select {
+		case <-bootstrapSecretDelaySemaphore:
+		default:
+		}
+	}()
 
 	start := time.Now()
 	throttled := bootstrapSecretThrottle(context.Background(), time.Millisecond)
@@ -314,7 +337,15 @@ func TestBootstrapSecretThrottle_AdmissionCapped(t *testing.T) {
 
 	// Fill both the only delay slot AND the only admission slot.
 	bootstrapSecretDelaySemaphore <- struct{}{}
-	defer func() { <-bootstrapSecretDelaySemaphore }()
+	// Non-blocking: on a failing assertion this defer must not deadlock. A
+	// blocking receive here is what turned the failure above into a 600s test
+	// timeout, which reports as "hung" and buries the actual assertion message.
+	defer func() {
+		select {
+		case <-bootstrapSecretDelaySemaphore:
+		default:
+		}
+	}()
 	bootstrapSecretQueueAdmission <- struct{}{}
 	defer func() { <-bootstrapSecretQueueAdmission }()
 
