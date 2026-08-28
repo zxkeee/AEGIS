@@ -53,8 +53,14 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      # -timeout 180s (default is 600s): a deadlocked test should report as a
+      # failure, not as a ten-minute mystery. A cross-test goroutine leak once
+      # hung internal/api for the full default window, and the job read as an
+      # infrastructure problem rather than the test bug it was (2026-08-28).
+      # The slowest package takes ~23s locally, so this leaves ample headroom
+      # for a loaded runner while cutting the blind wait by a factor of three.
       - name: Run tests
-        run: go test ./... -v -race -coverprofile=coverage.out
+        run: go test ./... -v -race -timeout 180s -coverprofile=coverage.out
         env:
           REDIS_ADDR: localhost:6379
           POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/aegis?sslmode=disable
@@ -79,4 +85,4 @@ jobs:
       # repo root does not descend into it, so it needs its own step.
       - name: Test web/ module (marketing site)
         working-directory: web
-        run: go test ./... -v -race
+        run: go test ./... -v -race -timeout 180s

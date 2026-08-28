@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker loadgen check-binaries check-secrets check-image-pins lint-invariants hooks console console-dev
+.PHONY: build run test clean docker loadgen check-binaries check-secrets check-image-pins lint-invariants hooks console console-dev sample-report render-pdf
 
 build:
 	go build -ldflags="-s -w" -o bin/gateway ./cmd/gateway
@@ -33,8 +33,10 @@ hooks:
 run: build
 	./bin/gateway --config config/gateway.yaml
 
+# -timeout 180s matches CI: a deadlocked test must report as a failure, not sit
+# for the default ten minutes looking like an infrastructure problem.
 test:
-	go test ./... -v -race
+	go test ./... -v -race -timeout 180s
 
 clean:
 	rm -rf bin/
@@ -56,6 +58,27 @@ docker: check-secrets
 
 docker-down:
 	docker compose down
+
+# Regenerate docs/assets/AEGIS-Sample-Findings-Report.{html,pdf} end to end:
+# stand up a gateway in front of the deliberately flawed demo backend, drive
+# traffic through it, export what it actually observed, and render.
+#
+# Every figure in that document comes from a real run, so it can only stay
+# honest if regenerating it is one command — a three-step ritual remembered by
+# hand is how a committed PDF ends up showing numbers the code no longer
+# produces. Needs go, curl, redis-server, Chrome and a reachable PostgreSQL
+# (override with POSTGRES_DSN).
+sample-report:
+	./demo/sample-report/generate.sh
+	python3 demo/sample-report/render.py
+	$(MAKE) render-pdf
+
+# HTML -> PDF for every document in docs/assets/. Drives Chrome over the
+# DevTools protocol rather than the --print-to-pdf flag, because the flag cannot
+# set a footer template and silently dropped the page numbering from the NDA and
+# the "fictional data" mark from the report. See scripts/render-pdf.py.
+render-pdf:
+	python3 ./scripts/render-pdf.py
 
 lint:
 	golangci-lint run ./...

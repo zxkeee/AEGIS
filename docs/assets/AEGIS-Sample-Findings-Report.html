@@ -153,7 +153,7 @@ because the requests are syntactically perfect.</p>
     <span class="tag crit">critical · API1:2023</span></div>
   <div class="where"><code>GET /api/v1/orders/{id}</code>
      &nbsp;45 objects read by one caller that does not own them (94 further detections elsewhere)</div>
-  <div class="why">consumer &#x27;analytics-batch@northwind.example&#x27; GET object &#x27;1035&#x27; (/api/v1/orders/{id}) owned by &#x27;36&#x27; (from response body) — confirmed IDOR (BOLA)</div>
+  <div class="why">consumer &#x27;analytics-batch@northwind.example&#x27; GET object &#x27;1036&#x27; (/api/v1/orders/{id}) owned by &#x27;37&#x27; (from response body) — confirmed IDOR (BOLA)</div>
 </div>
 <div class="finding">
   <div class="hd"><span class="ttl">Object enumeration by a single consumer</span>
@@ -179,9 +179,9 @@ threat-models — OWASP tracks it as API9 for that reason.</p>
 <td>not in the spec</td></tr>
 <tr><td><code>GET /internal/reports/export</code></td>
 <td>not in the spec</td></tr>
-<tr><td><code>GET /internal/metrics</code></td>
-<td>not in the spec</td></tr>
 <tr><td><code>GET /internal/jobs/status</code></td>
+<td>not in the spec</td></tr>
+<tr><td><code>GET /internal/metrics</code></td>
 <td>not in the spec</td></tr>
 <tr><td><code>GET /api/partner/v1/settlements</code></td>
 <td>not in the spec</td></tr>
@@ -227,11 +227,11 @@ threat-models — OWASP tracks it as API9 for that reason.</p>
 <td><span class="tag crit">unprotected</span></td><td>126</td>
 <td>126</td><td>0</td>
 <td>50</td></tr>
-<tr><td><code>GET /internal/metrics</code></td>
+<tr><td><code>GET /internal/jobs/status</code></td>
 <td><span class="tag crit">unprotected</span></td><td>20</td>
 <td>20</td><td>0</td>
 <td>50</td></tr>
-<tr><td><code>GET /internal/jobs/status</code></td>
+<tr><td><code>GET /internal/metrics</code></td>
 <td><span class="tag crit">unprotected</span></td><td>20</td>
 <td>20</td><td>0</td>
 <td>50</td></tr>
@@ -278,13 +278,13 @@ threat-models — OWASP tracks it as API9 for that reason.</p>
 <td>206</td><td>16</td></tr>
 <tr><td><code>support-tools@northwind.example</code></td><td>verified token</td>
 <td>205</td><td>19</td></tr>
-<tr><td><code>legacy-importer@northwind.example</code></td><td>verified token</td>
-<td>195</td><td>16</td></tr>
 <tr><td><code>marketing-sync@northwind.example</code></td><td>verified token</td>
 <td>195</td><td>16</td></tr>
-<tr><td><code>ops-console@northwind.example</code></td><td>verified token</td>
-<td>193</td><td>16</td></tr>
+<tr><td><code>legacy-importer@northwind.example</code></td><td>verified token</td>
+<td>195</td><td>16</td></tr>
 <tr><td><code>billing-worker@northwind.example</code></td><td>verified token</td>
+<td>193</td><td>16</td></tr>
+<tr><td><code>ops-console@northwind.example</code></td><td>verified token</td>
 <td>193</td><td>16</td></tr>
 <tr><td><code>mobile-app@northwind.example</code></td><td>verified token</td>
 <td>191</td><td>16</td></tr>

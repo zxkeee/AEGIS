@@ -13,17 +13,23 @@ the code moves.
 ## Run it
 
 ```bash
-./demo/sample-report/generate.sh      # stand up, drive ~2,700 requests, export to out/
-python3 demo/sample-report/render.py  # out/ -> docs/assets/…Report.html
+make sample-report        # stand, traffic, export, HTML and PDF — one command
 ```
 
-Then render the PDF with the same headless-Chrome step used for the other
-documents in `docs/assets/`.
+which is the three steps below plus the PDF render, and is the form to use: a
+ritual remembered by hand is how a committed PDF ends up showing numbers the
+code no longer produces.
 
-Requires `go`, `curl`, `redis-server`, and a reachable PostgreSQL (the catalog
-and findings live there — without it there is nothing to export). Override the
-database with `POSTGRES_DSN`; everything else is built to a temp dir and torn
-down on exit.
+```bash
+./demo/sample-report/generate.sh      # stand up, drive ~2,700 requests, export to out/
+python3 demo/sample-report/render.py  # out/ -> docs/assets/…Report.html
+make render-pdf                       # -> docs/assets/…Report.pdf (see scripts/render-pdf.py)
+```
+
+Requires `go`, `curl`, `redis-server`, Chrome, the `websocket-client` Python
+package, and a reachable PostgreSQL (the catalog and findings live there —
+without it there is nothing to export). Override the database with
+`POSTGRES_DSN`; everything else is built to a temp dir and torn down on exit.
 
 ## What the scenario contains
 
