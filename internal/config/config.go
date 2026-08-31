@@ -599,13 +599,21 @@ type AbuseConfig struct {
 	// durable access pattern, not a single burst.
 	ObjectOwnershipTTL time.Duration `yaml:"object_ownership_ttl"`
 	// OwnerFields upgrades ownership detection from heuristic (first-accessor) to
-	// CONFIRMED: the response body is parsed for one of these JSON fields (checked
-	// top-level and under a "data" wrapper), and its value is the object's true
-	// owner. The owner is compared to the authenticated subject
-	// (X-Gateway-Subject), so configure these to the field(s) that hold the
-	// caller's own id (e.g. "user_id", "owner_id", "account_id"). When a value is
-	// found, it supersedes the first-accessor heuristic for that request. Empty =
-	// heuristic only.
+	// CONFIRMED: the response body is parsed for one of these JSON fields, and its
+	// value is the object's true owner. The owner is compared to the
+	// authenticated subject (X-Gateway-Subject), so configure these to the
+	// field(s) that hold the caller's own id. When a value is found, it
+	// supersedes the first-accessor heuristic for that request. Empty = heuristic
+	// only.
+	//
+	// A name may be a flat key ("user_id", "owner_id") or a DOTTED PATH into a
+	// nested object ("user.id", "owner.id", "data.attributes.owner_id"). The
+	// dotted form is what most real APIs need: Forgejo, GitHub, GitLab and Stripe
+	// all return the owner as an object rather than a flat id, and a flat-key-only
+	// lookup silently found nothing on every one of them — the flagship
+	// confirmed-IDOR detection could not fire at all (assessment against a live
+	// Forgejo, 2026-08-31). Top-level and a "data" envelope are both searched, so
+	// "user.id" also matches {"data":{"user":{"id":…}}}.
 	OwnerFields []string `yaml:"owner_fields"`
 	// ObjectOwnershipBlock denies a request BEFORE forwarding when the object's
 	// confirmed owner (learned earlier from a response body via OwnerFields) is

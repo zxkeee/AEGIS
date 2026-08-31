@@ -864,3 +864,124 @@ func idsFor(t *testing.T, cands []bolaCandidate, want string) []string {
 	}
 	return nil
 }
+
+// ── Nested owner fields ──────────────────────────────────────────────────────
+//
+// Real APIs return the owner as an object, not a flat id. Against a live
+// Forgejo every response looked like {"user":{"id":70422,…}} and a flat-key
+// lookup found nothing on every request, so confirmed-IDOR never fired
+// (assessment, 2026-08-31). These pin the dotted-path form that fixes it.
+
+// The exact shape a Forgejo/Gitea issue comes back in, trimmed to the parts
+// that matter — the owner is two levels down and is a number, not a string.
+const forgejoIssueBody = `{
+  "id": 6978952,
+  "number": 14195,
+  "title": "fix: notification link",
+  "user": {"id": 70422, "login": "forgejo", "email": "x@example.com"},
+  "repository": {"id": 73144, "owner": "forgejo", "name": "forgejo"}
+}`
+
+func TestBOLAOwnership_ConfirmedFromNestedField(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.OwnerFields = []string{"user.id"}
+	st := &fakeStore{}
+	// Caller is 99999; the object belongs to 70422 — a real cross-owner read.
+	_ = runAbuseBody(cfg, st, "/api/v1/repos/forgejo/forgejo/issues/14195",
+		"99999", "user", http.StatusOK, forgejoIssueBody)
+
+	if len(st.forensic) != 1 || st.forensic[0].Reason != "bola_object_ownership" {
+		t.Fatalf("expected 1 confirmed IDOR event, got %+v", st.forensic)
+	}
+	if st.forensic[0].Extra["confirmed"] != true {
+		t.Fatalf("event = %+v, want confirmed from the response body", st.forensic[0].Extra)
+	}
+	if len(st.setOwners) != 1 || st.setOwners[0] != "70422" {
+		t.Fatalf("owner binding = %v, want [70422] (numeric id, exact precision)", st.setOwners)
+	}
+}
+
+func TestBOLAOwnership_NestedOwnerMatchesNotFlagged(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.OwnerFields = []string{"user.id"}
+	st := &fakeStore{}
+	_ = runAbuseBody(cfg, st, "/api/v1/repos/forgejo/forgejo/issues/14195",
+		"70422", "user", http.StatusOK, forgejoIssueBody)
+	if len(st.forensic) != 0 {
+		t.Fatalf("owner reading its own object must not flag, got %+v", st.forensic)
+	}
+}
+
+func TestExtractOwner_PathForms(t *testing.T) {
+	tests := []struct {
+		name   string
+		body   string
+		fields []string
+		want   string
+	}{
+		{"flat key still works", `{"user_id":"alice"}`, []string{"user_id"}, "alice"},
+		{"nested one level", `{"user":{"id":70422}}`, []string{"user.id"}, "70422"},
+		{"nested two levels", `{"data":{"attributes":{"owner_id":7}}}`,
+			[]string{"data.attributes.owner_id"}, "7"},
+		{"data envelope plus nested path", `{"data":{"owner":{"id":"o-1"}}}`,
+			[]string{"owner.id"}, "o-1"},
+		{"first matching field wins", `{"owner":{"id":1},"user":{"id":2}}`,
+			[]string{"owner.id", "user.id"}, "1"},
+		{"falls through to the next field when absent", `{"user":{"id":2}}`,
+			[]string{"owner.id", "user.id"}, "2"},
+		// An object is not an id. Stringifying one would bind a nonsense owner
+		// and produce a permanent false IDOR on every later read of that object.
+		{"object value is not an owner", `{"user":{"id":{"nested":1}}}`,
+			[]string{"user.id"}, ""},
+		{"array value is not an owner", `{"owners":[1,2]}`, []string{"owners"}, ""},
+		{"path through a non-object misses", `{"user":"alice"}`, []string{"user.id"}, ""},
+		{"missing path misses", `{"a":{"b":1}}`, []string{"x.y"}, ""},
+		{"empty body", ``, []string{"user.id"}, ""},
+		{"not json", `<html>`, []string{"user.id"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractOwner([]byte(tt.body), tt.fields); got != tt.want {
+				t.Errorf("extractOwner(%s, %v) = %q, want %q", tt.body, tt.fields, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBOLAOwnership_AnonymousCallerNotFlagged pins the guard that makes the
+// dotted-path owner lookup safe to ship.
+//
+// Confirmed-ownership compares the body's owner against the caller's identity,
+// and an anonymous caller has none — so the comparison "owner != identity" is
+// trivially true for every object in existence. The single `subject != ""`
+// condition in AbuseDetection is the only thing standing between that and a
+// critical IDOR finding on every read.
+//
+// It mattered little while owner extraction rarely succeeded (flat keys missed
+// on most real APIs). Now that a dotted path finds the owner in a Forgejo,
+// GitHub or Stripe response almost every time, this configuration —
+// owner_fields set, auth disabled, which is exactly what
+// config/gateway.pilot.yaml ships — would otherwise turn an ordinary pilot into
+// a wall of false criticals on day one.
+func TestBOLAOwnership_AnonymousCallerNotFlagged(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.OwnerFields = []string{"user.id"}
+	const path = "/api/v1/repos/forgejo/forgejo/issues/14195"
+	const body = `{"user":{"id":70422}}`
+
+	// Control: an identified caller reading someone else's object IS flagged,
+	// so the code path under test is genuinely reachable and this test would
+	// notice if the guard were removed.
+	identified := &fakeStore{}
+	_ = runAbuseBody(cfg, identified, path, "99999", "user", http.StatusOK, body)
+	if len(identified.forensic) != 1 {
+		t.Fatalf("control: identified cross-owner read produced %d events, want 1 — "+
+			"the anonymous case below would then prove nothing", len(identified.forensic))
+	}
+
+	anon := &fakeStore{}
+	_ = runAbuseBody(cfg, anon, path, "", "", http.StatusOK, body)
+	for _, e := range anon.forensic {
+		t.Errorf("anonymous caller flagged: %s — %v", e.Reason, e.Extra["why"])
+	}
+}

@@ -57,11 +57,22 @@ security:
   abuse:
     enabled: true
     object_ownership: true
-    # TODO: name the response-body field(s) that carry an object's owner id
-    # (e.g. "user_id", "owner_id", "account_id"). Without this, ownership is
-    # only inferred from access patterns (enumeration) — the flagship
-    # single-object IDOR/BOLA detection (confirmed from the response body,
-    # the leak a signature WAF can't see) never fires. See demo/idor-demo.sh.
+    # TODO: name the response-body field(s) that carry an object's owner id.
+    # Without this, ownership is only inferred from access patterns
+    # (enumeration) — the flagship single-object IDOR/BOLA detection (confirmed
+    # from the response body, the leak a signature WAF can't see) never fires.
+    # See demo/idor-demo.sh.
+    #
+    # Look at an actual response before filling this in. A flat id
+    # ("user_id", "owner_id", "account_id") is the simple case, but most APIs
+    # return the owner as an OBJECT — Forgejo, GitHub, GitLab and Stripe all do
+    # — and then you need the dotted path to the id inside it:
+    #
+    #   owner_fields: ["user.id", "owner.id"]        # {"user":{"id":70422}}
+    #   owner_fields: ["data.attributes.owner_id"]   # JSON:API style
+    #
+    # Getting this wrong is silent: the lookup simply finds nothing and the
+    # detection never fires, with no error anywhere.
     owner_fields: []
   schema:
     enabled: false

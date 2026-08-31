@@ -69,11 +69,24 @@ accepted; the backend remains the source of truth for enforcement during a pilot
    Also: `GET /api/catalog` (also `?format=csv`) and `GET /api/posture/summary`.
 
    Confirmed single-object IDOR detection requires `security.abuse.owner_fields`
-   to name the response-body field that carries the object's owner id (e.g.
-   `user_id`) — `config/gateway.pilot.yaml` ships with this empty by design
-   (it's app-specific); leaving it unset means only the coarser enumeration
-   signal runs, not the confirmed-from-body detection that's this product's
-   main differentiator.
+   to name the response-body field that carries the object's owner id —
+   `config/gateway.pilot.yaml` ships with this empty by design (it's
+   app-specific); leaving it unset means only the coarser enumeration signal
+   runs, not the confirmed-from-body detection that's this product's main
+   differentiator.
+
+   **Open a real response before setting it.** A flat `user_id` is the easy
+   case, but most APIs return the owner as an object, and then you need the
+   dotted path to the id inside it:
+
+   ```yaml
+   owner_fields: ["user.id", "owner.id"]        # {"user": {"id": 70422, …}}
+   owner_fields: ["data.attributes.owner_id"]   # JSON:API style
+   ```
+
+   Forgejo, GitHub, GitLab and Stripe all nest it. Getting this wrong fails
+   silently — the lookup finds nothing, the detection never fires, and no error
+   appears anywhere, so the pilot looks quiet when it is in fact blind.
 
 > Note: observe mode is still **inline** — AEGIS sits in the request path, so it
 > adds a proxy hop even though it blocks nothing. Measured overhead is not

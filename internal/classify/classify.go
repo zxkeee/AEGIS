@@ -43,7 +43,15 @@ var detectors = []detector{
 	{"credit_card", CategoryPCI, regexp.MustCompile(`\b(?:\d[ -]?){13,19}\b`), luhnValid},
 	{"ssn", CategoryPII, regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`), validSSN},
 	{"email", CategoryPII, regexp.MustCompile(`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`), nil},
-	{"phone", CategoryPII, regexp.MustCompile(`\b(?:\+?\d{1,2}[ .\-]?)?\(?\d{3}\)?[ .\-]?\d{3}[ .\-]?\d{4}\b`), validPhone},
+	// The leading "+" sits OUTSIDE the word boundary: `\b` cannot hold between a
+	// space and a "+", so anchoring the whole pattern with `\b` dropped the plus
+	// from every compact E.164 number ("+14155550132") and left validPhone
+	// looking at bare digits.
+	//
+	// Known gap: the grouping is US-shaped (3-3-4), so "+44 20 7946 0958" does
+	// not match at all. That predates the precision work and is a recall
+	// question, not a false-positive one.
+	{"phone", CategoryPII, regexp.MustCompile(`(?:\+[ .\-]?)?\b(?:\d{1,2}[ .\-]?)?\(?\d{3}\)?[ .\-]?\d{3}[ .\-]?\d{4}\b`), validPhone},
 	// npi: a bare 10-digit run is indistinguishable from a phone number or any
 	// other numeric ID, so this only fires next to an explicit "NPI" label —
 	// the same precision-over-recall tradeoff as the other detectors, applied
@@ -120,10 +128,29 @@ func sortedKeys(m map[string]bool) []string {
 }
 
 // luhnValid strips separators and reports whether the digits form a 13–19 digit
-// Luhn-valid number — the standard payment-card checksum.
+// Luhn-valid number that also begins with a digit payment cards actually use.
+//
+// The checksum alone is far too weak to stand on. Luhn catches single-digit
+// typos, not category errors: roughly one in ten arbitrary numbers of the right
+// length passes it. Against a live Forgejo it accepted the ORCID
+// "0000-0003-1124-3174" out of a repository description and reported it as
+// exposed cardholder data (assessment, 2026-08-31) — the single worst thing
+// this detector can get wrong, because PCI is the category that makes a reader
+// stop reading.
+//
+// The first digit is the ISO/IEC 7812 Major Industry Identifier, and every
+// payment network in use sits in 2–6: Mastercard 2 and 51–55, Amex 34/37,
+// Diners 36/38–39, JCB 35, Visa 4, Discover 6, UnionPay 62. Nothing issued for
+// payment begins with 0, 1, 7, 8 or 9. That one check removes every ORCID (all
+// currently allocated ones begin 0000-), ISBN-13 (978/979) and the long numeric
+// ids that make up the bulk of real API payloads, and costs no recall on any
+// card a customer could actually be leaking.
 func luhnValid(s string) bool {
 	digits := onlyDigits(s)
 	if len(digits) < 13 || len(digits) > 19 {
+		return false
+	}
+	if digits[0] < '2' || digits[0] > '6' {
 		return false
 	}
 	return luhnChecksumValid(digits)
@@ -190,26 +217,43 @@ func validSSN(s string) bool {
 	return true
 }
 
-// validPhone rejects matches that are really longer digit runs (e.g. a card or
-// an ID) by requiring the match not to be immediately part of a longer number.
-// The regex already anchors on word boundaries; this rejects all-same-digit
-// runs which are almost always test/placeholder noise.
+// validPhone requires a match to LOOK like a written phone number, not merely
+// to contain ten digits.
+//
+// This is the same conclusion the npi detector above already reached — a bare
+// ten-digit run is indistinguishable from any other numeric identifier — but it
+// had not been applied here, and the consequence showed up the moment the
+// gateway saw a real API: "1510782819", the unix timestamp in a git commit's
+// author line, was reported as an exposed phone number on every repository
+// browsed (assessment, 2026-08-31). Object ids, timestamps, sequence numbers
+// and counters all have that shape, and they are what API payloads are mostly
+// made of.
+//
+// A number a human wrote down as a phone number carries punctuation — a leading
+// "+", parentheses around the area code, or spaces/dots/hyphens between the
+// groups. A number a machine emitted as an identifier does not. Requiring at
+// least one of those gives up bare "5551234567" and keeps every conventionally
+// formatted number, which is the right side of that trade for a control whose
+// output goes in front of a customer.
 func validPhone(s string) bool {
 	var digits []rune
+	formatted := false
 	for _, r := range s {
-		if r >= '0' && r <= '9' {
+		switch {
+		case r >= '0' && r <= '9':
 			digits = append(digits, r)
+		case r == '+' || r == '(' || r == ')' || r == ' ' || r == '.' || r == '-':
+			formatted = true
 		}
 	}
-	if len(digits) < 10 {
+	if len(digits) < 10 || !formatted {
 		return false
 	}
-	allSame := true
+	// All-same-digit runs are placeholder noise ("0000000000", "9999999999").
 	for _, d := range digits[1:] {
 		if d != digits[0] {
-			allSame = false
-			break
+			return true
 		}
 	}
-	return !allSame
+	return false
 }

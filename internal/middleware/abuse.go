@@ -434,6 +434,12 @@ func (c *captureWriter) Unwrap() http.ResponseWriter { return c.ResponseWriter }
 // owner field, checked at the top level and under a "data" wrapper (a common API
 // envelope). Numbers keep exact precision (json.Number), so integer IDs compare
 // cleanly against the subject.
+//
+// A field name may be a flat key ("user_id") or a dotted path into nested
+// objects ("user.id"). The nested form is not a nicety: against a live Forgejo
+// every owner sits inside an object (`"user":{"id":…}`), as it does on GitHub,
+// GitLab and Stripe, so a flat-key-only lookup returned nothing on every request
+// and confirmed-IDOR detection never fired (assessment, 2026-08-31).
 func extractOwner(body []byte, fields []string) string {
 	if len(body) == 0 {
 		return ""
@@ -455,18 +461,50 @@ func extractOwner(body []byte, fields []string) string {
 
 func ownerFromMap(m map[string]any, fields []string) string {
 	for _, f := range fields {
-		if v, ok := m[f]; ok {
-			switch t := v.(type) {
-			case string:
-				return t
-			case json.Number:
-				return t.String()
-			case bool:
-				return strconv.FormatBool(t)
+		if v, ok := lookupPath(m, f); ok {
+			if s, ok := scalarString(v); ok {
+				return s
 			}
 		}
 	}
 	return ""
+}
+
+// lookupPath resolves a dotted path against a decoded JSON object. A name
+// without a dot is a plain key lookup, so existing flat configurations behave
+// exactly as before. A path that runs into a non-object part way down simply
+// misses — ownership stays unconfirmed rather than guessing.
+func lookupPath(m map[string]any, path string) (any, bool) {
+	if !strings.Contains(path, ".") {
+		v, ok := m[path]
+		return v, ok
+	}
+	var cur any = m
+	for _, part := range strings.Split(path, ".") {
+		obj, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur, ok = obj[part]
+		if !ok {
+			return nil, false
+		}
+	}
+	return cur, true
+}
+
+// scalarString renders a JSON scalar as the owner id. A non-scalar (object or
+// array) is not an id and must not be stringified into one.
+func scalarString(v any) (string, bool) {
+	switch t := v.(type) {
+	case string:
+		return t, true
+	case json.Number:
+		return t.String(), true
+	case bool:
+		return strconv.FormatBool(t), true
+	}
+	return "", false
 }
 
 // recordAbuse logs an abuse event and persists it to forensics WITHOUT denying
