@@ -1,0 +1,65 @@
+# AEGIS in front of a REAL third-party API (Codeberg / Forgejo) to measure the
+# false-positive rate. Derived from config/gateway.pilot.yaml with only the two
+# TODOs filled in — nothing is tuned to make the numbers look good.
+observe: true
+
+listen: ":19080"
+admin_listen: ":19081"
+admin_auth: true
+admin_cookie_insecure: true
+require_tls: false
+trusted_proxies: []
+
+tls:
+  enabled: false
+
+redis:
+  addr: "127.0.0.1:16399"
+
+logging:
+  level: "warn"
+  format: "json"
+
+multitenancy:
+  enabled: false
+
+security:
+  waf:
+    enabled: true
+  dlp:
+    enabled: true
+  auth:
+    # Codeberg authenticates with opaque tokens, not JWTs. A pilot here would
+    # leave this off, exactly as the template's TODO describes. Consumers
+    # therefore fall back to source address.
+    enabled: false
+  abuse:
+    enabled: true
+    object_ownership: true
+    # Forgejo nests the owner. Now expressible as a dotted path.
+    owner_fields: ["user.id", "owner.id", "repository.owner"]
+  schema:
+    enabled: false
+  api_inventory:
+    enabled: true
+  rate_limit:
+    enabled: false
+  ip_guard:
+    enabled: false
+  bot:
+    enabled: false
+  challenge:
+    enabled: false
+  behavior:
+    enabled: false
+  threat_feed:
+    enabled: false
+  cors:
+    enabled: false
+
+routes:
+  - path: "/"
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+    upstreams:
+      - "https://codeberg.org"
+    timeout: "20s"

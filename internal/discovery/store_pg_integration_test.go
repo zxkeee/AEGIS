@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -272,5 +273,178 @@ func TestPG_GraphData(t *testing.T) {
 	}
 	if len(g2.Nodes) != 0 || len(g2.Edges) != 0 {
 		t.Fatalf("cross-tenant leak: %d nodes, %d edges", len(g2.Nodes), len(g2.Edges))
+	}
+}
+
+// ── Retemplating after the learner rules on a position ───────────────────────
+
+// The learner needs traffic before it can judge a position, so by the time it
+// rules, the catalog already holds rows written under concrete paths. This is
+// what turns those rows into the endpoint they were always part of — without
+// it, the console keeps showing one row per object forever and the fix only
+// applies to future requests.
+func TestPG_RetemplateMergesRowsWrittenBeforeLearning(t *testing.T) {
+	s := freshStore(t)
+	ctx := context.Background()
+
+	// Three repositories browsed before /api/v1/repos was known to hold owner
+	// names, plus one row already carrying the template (traffic that arrived
+	// after the rule was learned).
+	rows := []struct {
+		tmpl            string
+		reqs, anon, pii int64
+		status          map[int]int64
+		posture         string
+		risk            int
+	}{
+		{"/api/v1/repos/alice/x", 5, 5, 2, map[int]int64{200: 5}, "unprotected", 75},
+		{"/api/v1/repos/bob/x", 3, 0, 1, map[int]int64{200: 2, 404: 1}, "partial", 40},
+		{"/api/v1/repos/carol/x", 2, 2, 0, map[int]int64{200: 2}, "partial", 30},
+		{"/api/v1/repos/{id}/x", 7, 1, 3, map[int]int64{200: 7}, "partial", 50},
+	}
+	for _, r := range rows {
+		a := &epAgg{
+			tenant: "acme", id: "GET " + r.tmpl, method: "GET", pathTemplate: r.tmpl,
+			requestCount: r.reqs, anonCount: r.anon, piiCount: r.pii,
+			posture: r.posture, riskScore: r.risk, statusDist: r.status,
+			piiTypes: map[string]bool{"email": true},
+		}
+		if err := s.upsertEndpoint(ctx, a); err != nil {
+			t.Fatalf("upsertEndpoint %s: %v", r.tmpl, err)
+		}
+	}
+
+	// A different prefix must be left completely alone.
+	untouched := &epAgg{
+		tenant: "acme", id: "GET /api/v1/version", method: "GET",
+		pathTemplate: "/api/v1/version", requestCount: 9, statusDist: map[int]int64{200: 9},
+	}
+	if err := s.upsertEndpoint(ctx, untouched); err != nil {
+		t.Fatalf("upsertEndpoint version: %v", err)
+	}
+
+	if err := s.retemplateEndpoints(ctx, "acme", "/api/v1/repos"); err != nil {
+		t.Fatalf("retemplateEndpoints: %v", err)
+	}
+
+	eps, err := s.listEndpoints(ctx, "acme", EndpointFilter{Limit: 50})
+	if err != nil {
+		t.Fatalf("listEndpoints: %v", err)
+	}
+	byTemplate := map[string]Endpoint{}
+	for _, e := range eps {
+		byTemplate[e.PathTemplate] = e
+	}
+	if len(eps) != 2 {
+		t.Fatalf("expected 2 endpoints after merge, got %d: %v", len(eps), byTemplate)
+	}
+
+	merged, ok := byTemplate["/api/v1/repos/{id}/x"]
+	if !ok {
+		t.Fatalf("merged template missing, got %v", byTemplate)
+	}
+	// Counters must be summed, not replaced: those requests really happened, and
+	// posture and the findings' "N requests arrived without authentication" are
+	// computed from them.
+	if merged.RequestCount != 17 {
+		t.Errorf("request_count = %d, want 17 (5+3+2+7)", merged.RequestCount)
+	}
+	if merged.AnonCount != 8 {
+		t.Errorf("anon_count = %d, want 8 (5+0+2+1)", merged.AnonCount)
+	}
+	if merged.PIICount != 6 {
+		t.Errorf("pii_count = %d, want 6 (2+1+0+3)", merged.PIICount)
+	}
+	// Worst posture and highest risk win — an endpoint unprotected for some of
+	// its objects is unprotected.
+	if merged.Posture != "unprotected" {
+		t.Errorf("posture = %q, want unprotected", merged.Posture)
+	}
+	if merged.RiskScore != 75 {
+		t.Errorf("risk_score = %d, want 75", merged.RiskScore)
+	}
+
+	if v := byTemplate["/api/v1/version"]; v.RequestCount != 9 {
+		t.Errorf("unrelated endpoint changed: %+v", v)
+	}
+
+	// Status counters follow the merge, and the old rows are gone.
+	// Read through withTenantTx: RLS is FORCEd on these tables, so a direct
+	// query without the app.tenant_id GUC fails closed and returns nothing.
+	statuses := map[int]int64{}
+	if err := s.withTenantTx(ctx, "acme", func(tx *sql.Tx) error {
+		srs, err := tx.QueryContext(ctx, `SELECT status, count FROM api_endpoint_status`)
+		if err != nil {
+			return err
+		}
+		defer srs.Close()
+		for srs.Next() {
+			var st int
+			var n int64
+			if err := srs.Scan(&st, &n); err != nil {
+				return err
+			}
+			statuses[st] += n
+		}
+		return srs.Err()
+	}); err != nil {
+		t.Fatalf("query statuses: %v", err)
+	}
+	if statuses[200] != 25 || statuses[404] != 1 {
+		t.Errorf("status distribution = %v, want 200:25 (16 merged + 9 version) and 404:1", statuses)
+	}
+}
+
+// Retemplating must be safe to run again — the catalog calls it once per flush
+// after a position collapses, and a retry after a partial failure must not
+// double-count.
+func TestPG_RetemplateIsIdempotent(t *testing.T) {
+	s := freshStore(t)
+	ctx := context.Background()
+
+	a := &epAgg{
+		tenant: "acme", id: "GET /api/v1/repos/alice/x", method: "GET",
+		pathTemplate: "/api/v1/repos/alice/x", requestCount: 4,
+		statusDist: map[int]int64{200: 4},
+	}
+	if err := s.upsertEndpoint(ctx, a); err != nil {
+		t.Fatalf("upsertEndpoint: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := s.retemplateEndpoints(ctx, "acme", "/api/v1/repos"); err != nil {
+			t.Fatalf("retemplateEndpoints %d: %v", i, err)
+		}
+	}
+	eps, err := s.listEndpoints(ctx, "acme", EndpointFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("listEndpoints: %v", err)
+	}
+	if len(eps) != 1 || eps[0].RequestCount != 4 {
+		t.Fatalf("repeated retemplate changed the data: %+v", eps)
+	}
+}
+
+func TestRetemplatePath(t *testing.T) {
+	tests := []struct {
+		prefix, in, want string
+		changed          bool
+	}{
+		{"/api/v1/repos", "/api/v1/repos/alice", "/api/v1/repos/{id}", true},
+		{"/api/v1/repos", "/api/v1/repos/alice/x", "/api/v1/repos/{id}/x", true},
+		{"/api/v1/repos", "/api/v1/repos/alice/x/commits", "/api/v1/repos/{id}/x/commits", true},
+		// Already templated: idempotence depends on this.
+		{"/api/v1/repos", "/api/v1/repos/{id}/x", "/api/v1/repos/{id}/x", false},
+		// Not under the prefix.
+		{"/api/v1/repos", "/api/v1/users/alice", "/api/v1/users/alice", false},
+		// A longer prefix must not match a shorter sibling.
+		{"/api/v1/repos", "/api/v1/reposx/alice", "/api/v1/reposx/alice", false},
+		{"/api/v1/repos", "/api/v1/repos", "/api/v1/repos", false},
+	}
+	for _, tt := range tests {
+		got, changed := retemplatePath(tt.prefix, tt.in)
+		if got != tt.want || changed != tt.changed {
+			t.Errorf("retemplatePath(%q, %q) = (%q, %v), want (%q, %v)",
+				tt.prefix, tt.in, got, changed, tt.want, tt.changed)
+		}
 	}
 }

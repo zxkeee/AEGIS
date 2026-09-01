@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -175,6 +176,13 @@ type Catalog struct {
 	seen         map[string]struct{}
 	maxEndpoints int // cap on len(seen); defaults to maxCatalogEndpoints
 
+	// learner infers identifier segments that NormalizePath cannot recognise by
+	// shape (slug-keyed paths such as /repos/{owner}/{repo}). Consulted here, in
+	// the single worker goroutine, rather than in the request path: it is what
+	// decides the catalog key, and the data plane's own normalisation must not
+	// start moving underneath enforcement decisions.
+	learner *PathLearner
+
 	wg   sync.WaitGroup
 	quit chan struct{}
 }
@@ -204,11 +212,34 @@ func NewCatalog(dsn string, posture *PostureEngine, log Logger) (*Catalog, error
 		specCache:    map[string]specCacheEntry{},
 		seen:         map[string]struct{}{},
 		maxEndpoints: maxCatalogEndpoints,
+		learner:      NewPathLearner(LearnerConfig{}),
 		quit:         make(chan struct{}),
 	}
 	c.wg.Add(1)
 	go c.worker()
 	return c, nil
+}
+
+// retemplate merges catalog rows stored under a concrete path into the template
+// a newly-learned identifier position now yields. A failure is logged and the
+// position is not retried: the templates are already correct for new traffic, so
+// the cost is stale rows in the console, not wrong ones.
+func (c *Catalog) retemplate() {
+	for _, cp := range c.learner.TakeCollapsed() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := c.pg.retemplateEndpoints(ctx, cp.Tenant, cp.Prefix)
+		cancel()
+		if err != nil {
+			c.log.Error("catalog: retemplate failed", map[string]any{
+				"error": err.Error(), "tenant": cp.Tenant, "prefix": cp.Prefix,
+			})
+			continue
+		}
+		c.log.Info("catalog: learned an identifier position", map[string]any{
+			"tenant": cp.Tenant, "prefix": cp.Prefix,
+			"template": cp.Prefix + "/" + placeholder,
+		})
+	}
 }
 
 // SetPostureEngine swaps the posture engine after a config hot-reload so newly
@@ -265,6 +296,11 @@ func (c *Catalog) worker() {
 		eps = map[string]*epAgg{}
 		cons = map[string]*consumerAgg{}
 		epCons = map[[3]string]int64{}
+		// After the window is durable, fold the rows written before a position
+		// was learned into the template it now produces. Doing it here rather
+		// than at the moment of collapse keeps it off the aggregation path and
+		// guarantees the rows being merged are already committed.
+		c.retemplate()
 	}
 
 	for {
@@ -300,8 +336,13 @@ func (c *Catalog) aggregate(obs Observation, eps map[string]*epAgg,
 	if tnt == "" {
 		tnt = tenant.Default
 	}
-	tmpl := NormalizePath(obs.Path)
-	id := EndpointKey(obs.Method, obs.Path)
+	// The learner both records this observation and returns the template. It
+	// supersedes the bare NormalizePath here so that a slug-keyed API produces an
+	// inventory rather than one catalog row per object — and so that observed
+	// templates can match the documented ones for drift detection, which
+	// /repos/forgejo/forgejo never could.
+	tmpl := c.learner.Template(tnt, obs.Path)
+	id := strings.ToUpper(obs.Method) + " " + tmpl
 	// Aggregation maps are keyed by tenant+id so two tenants that share an
 	// endpoint id (or consumer id) never collide in the same flush window.
 	epKey := tnt + "\x00" + id
