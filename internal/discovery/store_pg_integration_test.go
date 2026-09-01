@@ -377,7 +377,7 @@ func TestPG_RetemplateMergesRowsWrittenBeforeLearning(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		defer srs.Close()
+		defer func() { _ = srs.Close() }()
 		for srs.Next() {
 			var st int
 			var n int64
