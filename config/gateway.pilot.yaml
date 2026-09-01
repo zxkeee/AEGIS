@@ -74,6 +74,27 @@ security:
     # Getting this wrong is silent: the lookup simply finds nothing and the
     # detection never fires, with no error anywhere.
     owner_fields: []
+  # Gives callers a stable identity when the API authenticates with something
+  # other than a JWT — an opaque bearer token, an API key, a session cookie.
+  #
+  # Without it every such caller is recorded as one "ip:<addr>" consumer, and
+  # everything identity-aware degrades with it: BOLA/BFLA is entirely "did THIS
+  # consumer touch an object it does not own", and one consumer covering the
+  # whole estate makes that unanswerable. Measured against a live API, the run
+  # produced a single consumer across 152 endpoints and the flagship detection
+  # never fired.
+  #
+  # The credential is never stored or forwarded — the identity is a keyed hash,
+  # shown in the console as "token:<id>". This only labels consumers; it never
+  # accepts or rejects a request. Leave it off only if the API is JWT-only.
+  consumer_id:
+    enabled: true
+    headers: ["X-API-Key"]   # add whatever header the partner's clients send
+    cookies: []              # e.g. ["session"] for a cookie-authenticated API
+    # Salt comes from AEGIS_CONSUMER_SALT; without it one is derived from the
+    # admin secret. It must be stable across restarts, or the same caller gets a
+    # new identity on every boot.
+
   schema:
     enabled: false
   api_inventory:

@@ -33,6 +33,13 @@ security:
     # leave this off, exactly as the template's TODO describes. Consumers
     # therefore fall back to source address.
     enabled: false
+  # Codeberg authenticates with opaque tokens, so this is what keeps the three
+  # personas in the traffic script from collapsing into one consumer.
+  consumer_id:
+    enabled: true
+    headers: ["X-API-Key"]
+    cookies: []
+
   abuse:
     enabled: true
     object_ownership: true

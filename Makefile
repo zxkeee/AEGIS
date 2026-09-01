@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker loadgen check-binaries check-secrets check-image-pins lint-invariants hooks console console-dev sample-report render-pdf
+.PHONY: build run test clean docker loadgen check-binaries check-secrets check-image-pins lint-invariants hooks console console-dev sample-report render-pdf preflight
 
 build:
 	go build -ldflags="-s -w" -o bin/gateway ./cmd/gateway
@@ -79,6 +79,12 @@ sample-report:
 # the "fictional data" mark from the report. See scripts/render-pdf.py.
 render-pdf:
 	python3 ./scripts/render-pdf.py
+
+# Everything CI runs, the way CI runs it — including the pinned golangci-lint
+# version, the second Go module under web/, and both npm lockfiles. Run this
+# before pushing; `make lint` alone has missed real failures three times.
+preflight:
+	./scripts/preflight.sh
 
 lint:
 	golangci-lint run ./...

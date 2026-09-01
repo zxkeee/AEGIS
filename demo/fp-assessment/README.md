@@ -33,7 +33,7 @@ Four structural failures came out of that first hour:
 | `credit_card` matched an ORCID, `phone` matched unix timestamps in commit metadata | fixed, `f856878` |
 | `owner_fields` could not read a nested owner (`user.id`), so confirmed-IDOR never fired on any real API | fixed, `f856878` |
 | Path normalisation collapsed only digit-shaped segments, so a slug-keyed API produced one catalog row per object | fixed, `internal/discovery/learn.go` |
-| Consumer identity comes from a verified JWT `sub`; an API using opaque tokens collapses to a single `ip:` consumer, and BOLA/BFLA with it | open |
+| Consumer identity came from a verified JWT `sub` only, so an API using opaque tokens collapsed to a single `ip:` consumer, and BOLA/BFLA with it | fixed, `security.consumer_id` |
 
 Measured over the same traffic pattern at pilot scale (1035 requests):
 
@@ -42,6 +42,11 @@ Measured over the same traffic pattern at pilot scale (1035 requests):
 | catalog "endpoints" |    500 |    13 |
 | findings            |    380 |    10 |
 | false type claims (PCI/phone) | 9 | 0 |
+| distinct consumers  |      1 |     4 |
+
+The three token-carrying personas in `traffic.py` are now separated, and their
+shapes match what they are: 500 requests over 2 endpoints for the indexer, 370
+over 9 for the developer, 160 over 2 for profile browsing.
 
 ## Reading the output
 

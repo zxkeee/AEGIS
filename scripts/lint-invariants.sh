@@ -107,7 +107,16 @@ CM=charts/aegis/templates/configmap.yaml
 # serializes to (the field's own `yaml:"..."` tag) — e.g. cfg.OIDC.ClientSecret
 # assigns to a field named ClientSecret; find ClientSecret's yaml tag.
 while IFS= read -r goField; do
-  yamlKey=$(grep -oE "\\b${goField}\\b +\\S+ +\`yaml:\"[a-z0-9_]+\"" "$CFG" | grep -oE '"[a-z0-9_]+"' | tr -d '"' | head -1)
+  # `|| true`: with `set -e` and `pipefail`, a field whose tag does not match
+  # killed this script outright — it exited before printing the very error it
+  # was written to print, so the check reported "failed" with no reason at all.
+  yamlKey=$(grep -oE "\\b${goField}\\b +\\S+ +\`yaml:\"[a-z0-9_-]+\"" "$CFG" | grep -oE '"[a-z0-9_-]+"' | tr -d '"' | head -1 || true)
+  # A field tagged `yaml:"-"` is never marshalled, so it cannot reach the
+  # ConfigMap at all — a stronger guarantee than being force-blanked there, and
+  # the right shape for a value that only ever comes from the environment.
+  if [ "$yamlKey" = "-" ]; then
+    continue
+  fi
   if [ -z "$yamlKey" ]; then
     echo "ERROR: could not resolve the yaml tag for field $goField (assigned from an AEGIS_* env var in $CFG) — add it manually to this invariant"
     fail=1

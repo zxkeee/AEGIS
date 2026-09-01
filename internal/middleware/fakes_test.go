@@ -27,14 +27,16 @@ type fakeStore struct {
 	trackOwner  func() (int64, bool, error)  // (priorOwners, alreadyOwned, err)
 	getOwner    func() (string, bool, error) // GetObjectOwner override (confirmed-owner block)
 	setOwners   []string                     // captured SetObjectOwner values
-	objOwners   map[string]string            // scope+id -> owner, so Set via one method is seen by Get via another
-	jtiRevoked  map[string]bool
-	jtiErr      error // when set, IsJTIRevoked returns this error (Redis outage)
-	blockedIPs  map[string]bool
-	ipBlockErr  error                  // when set, IsIPBlocked returns this error (Redis outage)
-	sessions    map[string]string      // token -> csrf (legacy form; super-admin/default tenant)
-	sessionFull map[string]iam.Session // token -> full session (overrides `sessions`)
-	behavior    int
+	// trackedOwners captures the consumer each object access was attributed to.
+	trackedOwners []string
+	objOwners     map[string]string // scope+id -> owner, so Set via one method is seen by Get via another
+	jtiRevoked    map[string]bool
+	jtiErr        error // when set, IsJTIRevoked returns this error (Redis outage)
+	blockedIPs    map[string]bool
+	ipBlockErr    error                  // when set, IsIPBlocked returns this error (Redis outage)
+	sessions      map[string]string      // token -> csrf (legacy form; super-admin/default tenant)
+	sessionFull   map[string]iam.Session // token -> full session (overrides `sessions`)
+	behavior      int
 	// Challenge overrides keyed by IP. nil = the original "false" defaults.
 	challengeSolved map[string]bool
 	challengeValid  map[string]string // ip -> token expected to match
@@ -135,7 +137,10 @@ func (f *fakeStore) TrackObjectAccess(_ context.Context, _, _, _ string, _ time.
 func (f *fakeStore) TrackBaseline(_ context.Context, _, _ string, _ int64, _ bool, _ time.Duration) (float64, error) {
 	return f.baseline, nil
 }
-func (f *fakeStore) TrackObjectOwner(_ context.Context, _, _, _ string, _ time.Duration) (int64, bool, error) {
+func (f *fakeStore) TrackObjectOwner(_ context.Context, _, _, consumer string, _ time.Duration) (int64, bool, error) {
+	// Recorded so a test can assert WHICH consumer an access was attributed to —
+	// the whole question the pseudonymous-identity work turns on.
+	f.trackedOwners = append(f.trackedOwners, consumer)
 	if f.trackOwner != nil {
 		return f.trackOwner()
 	}

@@ -985,3 +985,85 @@ func TestBOLAOwnership_AnonymousCallerNotFlagged(t *testing.T) {
 		t.Errorf("anonymous caller flagged: %s — %v", e.Reason, e.Extra["why"])
 	}
 }
+
+// ── Pseudonymous consumers (opaque credentials, no JWT) ──────────────────────
+
+// runAbusePseudonym drives AbuseDetection for a caller identified only by the
+// pseudonym middleware.ConsumerID derives from an opaque credential.
+func runAbusePseudonym(cfg config.AbuseConfig, st Store, path, consumerKey string, status int, body string) {
+	_ = InitTrustedProxies(nil)
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	})
+	h := AbuseDetection(cfg, "", fakeLogger{}, st)(next)
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	r.RemoteAddr = "1.2.3.4:1"
+	if consumerKey != "" {
+		r.Header.Set("X-Gateway-Consumer-Key", consumerKey)
+	}
+	h.ServeHTTP(httptest.NewRecorder(), r)
+}
+
+// The point of the whole feature: two callers holding different opaque tokens
+// must be two consumers. Attributed to a shared "ip:" identity, one caller
+// sweeping objects and a hundred ordinary callers are indistinguishable, and
+// every per-consumer control is measuring noise.
+func TestBOLA_PseudonymSeparatesConsumers(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.OwnerFields = nil // heuristic path: it is what works without a JWT
+	st := &fakeStore{}
+
+	// Two different callers reading the SAME object. Under the old behaviour
+	// both were "ip:1.2.3.4" and the second read looked like the first caller
+	// re-reading its own object.
+	runAbusePseudonym(cfg, st, "/api/orders/12345", "token:aaaa", http.StatusOK, `{"x":1}`)
+	runAbusePseudonym(cfg, st, "/api/orders/12345", "token:bbbb", http.StatusOK, `{"x":1}`)
+
+	if len(st.trackedOwners) < 2 {
+		t.Fatalf("expected both callers to be tracked separately, got %v", st.trackedOwners)
+	}
+	if st.trackedOwners[0] == st.trackedOwners[1] {
+		t.Errorf("both callers recorded as the same consumer %q", st.trackedOwners[0])
+	}
+}
+
+// The trap this must not fall into. A pseudonym is a hash of a credential, so it
+// can never equal an owner id read out of a response body — comparing them would
+// make "owner != caller" true for every object in existence and turn an ordinary
+// pilot into a wall of critical findings on day one. It is the same failure the
+// anonymous caller is guarded against, and the guard has to cover this case too.
+func TestBOLAOwnership_PseudonymDoesNotConfirmIDOR(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.OwnerFields = []string{"user.id"}
+	st := &fakeStore{}
+
+	runAbusePseudonym(cfg, st, "/api/v1/repos/forgejo/forgejo/issues/14195",
+		"token:aaaa", http.StatusOK, `{"user":{"id":70422}}`)
+
+	for _, e := range st.forensic {
+		if e.Extra["confirmed"] == true {
+			t.Errorf("pseudonymous caller produced a confirmed IDOR: %v", e.Extra["why"])
+		}
+	}
+}
+
+// Enumeration is pure consumer-equality counting, so it is the detection that
+// benefits most: a sweep by one token-authenticated caller is now visible as one
+// caller rather than smeared across a shared address.
+func TestBOLA_PseudonymEnumerationIsAttributed(t *testing.T) {
+	cfg := ownershipCfg()
+	cfg.OwnerFields = nil
+	cfg.EnumThreshold = 3
+	st := &fakeStore{trackObject: func() (int64, error) { return 4, nil }} // over the ceiling
+
+	runAbusePseudonym(cfg, st, "/api/orders/99", "token:sweeper", http.StatusOK, `{}`)
+
+	if len(st.forensic) != 1 {
+		t.Fatalf("expected an enumeration event, got %+v", st.forensic)
+	}
+	if got := st.forensic[0].Extra["consumer"]; got != "token:sweeper" {
+		t.Errorf("consumer = %v, want token:sweeper (not the source address)", got)
+	}
+}

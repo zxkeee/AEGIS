@@ -40,6 +40,7 @@ func TestChainOrder(t *testing.T) {
 		"WAF",
 		"Discovery",
 		"Auth",
+		"ConsumerID",
 		"SchemaValidation",
 		"AbuseDetection",
 		"DLP",

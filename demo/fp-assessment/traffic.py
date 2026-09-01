@@ -37,6 +37,10 @@ def get(path, persona):
         # A realistic client identifies itself; AEGIS has no JWT to read here,
         # which is itself part of what this run measures.
         "X-Persona": persona,
+        # Each persona carries its own opaque credential, the way three real
+        # clients of a token-authenticated API would. Codeberg ignores an
+        # unknown key for public reads; AEGIS is what has to tell them apart.
+        "X-API-Key": f"opaque-key-{persona}",
     })
     REQUESTED.append(path.split("?")[0])
     time.sleep(PACE)

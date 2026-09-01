@@ -75,6 +75,16 @@ accepted; the backend remains the source of truth for enforcement during a pilot
    runs, not the confirmed-from-body detection that's this product's main
    differentiator.
 
+   If the API does not use JWTs at all, set `security.consumer_id.enabled: true`
+   as well (it is on in the template). Object-ownership detection needs to tell
+   one caller from another, and without it every caller holding an opaque token,
+   API key or session cookie is recorded as the same `ip:<addr>` consumer — one
+   consumer for the whole estate, which makes "did this caller read someone
+   else's object" a question with no answer. Note the limit: a pseudonym is a
+   hash of a credential, so it can never be compared against an owner id in a
+   response body. Such callers get enumeration and first-accessor detection, not
+   the confirmed-from-body IDOR finding.
+
    **Open a real response before setting it.** A flat `user_id` is the easy
    case, but most APIs return the owner as an object, and then you need the
    dotted path to the id inside it:

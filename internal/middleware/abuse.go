@@ -85,7 +85,17 @@ func AbuseDetection(cfg config.AbuseConfig, graphQLPath string, log Logger, st a
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ip := RealIP(r)
 			subject := r.Header.Get("X-Gateway-Subject")
+			// A pseudonym derived from an opaque credential (middleware.ConsumerID)
+			// is a weaker identity than a verified JWT subject but a far stronger
+			// one than a source address. Without it, an API authenticating with
+			// bearer tokens, API keys or cookies attributes all of its traffic to
+			// one "ip:" consumer, and every question of the form "did THIS
+			// consumer do X" becomes unanswerable (assessment, 2026-08-31).
+			consumerKey := r.Header.Get("X-Gateway-Consumer-Key")
 			consumer := subject
+			if consumer == "" {
+				consumer = consumerKey
+			}
 			if consumer == "" {
 				consumer = "ip:" + ip
 			}
@@ -224,7 +234,11 @@ func AbuseDetection(cfg config.AbuseConfig, graphQLPath string, log Logger, st a
 					break
 				}
 			}
-			if (cfg.ObjectOwnership || cfg.ObjectOwnershipBlock) && subject != "" && anyIDs && !bypassed {
+			// Ownership needs a caller that is stably distinguishable across
+			// requests — a verified subject, or the pseudonym derived from an
+			// opaque credential. A bare "ip:" identity is too unstable under
+			// NAT/DHCP to attribute ownership to.
+			if (cfg.ObjectOwnership || cfg.ObjectOwnershipBlock) && (subject != "" || consumerKey != "") && anyIDs && !bypassed {
 				ownTTL := cfg.ObjectOwnershipTTL
 				if ownTTL <= 0 {
 					ownTTL = 168 * time.Hour
@@ -237,10 +251,24 @@ func AbuseDetection(cfg config.AbuseConfig, graphQLPath string, log Logger, st a
 				if identity == "" {
 					identity = subject
 				}
+				// A pseudonym deliberately does NOT become the identity. It is a
+				// hash of a credential, so it can never equal an owner id read
+				// out of a response body — "owner != caller" would then be true
+				// for every object in existence, which is the same trap the
+				// anonymous case is guarded against. Such callers get the
+				// first-accessor heuristic below instead, which only ever
+				// compares consumers with each other.
 
 				// Proactive block (before forwarding): if an object's confirmed owner
 				// is already known and is someone else, deny the leak up front.
-				if cfg.ObjectOwnershipBlock {
+				//
+				// Gated on a comparable identity for the same reason the confirmed
+				// path below is: a pseudonymous caller can never equal a stored
+				// owner id, so this would deny every request such a caller makes.
+				// This is the one BOLA control that blocks traffic, and turning it
+				// into a blanket denial for token-authenticated APIs would be an
+				// outage, not a detection.
+				if cfg.ObjectOwnershipBlock && identity != "" {
 					for _, cand := range candidates {
 						for _, id := range cand.ids {
 							owner, known, err := st.GetObjectOwner(r.Context(), cand.scope, id)
@@ -298,7 +326,7 @@ func AbuseDetection(cfg config.AbuseConfig, graphQLPath string, log Logger, st a
 					bodyOwner = extractOwner(cw.buf, ownerFields)
 				}
 
-				if bodyOwner != "" {
+				if bodyOwner != "" && identity != "" {
 					// CONFIRMED path: the response body names the object's owner. Bind
 					// it (so future cross-owner requests are blocked) and, if it is not
 					// the caller, flag a confirmed IDOR — a real data leak, "critical".

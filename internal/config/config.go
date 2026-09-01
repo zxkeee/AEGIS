@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -359,6 +361,41 @@ type SecurityConfig struct {
 	ThreatFeed ThreatFeedConfig   `yaml:"threat_feed"`
 	Abuse      AbuseConfig        `yaml:"abuse"`
 	Schema     SchemaConfig       `yaml:"schema"`
+	ConsumerID ConsumerIDConfig   `yaml:"consumer_id"`
+}
+
+// ConsumerIDConfig gives callers a stable identity when they authenticate with
+// something other than a JWT.
+//
+// Every identity-aware control reads the verified JWT subject, so an API using
+// opaque bearer tokens, API keys or session cookies collapses all of its traffic
+// into one "ip:<addr>" consumer — and BOLA/BFLA, which is entirely about
+// comparing one consumer against an object's owner, stops working. That is not
+// an edge case: it is how most APIs authenticate, and it made the flagship
+// detection unusable against a real one (assessment, 2026-08-31).
+//
+// The credential is never stored — the id is a keyed hash of it (see
+// middleware.ConsumerID). Enabling this changes only how consumers are labelled;
+// it never accepts or rejects a request.
+type ConsumerIDConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Headers to read a credential from, beyond Authorization (which is always
+	// checked). E.g. ["X-API-Key", "X-Auth-Token"].
+	Headers []string `yaml:"headers"`
+	// Cookies to read a session identifier from, e.g. ["session", "sid"].
+	// Checked after headers: a browser attaches cookies to every request whether
+	// or not the caller meant to authenticate.
+	Cookies []string `yaml:"cookies"`
+	// Salt keys the hash. It must be STABLE across restarts — a fresh value
+	// every boot would give the same caller a new identity each time and split
+	// its history across consumer records. It must also be secret: API keys and
+	// session ids come from small enough spaces that an unkeyed digest could be
+	// searched back to a live credential by anyone able to read the catalog.
+	// Supplied by AEGIS_CONSUMER_SALT; when empty it derives from the admin
+	// secret, which is always present and already deployment-stable. Rotating
+	// that secret therefore renames every pseudonymous consumer — history is not
+	// lost, but it does not join up across the rotation.
+	Salt string `yaml:"-"`
 }
 
 // SchemaConfig controls positive-security schema enforcement: requests are
@@ -756,6 +793,14 @@ func Load(path string) (GatewayConfig, error) {
 	if cfg.Registry.SignatureFreshnessSecs == 0 {
 		cfg.Registry.SignatureFreshnessSecs = 60
 	}
+	// Derive the consumer-id salt when none was supplied. The admin secret is
+	// always present and stable for the deployment, and the extra hashing step
+	// means the salt is never the admin secret itself — a leaked catalog must not
+	// hand anyone the credential that administers the gateway.
+	if cfg.Security.ConsumerID.Enabled && cfg.Security.ConsumerID.Salt == "" {
+		sum := sha256.Sum256([]byte("aegis-consumer-id\x00" + cfg.AdminSecret))
+		cfg.Security.ConsumerID.Salt = hex.EncodeToString(sum[:])
+	}
 	if cfg.Security.Abuse.EnumThreshold == 0 {
 		cfg.Security.Abuse.EnumThreshold = 50
 	}
@@ -798,6 +843,9 @@ func applyEnvOverrides(cfg *GatewayConfig) {
 	}
 	if v := os.Getenv("AEGIS_JWT_SECRET"); v != "" {
 		cfg.Security.Auth.Secret = v
+	}
+	if v := os.Getenv("AEGIS_CONSUMER_SALT"); v != "" {
+		cfg.Security.ConsumerID.Salt = v
 	}
 	if v := os.Getenv("AEGIS_FORENSIC_DSN"); v != "" {
 		cfg.ForensicDSN = v

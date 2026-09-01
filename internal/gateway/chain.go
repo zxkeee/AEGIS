@@ -127,6 +127,13 @@ func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Stor
 		{"WAF", wafMW},
 		{"Discovery", middleware.Discovery(cfg.Security.Inventory, cat, log)}, // passive API discovery
 		{"Auth", authMW},
+		// Immediately after Auth so a verified JWT subject always wins, and
+		// before AbuseDetection, whose whole question is "did THIS consumer read
+		// an object it does not own" — with opaque credentials and no pseudonym,
+		// every caller is the same "ip:" consumer and that question has no
+		// meaning. Inside Discovery, so the observation it is about to record
+		// carries the identity.
+		{"ConsumerID", middleware.ConsumerID(cfg.Security.ConsumerID, cfg.Security.ConsumerID.Salt)},
 		{"SchemaValidation", middleware.SchemaValidation(cfg.Security.Schema, schemaSpecFor, log, st)},                 // positive security: validate against OpenAPI contract
 		{"AbuseDetection", middleware.AbuseDetection(cfg.Security.Abuse, cfg.Security.Inventory.GraphQLPath, log, st)}, // BOLA/BFLA (needs verified roles)
 		{"DLP", dlpMW},
