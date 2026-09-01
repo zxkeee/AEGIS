@@ -29,37 +29,10 @@ import (
 // skipped, which makes the operation idempotent and safe to repeat.
 func (s *pgStore) retemplateEndpoints(ctx context.Context, tenantID, prefix string) error {
 	return s.withTenantTx(ctx, tenantID, func(tx *sql.Tx) error {
-		// newID -> the old ids folding into it.
-		groups := map[string][]string{}
-		templates := map[string]string{}
-
-		rs, err := tx.QueryContext(ctx,
-			`SELECT id, method, path_template FROM api_endpoints
-			  WHERE tenant_id = $1 AND path_template LIKE $2`,
-			tenantID, prefix+"/%")
+		groups, templates, err := supersededGroups(ctx, tx, tenantID, prefix)
 		if err != nil {
 			return err
 		}
-		for rs.Next() {
-			var id, method, tmpl string
-			if err := rs.Scan(&id, &method, &tmpl); err != nil {
-				rs.Close()
-				return err
-			}
-			newTmpl, changed := retemplatePath(prefix, tmpl)
-			if !changed {
-				continue
-			}
-			newID := strings.ToUpper(method) + " " + newTmpl
-			groups[newID] = append(groups[newID], id)
-			templates[newID] = newTmpl
-		}
-		if err := rs.Err(); err != nil {
-			rs.Close()
-			return err
-		}
-		rs.Close()
-
 		for newID, oldIDs := range groups {
 			if err := mergeEndpointGroup(ctx, tx, tenantID, newID, templates[newID], oldIDs); err != nil {
 				return err
@@ -67,6 +40,45 @@ func (s *pgStore) retemplateEndpoints(ctx context.Context, tenantID, prefix stri
 		}
 		return nil
 	})
+}
+
+// supersededGroups finds the stored rows sitting under prefix whose next segment
+// is still concrete, and groups their ids by the endpoint id they now belong to.
+func supersededGroups(ctx context.Context, tx *sql.Tx, tenantID, prefix string) (
+	groups map[string][]string, templates map[string]string, err error) {
+
+	rs, err := tx.QueryContext(ctx,
+		`SELECT id, method, path_template FROM api_endpoints
+		  WHERE tenant_id = $1 AND path_template LIKE $2`,
+		tenantID, prefix+"/%")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() {
+		if cerr := rs.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+
+	groups = map[string][]string{}
+	templates = map[string]string{}
+	for rs.Next() {
+		var id, method, tmpl string
+		if err := rs.Scan(&id, &method, &tmpl); err != nil {
+			return nil, nil, err
+		}
+		newTmpl, changed := retemplatePath(prefix, tmpl)
+		if !changed {
+			continue
+		}
+		newID := strings.ToUpper(method) + " " + newTmpl
+		groups[newID] = append(groups[newID], id)
+		templates[newID] = newTmpl
+	}
+	if err := rs.Err(); err != nil {
+		return nil, nil, err
+	}
+	return groups, templates, nil
 }
 
 // mergeEndpointGroup folds every row in oldIDs into newID across the three
