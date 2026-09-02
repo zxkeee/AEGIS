@@ -174,8 +174,12 @@ security:
     # and log, no blocking), tune false positives via ruleset_path
     # (SecRuleRemoveById ...), then enforce.
     use_crs: false
-    paranoia_level: 1     # 1-4: higher catches more, flags more benign traffic
-    anomaly_threshold: 5  # inbound score at which CRS blocks (lower = stricter)
+    # paranoia_level and anomaly_threshold exist only in the Core Rule Set, so
+    # they are commented out while use_crs is false — startup rejects them in
+    # that combination rather than parsing settings it will never read. Uncomment
+    # them together with use_crs: true.
+    # paranoia_level: 1     # 1-4: higher catches more, flags more benign traffic
+    # anomaly_threshold: 5  # inbound score at which CRS blocks (lower = stricter)
 
   bot:
     enabled: true
