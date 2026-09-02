@@ -1014,6 +1014,37 @@ func validateOIDC(cfg GatewayConfig) error {
 // round-robin without any signal — an operator asking for "least_conn" got
 // different behaviour than configured.
 func validateRoutes(cfg GatewayConfig) error {
+	// Duplicate paths are rejected here rather than left to http.ServeMux, which
+	// PANICS on a conflicting pattern. That panic happens inside proxy.New, which
+	// the hot-reload goroutine calls on every config change with nothing
+	// recovering it — so a duplicated path in a live config killed the process
+	// instead of being rejected with the "previous config stays active" the
+	// reload path promises. proxy.registerPattern now recovers as a backstop;
+	// catching it here gives the operator a message that says which route and
+	// why, at boot, before anything is serving.
+	seen := make(map[string]RouteConfig, len(cfg.Routes))
+	for _, r := range cfg.Routes {
+		prev, dup := seen[r.Path]
+		if !dup {
+			seen[r.Path] = r
+			continue
+		}
+		// Same path under two tenants is not an operator typo — it is the
+		// obvious way to express "two customers, same API surface, routed by
+		// Host" (multitenancy model A in ADR-001). It cannot work today: the
+		// proxy's mux keys on path only, so both tenants would need the same
+		// pattern. Say that explicitly instead of reporting a generic
+		// duplicate, so the operator is not left thinking they mistyped.
+		if cfg.Multitenancy.Enabled && prev.TenantID != r.TenantID {
+			return fmt.Errorf("multitenancy: route %q is declared for both tenant %q and tenant %q; "+
+				"the proxy routes on path alone, so two tenants cannot share one path — "+
+				"give each tenant a distinct path prefix (e.g. %q and %q)",
+				r.Path, prev.TenantID, r.TenantID,
+				"/"+prev.TenantID+r.Path, "/"+r.TenantID+r.Path)
+		}
+		return fmt.Errorf("route %q is declared more than once; each route path must be unique", r.Path)
+	}
+
 	for _, r := range cfg.Routes {
 		switch r.LoadBalance {
 		case "", "round_robin":

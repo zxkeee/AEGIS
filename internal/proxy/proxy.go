@@ -133,7 +133,7 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 		stripPrefix := route.StripPrefix
 		routePrefix := strings.TrimSuffix(routePath, "/")
 
-		gw.mux.HandleFunc(routePath, func(w http.ResponseWriter, r *http.Request) {
+		handler := func(w http.ResponseWriter, r *http.Request) {
 			if allowedMethods != nil && !allowedMethods[r.Method] {
 				allow := make([]string, 0, len(allowedMethods))
 				for m := range allowedMethods {
@@ -211,7 +211,11 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 
 			// All retries exhausted
 			http.Error(w, "Service Unavailable (All Upstreams Down)", http.StatusServiceUnavailable)
-		})
+		}
+
+		if err := registerPattern(gw.mux, routePath, handler); err != nil {
+			return nil, err
+		}
 
 		log.Info("route registered", map[string]any{
 			"path":         route.Path,
@@ -224,6 +228,26 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 	}
 
 	return gw, nil
+}
+
+// registerPattern registers one route pattern, converting the panic
+// http.ServeMux raises on a conflicting pattern into an ordinary error. New is
+// called from the hot-reload goroutine, where an unrecovered panic kills the
+// process instead of rejecting the reload.
+//
+// Deliberately a recover, not a pre-computed duplicate check: ServeMux decides
+// conflicts by its own pattern-precedence rules (wildcards, method and host
+// prefixes all participate), so any check here would be a second copy of those
+// rules, free to drift. config.validateRoutes catches the common shapes early
+// with a better message; this is the backstop for everything else.
+func registerPattern(mux *http.ServeMux, pattern string, h http.HandlerFunc) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("route %q cannot be registered: %v", pattern, p)
+		}
+	}()
+	mux.HandleFunc(pattern, h)
+	return nil
 }
 
 // ServeHTTP implements http.Handler.

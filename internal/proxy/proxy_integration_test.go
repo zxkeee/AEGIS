@@ -510,3 +510,28 @@ func TestProxy_WebSocketUpgradePassesThrough(t *testing.T) {
 		t.Fatalf("upgraded connection is not bidirectional: %q err=%v", echoed, err)
 	}
 }
+
+// A conflicting route pattern must come back as an error, never as a panic.
+// http.ServeMux panics on a duplicate pattern, and proxy.New is called by
+// gateway.BuildHandlerChain from the hot-reload goroutine, where nothing
+// recovers — so before registerPattern, a duplicated path in a live config
+// took the whole gateway down instead of leaving the previous config serving.
+// config.Validate rejects the common shapes first; this asserts the backstop
+// holds for anything ServeMux still refuses.
+func TestNew_ConflictingRoutePatternIsAnErrorNotAPanic(t *testing.T) {
+	defer func() {
+		if p := recover(); p != nil {
+			t.Fatalf("proxy.New panicked instead of returning an error: %v", p)
+		}
+	}()
+	_, err := New([]config.RouteConfig{
+		{Path: "/orders", Upstreams: []string{"http://127.0.0.1:1"}},
+		{Path: "/orders", Upstreams: []string{"http://127.0.0.1:2"}},
+	}, logger.New("error"))
+	if err == nil {
+		t.Fatal("duplicate route pattern must return an error")
+	}
+	if !strings.Contains(err.Error(), "/orders") {
+		t.Fatalf("error must name the conflicting pattern, got: %v", err)
+	}
+}

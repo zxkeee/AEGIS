@@ -673,3 +673,66 @@ func TestApplyObserveMode(t *testing.T) {
 		t.Error("Observe=false must not change anything")
 	}
 }
+
+// Duplicate route paths used to reach http.ServeMux, which PANICS on a
+// conflicting pattern — inside proxy.New, called by the hot-reload goroutine
+// with nothing recovering it. An operator typo in a live config therefore
+// killed the process instead of being rejected. Validate must catch it first.
+func TestValidate_RejectsDuplicateRoutePath(t *testing.T) {
+	c := validBase()
+	c.Routes = []RouteConfig{
+		{Path: "/orders", Upstreams: []string{"http://a:1"}},
+		{Path: "/orders", Upstreams: []string{"http://b:2"}},
+	}
+	err := Validate(c)
+	if err == nil {
+		t.Fatal("duplicate route path must be rejected (it panics http.ServeMux)")
+	}
+	if !strings.Contains(err.Error(), "/orders") {
+		t.Fatalf("error must name the offending route, got: %v", err)
+	}
+}
+
+// A route path unique per tenant is the supported shape and must still pass.
+func TestValidate_AcceptsDistinctPathsPerTenant(t *testing.T) {
+	c := validBase()
+	c.Multitenancy = MultitenancyConfig{
+		Enabled: true,
+		Tenants: []TenantConfig{{ID: "acme"}, {ID: "globex"}},
+	}
+	c.Routes = []RouteConfig{
+		{Path: "/acme/orders", TenantID: "acme", Upstreams: []string{"http://a:1"}},
+		{Path: "/globex/orders", TenantID: "globex", Upstreams: []string{"http://b:2"}},
+	}
+	if err := Validate(c); err != nil {
+		t.Fatalf("distinct paths per tenant must be accepted: %v", err)
+	}
+}
+
+// Two tenants sharing one path is the natural way to express multitenancy
+// model A (route by Host), but the proxy keys on path alone so it cannot work.
+// The rejection must say that, not report a generic duplicate — otherwise the
+// operator reads it as a typo and retries the same thing.
+func TestValidate_RejectsSamePathAcrossTenants(t *testing.T) {
+	c := validBase()
+	c.Multitenancy = MultitenancyConfig{
+		Enabled: true,
+		Tenants: []TenantConfig{
+			{ID: "acme", Hosts: []string{"acme.example"}},
+			{ID: "globex", Hosts: []string{"globex.example"}},
+		},
+	}
+	c.Routes = []RouteConfig{
+		{Path: "/orders", TenantID: "acme", Upstreams: []string{"http://a:1"}},
+		{Path: "/orders", TenantID: "globex", Upstreams: []string{"http://b:2"}},
+	}
+	err := Validate(c)
+	if err == nil {
+		t.Fatal("two tenants sharing one route path must be rejected")
+	}
+	for _, want := range []string{"acme", "globex", "cannot share one path"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error must explain the tenant collision (missing %q), got: %v", want, err)
+		}
+	}
+}

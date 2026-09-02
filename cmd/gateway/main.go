@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -59,7 +60,12 @@ func main() {
 	// ── Load Configuration ────────────────────────────────────────────────────
 	cfg, trustedProxyNets, licStatus, err := loadValidatedConfig(*cfgPath)
 	if err != nil {
-		panic("unsafe configuration: " + err.Error())
+		// Exit, don't panic: this is a rejected CONFIGURATION, not a bug in the
+		// gateway, and a goroutine dump buries the one line the operator needs
+		// under a stack trace that invites them to file an issue instead of
+		// fixing their YAML. Matches the -print-fingerprint path just above.
+		fmt.Fprintln(os.Stderr, "unsafe configuration: "+err.Error())
+		os.Exit(1)
 	}
 	// No prior chain to protect on boot — commit immediately (see
 	// loadValidatedConfig's doc comment for why hot-reload defers this).
@@ -607,6 +613,18 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 	}
 
 	reload := func() {
+		// Backstop for the "previous config stays active" guarantee below: this
+		// closure runs on a bare goroutine, so any panic it does not survive
+		// takes the whole gateway down while the OLD config was serving fine.
+		// A rejected reload must always degrade to "keep serving what we have".
+		defer func() {
+			if p := recover(); p != nil {
+				log.Error("hot-reload: panicked, previous config stays active", map[string]any{
+					"panic": fmt.Sprintf("%v", p),
+					"stack": string(debug.Stack()),
+				})
+			}
+		}()
 		log.Info("config change detected, hot-reloading...")
 
 		// The full startup gate (parse + Validate + trusted-proxy parsing) also
