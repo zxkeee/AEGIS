@@ -883,13 +883,8 @@ func Validate(cfg GatewayConfig) error {
 	if cfg.ShutdownDrain < 0 {
 		return errors.New("shutdown_drain must not be negative")
 	}
-	if cfg.Security.WAF.UseCRS {
-		if pl := cfg.Security.WAF.ParanoiaLevel; pl != 0 && (pl < 1 || pl > 4) {
-			return fmt.Errorf("waf.paranoia_level must be 1-4 (got %d)", pl)
-		}
-		if cfg.Security.WAF.AnomalyThreshold < 0 {
-			return errors.New("waf.anomaly_threshold must not be negative")
-		}
+	if err := validateWAF(cfg); err != nil {
+		return err
 	}
 	if cfg.Security.Behavior.Enabled {
 		window := time.Duration(cfg.Security.Behavior.WindowSeconds) * time.Second
@@ -1323,6 +1318,50 @@ func validateTrustedProxies(cfg GatewayConfig) error {
 // doc comment — ServiceAuth is never wired into the request chain and no real
 // RegistryProvider exists, so this control would silently do nothing to
 // requests while giving an operator false confidence it's enforcing anything.
+// validateWAF checks the WAF settings, and in particular rejects the ones that
+// would do nothing where they are written.
+//
+// paranoia_level and anomaly_threshold are read on exactly one code path:
+// buildCorazaWAF's use_crs branch. With use_crs false they are parsed, stored,
+// and never consulted — so an operator who raises paranoia_level to tighten the
+// WAF gets no change at all and no indication of it. That is the same class of
+// silent lie as registry.enabled (rejected just below) and route.Methods before
+// it was wired: a setting that reads as a security control and is not one.
+//
+// Rejecting is deliberate. Ignoring a control the operator asked for is worse
+// than refusing to start, because the refusal is visible and the gap is not —
+// and unlike a warning, it cannot be scrolled past in a boot log.
+//
+// The check applies only when the WAF is enabled. With waf.enabled false the
+// whole subtree is inert by an explicit, visible choice, which is not the silent
+// kind of dead setting this guards against.
+func validateWAF(cfg GatewayConfig) error {
+	w := cfg.Security.WAF
+	if !w.Enabled {
+		return nil
+	}
+	if !w.UseCRS {
+		if w.ParanoiaLevel != 0 {
+			return fmt.Errorf("waf.paranoia_level is set to %d but waf.use_crs is false; "+
+				"paranoia levels exist only in the OWASP Core Rule Set, so this setting would be ignored — "+
+				"set use_crs: true to use it, or remove the line", w.ParanoiaLevel)
+		}
+		if w.AnomalyThreshold != 0 {
+			return fmt.Errorf("waf.anomaly_threshold is set to %d but waf.use_crs is false; "+
+				"anomaly scoring exists only in the OWASP Core Rule Set, so this setting would be ignored — "+
+				"set use_crs: true to use it, or remove the line", w.AnomalyThreshold)
+		}
+		return nil
+	}
+	if pl := w.ParanoiaLevel; pl != 0 && (pl < 1 || pl > 4) {
+		return fmt.Errorf("waf.paranoia_level must be 1-4 (got %d)", pl)
+	}
+	if w.AnomalyThreshold < 0 {
+		return errors.New("waf.anomaly_threshold must not be negative")
+	}
+	return nil
+}
+
 func validateRegistry(cfg GatewayConfig) error {
 	if cfg.Registry.Enabled {
 		return errors.New("registry.enabled: true is rejected — the service-registry/ServiceAuth " +
