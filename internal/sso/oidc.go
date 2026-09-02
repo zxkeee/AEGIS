@@ -186,6 +186,16 @@ func (a *Authenticator) mapIdentity(claims map[string]any) (Identity, error) {
 			if len(a.cfg.AllowedTenants) > 0 && !slices.Contains(a.cfg.AllowedTenants, claimed) {
 				return Identity{}, fmt.Errorf("oidc: tenant_claim %q for %q is not in allowed_tenants", claimed, email)
 			}
+			// Shape check, independent of the allowlist — which is optional, so
+			// without this a deployment that sets tenant_claim and leaves
+			// allowed_tenants empty takes whatever the provider sends. The value
+			// becomes a Redis key namespace (gw:t:<tenant>:...) and a row in the
+			// tenants table; a separator inside it puts one tenant's state in
+			// another's namespace. The same rule already guards the config file
+			// and the admin API.
+			if !config.ValidTenantID(claimed) {
+				return Identity{}, fmt.Errorf("oidc: tenant_claim %q for %q is not a valid tenant id", claimed, email)
+			}
 			tenantID = claimed
 		}
 	}

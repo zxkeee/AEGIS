@@ -42,7 +42,29 @@ func (l *Logger) log(level, msg string, fields map[string]any) {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	data, _ := json.Marshal(entry)
+	data, err := json.Marshal(entry)
+	if err != nil {
+		// A field that cannot be marshalled used to discard the whole entry:
+		// json.Marshal returned nil and the logger printed an empty line. A
+		// security event would vanish leaving no trace at all — not a truncated
+		// record, not an error, nothing. Reachable from any non-finite float
+		// (an Inf or NaN fails encoding), which a future ratio or average can
+		// produce without anyone noticing.
+		//
+		// Drop the fields, keep the event. What the entry says may be poorer;
+		// that an entry happened must never be in doubt.
+		data, err = json.Marshal(map[string]any{
+			"ts":          entry["ts"],
+			"level":       level,
+			"msg":         msg,
+			"log_error":   err.Error(),
+			"log_dropped": "fields could not be encoded",
+		})
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stdout, "{\"level\":%q,\"msg\":%q,\"log_error\":\"encode failed\"}\n", level, msg)
+			return
+		}
+	}
 	_, _ = fmt.Fprintln(os.Stdout, string(data))
 }
 
