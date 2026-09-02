@@ -284,19 +284,6 @@ func main() {
 	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog, iamStore, auditStore, ssoIface)
 	adminSrv.SetLicenseStatus(licStatus) // GET /api/license + console banner reflect this boot's outcome
 
-	// FIX SEC: Protect admin API against brute force and DDoS.
-	// This is a fixed-window counter (5 requests/second, enforced atomically
-	// in internal/store), not a token bucket — there is no separate "burst"
-	// allowance above this rate. A prior burst_limit field here was dead
-	// config that the limiter never actually read; removed rather than kept
-	// as a misleading knob. If a real token-bucket burst allowance is wanted
-	// later, it needs a new Lua script in internal/store, not just this field.
-	adminRateLimit := config.RateLimitConfig{
-		Enabled:  true,
-		Requests: 5,
-		Window:   time.Second,
-	}
-
 	if !cfg.AdminAuth {
 		log.Warn("SECURITY WARNING: admin_auth is disabled — admin API is open to anyone", map[string]any{
 			"admin_listen": cfg.AdminListen,
@@ -317,23 +304,7 @@ func main() {
 			"Set AEGIS_PROPAGATION_SECRET to a strong random value", nil)
 	}
 
-	// The admin plane gets its own CORS policy when admin_cors is set; otherwise
-	// it inherits security.cors (legacy behaviour). The console is same-origin,
-	// so most deployments never need to set either for the admin plane.
-	adminCORS := cfg.Security.CORS
-	if cfg.AdminCORS != nil {
-		adminCORS = *cfg.AdminCORS
-	}
-	adminHandler := middleware.Chain(adminSrv,
-		middleware.RequestID(),       // outermost: stamp every request before anything else
-		middleware.SecurityHeaders(), // must wrap AdminAuth so 401/403 responses carry CSP/HSTS
-		// RateLimit must sit OUTSIDE AdminAuth: AdminAuth returns early on a failed
-		// credential, so a limiter placed inside it would never see unauthenticated
-		// brute-force / DDoS traffic — exactly what this limit is meant to absorb.
-		middleware.RateLimit(adminRateLimit, "admin", log, st),
-		middleware.AdminAuth(cfg, log, st, auditRec),
-		middleware.CORS(adminCORS),
-	)
+	adminHandler := gateway.BuildAdminChain(adminSrv, cfg, log, st, auditRec)
 	adminServer := &http.Server{
 		Addr:              cfg.AdminListen,
 		Handler:           adminHandler,

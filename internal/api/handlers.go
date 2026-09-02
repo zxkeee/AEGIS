@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"database/sql"
 	"database/sql/driver"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -46,6 +48,8 @@ type handlers struct {
 	// upstreams drain the gateway before it stops accepting connections. May be
 	// nil in unit tests that construct handlers directly.
 	draining *atomic.Bool
+	// ready caches the readiness Redis check — see readinessTTL.
+	ready readinessCache
 	// licenseStatus points at the Server's atomic.Value holding the current
 	// license.Status (set via Server.SetLicenseStatus on boot/hot-reload). May
 	// be nil in unit tests that construct handlers directly; getLicense treats
@@ -189,6 +193,39 @@ func (h *handlers) health(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// readinessTTL bounds how often /readyz actually touches Redis.
+//
+// The probe endpoints are exempt from the admin plane's per-IP rate limit
+// (gateway.BuildAdminChain explains why: a shared limiter lets an
+// unauthenticated caller starve the readiness probe and get the instance pulled
+// from rotation). Exempt and uncached, though, /readyz would be an
+// unauthenticated Redis-ping amplifier. Caching the result makes a flood cost at
+// most one PING per second while staying far fresher than any probe interval —
+// a real outage is still reported within a second.
+// A var, not a const, so a test can shrink it and still exercise expiry.
+var readinessTTL = time.Second
+
+// readinessCache holds the most recent readiness check and when it was taken.
+type readinessCache struct {
+	mu      sync.Mutex
+	checked time.Time
+	err     error
+}
+
+// ping returns the readiness of the backing store, reusing a result younger than
+// readinessTTL. The lock is held across the store call so a burst collapses onto
+// one in-flight PING rather than one per caller.
+func (h *handlers) ping(ctx context.Context) error {
+	h.ready.mu.Lock()
+	defer h.ready.mu.Unlock()
+	if time.Since(h.ready.checked) < readinessTTL {
+		return h.ready.err
+	}
+	h.ready.err = h.store.Ping(ctx)
+	h.ready.checked = time.Now()
+	return h.ready.err
+}
+
 // ARCH-11: Readiness probe — checks Redis connectivity
 func (h *handlers) readyz(w http.ResponseWriter, r *http.Request) {
 	// Lame-duck: once shutdown starts, report not-ready so a load balancer stops
@@ -200,7 +237,7 @@ func (h *handlers) readyz(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if err := h.store.Ping(r.Context()); err != nil {
+	if err := h.ping(r.Context()); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"status": "not_ready",
 			"error":  "redis_unavailable",

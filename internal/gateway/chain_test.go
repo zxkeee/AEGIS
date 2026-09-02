@@ -2,10 +2,15 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
@@ -235,4 +240,76 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatalf("close pipe reader: %v", err)
 	}
 	return out
+}
+
+// countingStore records how many times the per-IP rate limiter was consulted, so
+// a test can tell "the limiter did not run" from "it ran and allowed".
+type countingStore struct {
+	nopStore
+	mu   sync.Mutex
+	seen map[string]int64
+}
+
+func (c *countingStore) IncrRate(_ context.Context, key string, _ time.Duration) (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.seen == nil {
+		c.seen = map[string]int64{}
+	}
+	c.seen[key]++
+	return c.seen[key], nil
+}
+
+// The admin plane's 5/s per-IP limiter must never cover the liveness and
+// readiness probes. It is keyed by RealIP, so with trusted_proxies unset every
+// request through a load balancer shares the balancer's bucket — an
+// unauthenticated caller could spend the budget and push /readyz to 429, at
+// which point the balancer pulls the instance from rotation. A full outage,
+// triggered from outside, with no credential.
+func TestBuildAdminChain_ProbesAreNotRateLimited(t *testing.T) {
+	st := &countingStore{}
+	cfg := config.GatewayConfig{AdminAuth: true, AdminSecret: "a-strong-admin-secret-32-characters!!"}
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	h := BuildAdminChain(inner, cfg, logger.New("error"), st, nil)
+
+	// Far more than the 5/s budget: every probe must still be served.
+	for _, path := range []string{"/health", "/readyz"} {
+		for i := 0; i < 30; i++ {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s request %d: got %d, want 200 — a throttled probe gets the instance pulled from rotation",
+					path, i+1, rec.Code)
+			}
+		}
+	}
+	st.mu.Lock()
+	consulted := len(st.seen)
+	st.mu.Unlock()
+	if consulted != 0 {
+		t.Errorf("the rate limiter was consulted for probe traffic (%d keys); probes must bypass it entirely", consulted)
+	}
+}
+
+// ...while the admin API itself stays throttled: that limiter exists to absorb
+// unauthenticated brute force, and exempting the probes must not exempt anything
+// else.
+func TestBuildAdminChain_AdminAPIStaysRateLimited(t *testing.T) {
+	st := &countingStore{}
+	cfg := config.GatewayConfig{AdminAuth: true, AdminSecret: "a-strong-admin-secret-32-characters!!"}
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	h := BuildAdminChain(inner, cfg, logger.New("error"), st, nil)
+
+	var throttled bool
+	for i := 0; i < 12; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/metrics", nil))
+		if rec.Code == http.StatusTooManyRequests {
+			throttled = true
+			break
+		}
+	}
+	if !throttled {
+		t.Error("admin API traffic was never throttled; the brute-force limiter is not running")
+	}
 }

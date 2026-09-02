@@ -409,3 +409,34 @@ func TestBlockLog_CapsLimitAtRingBufferSize(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 }
+
+// /readyz is exempt from the admin plane's per-IP rate limit (see
+// gateway.BuildAdminChain), so nothing bounds how often it can be called. Its
+// Redis PING must therefore be cached, or the exemption turns the probe into an
+// unauthenticated amplifier against the very store it reports on.
+//
+// Closing Redis between calls is the observable: a cached answer survives it, an
+// uncached one cannot.
+func TestReadyz_CachesTheStoreCheck(t *testing.T) {
+	prev := readinessTTL
+	readinessTTL = 200 * time.Millisecond
+	t.Cleanup(func() { readinessTTL = prev })
+
+	h, mr := redisHandlers(t)
+	if rec, _ := doReq(h.readyz, http.MethodGet, "/readyz", context.Background(), nil); rec.Code != http.StatusOK {
+		t.Fatalf("first readyz = %d, want 200", rec.Code)
+	}
+
+	mr.Close() // the store is gone; only a cached answer can still say "ready"
+	for i := 0; i < 20; i++ {
+		if rec, _ := doReq(h.readyz, http.MethodGet, "/readyz", context.Background(), nil); rec.Code != http.StatusOK {
+			t.Fatalf("readyz call %d = %d, want 200 from cache — every call is hitting Redis", i+2, rec.Code)
+		}
+	}
+
+	// The cache must not outlive its TTL, or a real outage goes unreported.
+	time.Sleep(readinessTTL + 50*time.Millisecond)
+	if rec, _ := doReq(h.readyz, http.MethodGet, "/readyz", context.Background(), nil); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz after TTL = %d, want 503 — a stale cache hides an outage", rec.Code)
+	}
+}
