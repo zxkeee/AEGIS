@@ -16,9 +16,11 @@ func (nopLogger) Info(string, ...map[string]any)  {}
 func (nopLogger) Error(string, ...map[string]any) {}
 
 // writeEntries pushes entries through a dedicated short-lived sink and Closes
-// it. Close is the one genuinely deterministic flush the sink offers: it stops
-// the background worker (which drains and flushes on the way out) and then
-// drains once more itself, so every entry is durable by the time it returns.
+// it. Close is a genuinely deterministic flush: it stops the background worker
+// (which drains and flushes on the way out) and then drains once more itself,
+// so every entry is durable by the time it returns. Flush is the other one, and
+// the right choice when the sink must stay open — it hands the work to the
+// worker, which is the only goroutine that can reach the in-flight batch.
 //
 // This replaces an earlier `s.flush(s.drain())` that a comment called
 // "deterministic" and wasn't: the background flushWorker races the caller for
@@ -126,7 +128,7 @@ func TestPGSink_QueryLogs_FiltersByTenantIPAndReason(t *testing.T) {
 		store.ForensicEntry{Tenant: "globex", Timestamp: now, IP: "1.1.1.1", Path: "/c", Method: "GET", Reason: "waf_block", Code: 403},
 	)
 
-	acme, err := s.QueryLogs(context.Background(), "acme", 10, "", "")
+	acme, err := s.QueryLogs(context.Background(), LogFilter{TenantID: "acme", Limit: 10, IP: "", Reason: ""})
 	if err != nil {
 		t.Fatalf("QueryLogs acme: %v", err)
 	}
@@ -139,7 +141,7 @@ func TestPGSink_QueryLogs_FiltersByTenantIPAndReason(t *testing.T) {
 		}
 	}
 
-	byIP, err := s.QueryLogs(context.Background(), "acme", 10, "2.2.2.2", "")
+	byIP, err := s.QueryLogs(context.Background(), LogFilter{TenantID: "acme", Limit: 10, IP: "2.2.2.2", Reason: ""})
 	if err != nil {
 		t.Fatalf("QueryLogs by IP: %v", err)
 	}
@@ -147,7 +149,7 @@ func TestPGSink_QueryLogs_FiltersByTenantIPAndReason(t *testing.T) {
 		t.Fatalf("IP filter wrong: %+v", byIP)
 	}
 
-	byReason, err := s.QueryLogs(context.Background(), "acme", 10, "", "waf_block")
+	byReason, err := s.QueryLogs(context.Background(), LogFilter{TenantID: "acme", Limit: 10, IP: "", Reason: "waf_block"})
 	if err != nil {
 		t.Fatalf("QueryLogs by reason: %v", err)
 	}
@@ -156,7 +158,7 @@ func TestPGSink_QueryLogs_FiltersByTenantIPAndReason(t *testing.T) {
 	}
 
 	// Newest first.
-	all, err := s.QueryLogs(context.Background(), "acme", 10, "", "")
+	all, err := s.QueryLogs(context.Background(), LogFilter{TenantID: "acme", Limit: 10, IP: "", Reason: ""})
 	if err != nil {
 		t.Fatalf("QueryLogs: %v", err)
 	}
@@ -174,7 +176,7 @@ func TestPGSink_QueryLogs_RespectsLimit(t *testing.T) {
 	}
 	writeEntries(t, dsn, batch...) // all 5 durable before asserting the LIMIT caps the result
 
-	got, err := s.QueryLogs(context.Background(), "acme", 3, "", "")
+	got, err := s.QueryLogs(context.Background(), LogFilter{TenantID: "acme", Limit: 3, IP: "", Reason: ""})
 	if err != nil {
 		t.Fatalf("QueryLogs: %v", err)
 	}
@@ -187,7 +189,7 @@ func TestPGSink_MissingTenantDefaultsToDefault(t *testing.T) {
 	s, dsn := testSink(t)
 	writeEntries(t, dsn, store.ForensicEntry{Timestamp: time.Now().UTC(), IP: "1.1.1.1", Path: "/a", Method: "GET", Reason: "waf_block", Code: 403}) // Tenant: ""
 
-	got, err := s.QueryLogs(context.Background(), "default", 10, "", "")
+	got, err := s.QueryLogs(context.Background(), LogFilter{TenantID: "default", Limit: 10, IP: "", Reason: ""})
 	if err != nil {
 		t.Fatalf("QueryLogs: %v", err)
 	}
@@ -200,7 +202,7 @@ func TestPGSink_QueryLogsEmptyTenantDefaultsToDefault(t *testing.T) {
 	s, dsn := testSink(t)
 	writeEntries(t, dsn, store.ForensicEntry{Tenant: "default", Timestamp: time.Now().UTC(), IP: "1.1.1.1", Path: "/a", Method: "GET", Reason: "x", Code: 200})
 
-	got, err := s.QueryLogs(context.Background(), "", 10, "", "") // tenantID: "" -> should behave like "default"
+	got, err := s.QueryLogs(context.Background(), LogFilter{TenantID: "", Limit: 10, IP: "", Reason: ""}) // tenantID: "" -> should behave like "default"
 	if err != nil {
 		t.Fatalf("QueryLogs: %v", err)
 	}
@@ -253,5 +255,79 @@ func TestPGSink_RLSFailsClosedWithoutGUC(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("unscoped read saw %d rows, want 0 (RLS must fail closed without app.tenant_id set)", count)
+	}
+}
+
+// A window is what turns this store from a monitoring view into a record. The
+// question an auditor asks is never "what happened lately" — it is "what
+// happened between these two dates", and until LogFilter carried From/To the
+// store could not answer it at all.
+func TestPGSink_QueryLogs_FiltersByTimeWindow(t *testing.T) {
+	s, _ := testSink(t)
+	base := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+
+	// Three events, one per month, inserted with explicit timestamps.
+	for i, ts := range []time.Time{
+		base.AddDate(0, -1, 0), // June
+		base,                   // July
+		base.AddDate(0, 1, 0),  // August
+	} {
+		s.Push(store.ForensicEntry{
+			Tenant: "acme", Timestamp: ts, IP: "1.1.1.1",
+			Path: "/x", Method: "GET", Reason: "waf_block", Code: 403 + i,
+		})
+	}
+	s.Flush()
+
+	q := func(from, to time.Time) []store.ForensicEntry {
+		t.Helper()
+		got, err := s.QueryLogs(context.Background(), LogFilter{
+			TenantID: "acme", Limit: 50, From: from, To: to,
+		})
+		if err != nil {
+			t.Fatalf("QueryLogs: %v", err)
+		}
+		return got
+	}
+
+	if got := q(time.Time{}, time.Time{}); len(got) != 3 {
+		t.Fatalf("unbounded = %d entries, want 3", len(got))
+	}
+	// July only — both bounds inclusive.
+	if got := q(base.AddDate(0, 0, -1), base.AddDate(0, 0, 1)); len(got) != 1 {
+		t.Fatalf("July window = %d entries, want 1", len(got))
+	}
+	// Open-ended start: everything up to and including July.
+	if got := q(time.Time{}, base); len(got) != 2 {
+		t.Fatalf("up-to-July = %d entries, want 2", len(got))
+	}
+	// Open-ended end: July onward.
+	if got := q(base, time.Time{}); len(got) != 2 {
+		t.Fatalf("from-July = %d entries, want 2", len(got))
+	}
+	// A window with nothing in it returns nothing, not everything — the failure
+	// mode that would quietly turn a narrow question into a broad answer.
+	if got := q(base.AddDate(1, 0, 0), base.AddDate(1, 0, 1)); len(got) != 0 {
+		t.Fatalf("empty window = %d entries, want 0", len(got))
+	}
+}
+
+// A caller that omits the size must not be able to pull the whole table.
+func TestPGSink_QueryLogs_DefaultsTheLimit(t *testing.T) {
+	s, _ := testSink(t)
+	for i := 0; i < defaultLogLimit+10; i++ {
+		s.Push(store.ForensicEntry{
+			Tenant: "acme", Timestamp: time.Now().UTC(), IP: "1.1.1.1",
+			Path: "/x", Method: "GET", Reason: "waf_block", Code: 403,
+		})
+	}
+	s.Flush()
+
+	got, err := s.QueryLogs(context.Background(), LogFilter{TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("QueryLogs: %v", err)
+	}
+	if len(got) != defaultLogLimit {
+		t.Fatalf("unbounded query returned %d entries, want the %d default", len(got), defaultLogLimit)
 	}
 }

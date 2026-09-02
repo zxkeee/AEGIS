@@ -27,6 +27,10 @@ type PGSink struct {
 	ch   chan store.ForensicEntry
 	wg   sync.WaitGroup
 	quit chan struct{}
+	// flushReq asks the worker to persist what it holds. It carries a channel
+	// the worker closes when done, so Flush can wait for the write rather than
+	// for a timer.
+	flushReq chan chan struct{}
 	// dropped counts entries discarded because the buffer was full, reported by
 	// flushWorker. See Push.
 	dropped atomic.Int64
@@ -92,10 +96,11 @@ func NewPGSink(dsn string, log Logger) (*PGSink, error) {
 	}
 
 	s := &PGSink{
-		db:   db,
-		log:  log,
-		ch:   make(chan store.ForensicEntry, 4096), // buffer up to 4096 events
-		quit: make(chan struct{}),
+		db:       db,
+		log:      log,
+		ch:       make(chan store.ForensicEntry, 4096), // buffer up to 4096 events
+		quit:     make(chan struct{}),
+		flushReq: make(chan chan struct{}),
 	}
 
 	s.wg.Add(1)
@@ -137,6 +142,25 @@ func (s *PGSink) Dropped() int64 {
 	return s.dropped.Load()
 }
 
+// Flush persists everything buffered and returns once it is durable, without
+// shutting the sink down. Use it as a checkpoint before reading the record back.
+//
+// It asks the WORKER to do the write rather than doing it directly. That
+// distinction is the whole correctness of this method: the worker moves entries
+// out of the channel into a batch it owns privately, so a caller that only
+// drained the channel would miss everything already collected and return having
+// persisted less than it claimed — exactly the kind of half-guarantee that is
+// worse than no guarantee.
+func (s *PGSink) Flush() {
+	done := make(chan struct{})
+	select {
+	case s.flushReq <- done:
+		<-done
+	case <-s.quit:
+		// Shutting down; Close performs the final flush itself.
+	}
+}
+
 // Close drains the buffer and shuts down the sink.
 func (s *PGSink) Close() {
 	close(s.quit)
@@ -164,6 +188,13 @@ func (s *PGSink) flushWorker() {
 				s.flush(batch)
 				batch = batch[:0]
 			}
+		case done := <-s.flushReq:
+			batch = append(batch, s.drain()...)
+			if len(batch) > 0 {
+				s.flush(batch)
+				batch = batch[:0]
+			}
+			close(done)
 		case <-ticker.C:
 			if len(batch) > 0 {
 				s.flush(batch)
@@ -257,10 +288,34 @@ func (s *PGSink) flush(batch []store.ForensicEntry) {
 	s.log.Info("forensic: flushed to postgresql", map[string]any{"count": len(batch)})
 }
 
-// QueryLogs retrieves forensic logs from PostgreSQL with optional filters.
-func (s *PGSink) QueryLogs(ctx context.Context, tenantID string, limit int, ip, reason string) ([]store.ForensicEntry, error) {
+// defaultLogLimit bounds a query that did not ask for a size, so a caller
+// cannot pull the whole table by omitting one field.
+const defaultLogLimit = 100
+
+// LogFilter narrows a forensic query. A zero From/To leaves that bound open.
+//
+// The time bounds are what make this store usable as evidence. A finding says
+// "sensitive data reached unauthenticated callers"; the question that follows is
+// "show me, for the period under review". Without a window the only answerable
+// question is "what happened lately", which is a monitoring view, not a record.
+type LogFilter struct {
+	TenantID string
+	Limit    int
+	IP       string
+	Reason   string
+	From     time.Time
+	To       time.Time
+}
+
+// QueryLogs retrieves forensic logs from PostgreSQL, newest first.
+func (s *PGSink) QueryLogs(ctx context.Context, f LogFilter) ([]store.ForensicEntry, error) {
+	tenantID := f.TenantID
 	if tenantID == "" {
 		tenantID = "default"
+	}
+	limit, ip, reason := f.Limit, f.IP, f.Reason
+	if limit <= 0 {
+		limit = defaultLogLimit
 	}
 	var sb strings.Builder
 	sb.WriteString("SELECT tenant_id, ts, ip, path, method, reason, code FROM forensic_logs WHERE tenant_id = $1")
@@ -276,6 +331,16 @@ func (s *PGSink) QueryLogs(ctx context.Context, tenantID string, limit int, ip, 
 	if reason != "" {
 		fmt.Fprintf(&sb, " AND reason = $%d", n)
 		args = append(args, reason)
+		n++
+	}
+	if !f.From.IsZero() {
+		fmt.Fprintf(&sb, " AND ts >= $%d", n)
+		args = append(args, f.From.UTC())
+		n++
+	}
+	if !f.To.IsZero() {
+		fmt.Fprintf(&sb, " AND ts <= $%d", n)
+		args = append(args, f.To.UTC())
 		n++
 	}
 

@@ -8,6 +8,7 @@ import (
 	"api-gateway/internal/audit"
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
+	"api-gateway/internal/forensic"
 	"api-gateway/internal/iam"
 	"api-gateway/internal/license"
 	"api-gateway/internal/logger"
@@ -17,16 +18,17 @@ import (
 
 // Server is the Admin Management API.
 type Server struct {
-	mux     *http.ServeMux
-	store   *store.Store
-	log     *logger.Logger
-	cfg     config.GatewayConfig
-	gateway *proxy.Gateway
-	alerts  *alert.Engine
-	catalog *discovery.Catalog
-	users   *iam.Store
-	audit   *audit.Store
-	oidc    OIDCAuthenticator
+	mux      *http.ServeMux
+	store    *store.Store
+	log      *logger.Logger
+	cfg      config.GatewayConfig
+	gateway  *proxy.Gateway
+	alerts   *alert.Engine
+	catalog  *discovery.Catalog
+	forensic *forensic.PGSink
+	users    *iam.Store
+	audit    *audit.Store
+	oidc     OIDCAuthenticator
 	// draining is set on shutdown so /readyz reports 503 (lame-duck) while the
 	// gateway is still serving established connections — see cmd/gateway drain grace.
 	draining atomic.Bool
@@ -50,25 +52,26 @@ func (s *Server) SetLicenseStatus(st license.Status) { s.licenseStatus.Store(st)
 // forensic_dsn is unset — in that case only the legacy bearer/secret login is
 // available and the admin audit trail is not persisted. oidc may be nil when
 // SSO is disabled or the provider discovery failed at startup.
-func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw *proxy.Gateway, alerts *alert.Engine, catalog *discovery.Catalog, users *iam.Store, auditStore *audit.Store, oidc OIDCAuthenticator) *Server {
+func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw *proxy.Gateway, alerts *alert.Engine, catalog *discovery.Catalog, forensicSink *forensic.PGSink, users *iam.Store, auditStore *audit.Store, oidc OIDCAuthenticator) *Server {
 	s := &Server{
-		mux:     http.NewServeMux(),
-		store:   st,
-		log:     log,
-		cfg:     cfg,
-		gateway: gw,
-		alerts:  alerts,
-		catalog: catalog,
-		users:   users,
-		audit:   auditStore,
-		oidc:    oidc,
+		mux:      http.NewServeMux(),
+		store:    st,
+		log:      log,
+		cfg:      cfg,
+		gateway:  gw,
+		alerts:   alerts,
+		catalog:  catalog,
+		forensic: forensicSink,
+		users:    users,
+		audit:    auditStore,
+		oidc:     oidc,
 	}
 	s.registerRoutes()
 	return s
 }
 
 func (s *Server) registerRoutes() {
-	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog, users: s.users, audit: s.audit, oidc: s.oidc, draining: &s.draining, licenseStatus: &s.licenseStatus}
+	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog, forensic: s.forensic, users: s.users, audit: s.audit, oidc: s.oidc, draining: &s.draining, licenseStatus: &s.licenseStatus}
 	// Assign the spec interface only for a real catalog, so a nil *discovery.
 	// Catalog does not become a non-nil interface holding a typed-nil pointer.
 	if s.catalog != nil {

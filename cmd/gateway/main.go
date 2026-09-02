@@ -281,7 +281,7 @@ func main() {
 	if ssoAuth != nil {
 		ssoIface = ssoAuth
 	}
-	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog, iamStore, auditStore, ssoIface)
+	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog, fSink, iamStore, auditStore, ssoIface)
 	adminSrv.SetLicenseStatus(licStatus) // GET /api/license + console banner reflect this boot's outcome
 
 	if !cfg.AdminAuth {
