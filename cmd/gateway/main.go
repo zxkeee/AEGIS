@@ -294,6 +294,16 @@ func main() {
 		log.Warn("SECURITY WARNING: TLS is not terminated at the gateway — ensure a trusted upstream terminates TLS, or set tls.enabled (and require_tls) in production", nil)
 	}
 
+	if broad := middleware.OverlyBroadTrustedProxies(trustedProxyNets); len(broad) > 0 {
+		log.Warn("SECURITY WARNING: trusted_proxies trusts whole networks, not specific proxies — "+
+			"any host inside these ranges can set its own X-Forwarded-For, which does not just falsify logs: "+
+			"the rate limiter, IP guard, behavioural scoring and (for callers with no JWT or API key) the "+
+			"consumer identity BOLA enumeration counts against all resolve from that address, so every request "+
+			"can look like a different caller. List the exact addresses of your load balancers instead", map[string]any{
+			"ranges": broad,
+		})
+	}
+
 	// Identity-propagation signature: in JWKS mode the JWT secret is unset, so
 	// backends only get a signed X-Gateway-Signature if a separate
 	// propagation_secret is configured. Flag this loudly — without a signature,

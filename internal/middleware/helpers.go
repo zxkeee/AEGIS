@@ -262,3 +262,47 @@ func SecurityHeaders() Middleware {
 		})
 	}
 }
+
+// broadProxyPrefixIPv4 / broadProxyPrefixIPv6 are the prefix lengths at which a
+// trusted_proxies entry stops naming load balancers and starts naming a network.
+// A /24 is 254 hosts — already generous for an LB pool; anything wider is the
+// shape the configuration reference warns about by name ("broad private ranges
+// (10.0.0.0/8) allow anyone on the same network to spoof the client IP").
+const (
+	broadProxyPrefixIPv4 = 24
+	broadProxyPrefixIPv6 = 64
+)
+
+// OverlyBroadTrustedProxies returns the configured entries that trust a whole
+// network rather than specific proxies.
+//
+// This is worth a startup line because trusted_proxies is not one setting among
+// many: it is the switch that decides whether X-Forwarded-For is believed, and
+// every per-IP control reads the answer. RealIP, the rate limiter, the IP guard,
+// behavioural scoring and — for callers with no JWT or API key — the consumer
+// identity that BOLA enumeration counts against all resolve through it. Widen it
+// to a /8 and any host inside that range can pick its own client address per
+// request, which does not merely falsify a log line: it silently switches those
+// controls off, because every request looks like a different caller.
+//
+// A correctly configured load balancer defeats the forgery on its own (appending
+// to X-Forwarded-For leaves the real client as the right-most untrusted hop), so
+// this warns rather than refuses — the risky part is the size of the range, not
+// the presence of a proxy.
+func OverlyBroadTrustedProxies(nets []*net.IPNet) []string {
+	var broad []string
+	for _, n := range nets {
+		ones, bits := n.Mask.Size()
+		if bits == 0 { // non-contiguous mask; cannot judge
+			continue
+		}
+		limit := broadProxyPrefixIPv6
+		if bits == 32 {
+			limit = broadProxyPrefixIPv4
+		}
+		if ones < limit {
+			broad = append(broad, n.String())
+		}
+	}
+	return broad
+}

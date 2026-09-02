@@ -49,3 +49,44 @@ func TestInitTrustedProxies_RejectsInvalid(t *testing.T) {
 		t.Fatal("expected error for invalid CIDR/IP")
 	}
 }
+
+// trusted_proxies is the switch that decides whether X-Forwarded-For is
+// believed, and every per-IP control reads the answer — RealIP, the rate
+// limiter, the IP guard, behavioural scoring, and the consumer identity BOLA
+// counts enumeration against when the caller presents no JWT or API key. Trust a
+// whole network and any host in it can pick a different client address per
+// request, which switches those controls off rather than merely falsifying them.
+func TestOverlyBroadTrustedProxies(t *testing.T) {
+	cases := []struct {
+		cidrs []string
+		want  []string
+	}{
+		// Exact addresses: the documented shape, nothing to report.
+		{[]string{"10.10.1.5/32", "10.10.1.6/32"}, nil},
+		// A small pool is still specific enough to be deliberate.
+		{[]string{"192.0.2.0/28", "192.0.2.16/24"}, nil},
+		// The ranges the configuration reference calls out by name.
+		{[]string{"10.0.0.0/8"}, []string{"10.0.0.0/8"}},
+		{[]string{"172.16.0.0/16", "203.0.113.9/32"}, []string{"172.16.0.0/16"}},
+		// IPv6: a /64 is one subnet an operator assigns; wider is a network.
+		{[]string{"2001:db8::/64"}, nil},
+		{[]string{"2001:db8::/32"}, []string{"2001:db8::/32"}},
+	}
+	for _, c := range cases {
+		nets, err := ParseTrustedProxies(c.cidrs)
+		if err != nil {
+			t.Fatalf("ParseTrustedProxies(%v): %v", c.cidrs, err)
+		}
+		got := OverlyBroadTrustedProxies(nets)
+		if len(got) != len(c.want) {
+			t.Errorf("OverlyBroadTrustedProxies(%v) = %v, want %v", c.cidrs, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("OverlyBroadTrustedProxies(%v) = %v, want %v", c.cidrs, got, c.want)
+				break
+			}
+		}
+	}
+}

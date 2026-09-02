@@ -97,7 +97,19 @@ func AbuseDetection(cfg config.AbuseConfig, graphQLPath string, log Logger, st a
 				consumer = consumerKey
 			}
 			if consumer == "" {
+				// No verified subject and no opaque credential: the caller can only
+				// be named by address. That is a weak identity anywhere, and behind
+				// a proxy it is a client-controlled one — X-Forwarded-For decides
+				// it, so a caller that varies the header is a new consumer on every
+				// request and enumeration never accumulates against anyone. Counted
+				// so the share of traffic whose BOLA verdict rests on that can be
+				// read off /api/metrics instead of assumed to be zero; the startup
+				// warning about broad trusted_proxies is the other half.
 				consumer = "ip:" + ip
+				st.IncrMetric(r.Context(), "abuse_consumer_ip_only")
+				if RemotePeerTrusted(r) {
+					st.IncrMetric(r.Context(), "abuse_consumer_ip_from_header")
+				}
 			}
 
 			// Allowlisted consumers skip detection entirely — they are known-benign
