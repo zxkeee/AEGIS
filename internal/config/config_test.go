@@ -693,6 +693,72 @@ func TestValidate_RejectsDuplicateRoutePath(t *testing.T) {
 	}
 }
 
+// Two tenants sharing one path is how "one API surface, many customers" is
+// expressed (ADR-001 model A). It is supported when each tenant declares a Host
+// to be told apart by — proxy.New then registers the route host-scoped.
+func TestValidate_AcceptsSamePathAcrossTenantsWithHosts(t *testing.T) {
+	c := validBase()
+	c.Multitenancy = MultitenancyConfig{
+		Enabled: true,
+		Tenants: []TenantConfig{
+			{ID: "acme", Hosts: []string{"acme.example"}},
+			{ID: "globex", Hosts: []string{"globex.example"}},
+		},
+	}
+	c.Routes = []RouteConfig{
+		{Path: "/orders", TenantID: "acme", Upstreams: []string{"http://a:1"}},
+		{Path: "/orders", TenantID: "globex", Upstreams: []string{"http://b:2"}},
+	}
+	if err := Validate(c); err != nil {
+		t.Fatalf("host-disambiguated shared path must be accepted: %v", err)
+	}
+}
+
+// ...but only then: without a Host there is nothing to route on, and both
+// tenants would need the same http.ServeMux pattern. The message must name the
+// tenant that is missing hosts, not report a generic duplicate — otherwise the
+// operator reads it as a typo and retries the same thing.
+func TestValidate_RejectsSamePathWhenATenantDeclaresNoHosts(t *testing.T) {
+	c := validBase()
+	c.Multitenancy = MultitenancyConfig{
+		Enabled: true,
+		Tenants: []TenantConfig{
+			{ID: "acme", Hosts: []string{"acme.example"}},
+			{ID: "globex"}, // no hosts
+		},
+	}
+	c.Routes = []RouteConfig{
+		{Path: "/orders", TenantID: "acme", Upstreams: []string{"http://a:1"}},
+		{Path: "/orders", TenantID: "globex", Upstreams: []string{"http://b:2"}},
+	}
+	err := Validate(c)
+	if err == nil {
+		t.Fatal("shared path must be rejected when a tenant declares no hosts")
+	}
+	for _, want := range []string{"/orders", "globex", "declares no hosts"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error must name the tenant missing hosts (missing %q), got: %v", want, err)
+		}
+	}
+}
+
+// The same path twice under the SAME tenant is always a typo — Host cannot
+// disambiguate a tenant from itself.
+func TestValidate_RejectsDuplicatePathWithinOneTenant(t *testing.T) {
+	c := validBase()
+	c.Multitenancy = MultitenancyConfig{
+		Enabled: true,
+		Tenants: []TenantConfig{{ID: "acme", Hosts: []string{"acme.example"}}},
+	}
+	c.Routes = []RouteConfig{
+		{Path: "/orders", TenantID: "acme", Upstreams: []string{"http://a:1"}},
+		{Path: "/orders", TenantID: "acme", Upstreams: []string{"http://b:2"}},
+	}
+	if err := Validate(c); err == nil {
+		t.Fatal("the same path twice in one tenant must be rejected")
+	}
+}
+
 // A route path unique per tenant is the supported shape and must still pass.
 func TestValidate_AcceptsDistinctPathsPerTenant(t *testing.T) {
 	c := validBase()
@@ -706,33 +772,5 @@ func TestValidate_AcceptsDistinctPathsPerTenant(t *testing.T) {
 	}
 	if err := Validate(c); err != nil {
 		t.Fatalf("distinct paths per tenant must be accepted: %v", err)
-	}
-}
-
-// Two tenants sharing one path is the natural way to express multitenancy
-// model A (route by Host), but the proxy keys on path alone so it cannot work.
-// The rejection must say that, not report a generic duplicate — otherwise the
-// operator reads it as a typo and retries the same thing.
-func TestValidate_RejectsSamePathAcrossTenants(t *testing.T) {
-	c := validBase()
-	c.Multitenancy = MultitenancyConfig{
-		Enabled: true,
-		Tenants: []TenantConfig{
-			{ID: "acme", Hosts: []string{"acme.example"}},
-			{ID: "globex", Hosts: []string{"globex.example"}},
-		},
-	}
-	c.Routes = []RouteConfig{
-		{Path: "/orders", TenantID: "acme", Upstreams: []string{"http://a:1"}},
-		{Path: "/orders", TenantID: "globex", Upstreams: []string{"http://b:2"}},
-	}
-	err := Validate(c)
-	if err == nil {
-		t.Fatal("two tenants sharing one route path must be rejected")
-	}
-	for _, want := range []string{"acme", "globex", "cannot share one path"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error must explain the tenant collision (missing %q), got: %v", want, err)
-		}
 	}
 }

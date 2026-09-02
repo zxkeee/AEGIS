@@ -26,12 +26,22 @@ type Gateway struct {
 }
 
 // New creates a Gateway from the route configuration.
-func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
+//
+// mt supplies the tenant → Host mapping. It is needed because two tenants may
+// legitimately front the SAME path (one API surface, many customers — model A
+// in ADR-001), which the path-only mux cannot express: both would register an
+// identical pattern. Such routes are registered host-scoped instead, so the
+// Host header picks the tenant. Pass a zero MultitenancyConfig for
+// single-tenant deployments; nothing about their routing changes.
+func New(routes []config.RouteConfig, mt config.MultitenancyConfig, log *logger.Logger) (*Gateway, error) {
 	gw := &Gateway{
 		mux:    http.NewServeMux(),
 		log:    log,
 		routes: routes,
 	}
+
+	hostsOf := tenantHosts(mt)
+	shared := sharedPaths(routes, mt)
 
 	for _, route := range routes {
 		if len(route.Upstreams) == 0 {
@@ -213,11 +223,19 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 			http.Error(w, "Service Unavailable (All Upstreams Down)", http.StatusServiceUnavailable)
 		}
 
-		if err := registerPattern(gw.mux, routePath, handler); err != nil {
+		patterns, err := routePatterns(route, hostsOf[route.TenantID], shared[route.Path])
+		if err != nil {
 			return nil, err
+		}
+		for _, p := range patterns {
+			if err := registerPattern(gw.mux, p, handler); err != nil {
+				return nil, err
+			}
 		}
 
 		log.Info("route registered", map[string]any{
+			"patterns":     patterns,
+			"tenant":       route.TenantID,
 			"path":         route.Path,
 			"upstreams":    route.Upstreams,
 			"lb":           route.LoadBalance,
@@ -228,6 +246,81 @@ func New(routes []config.RouteConfig, log *logger.Logger) (*Gateway, error) {
 	}
 
 	return gw, nil
+}
+
+// tenantHosts indexes the configured Host names by tenant id. Empty when
+// multi-tenancy is off, which makes every route below fall into the plain
+// path-pattern case — the single-tenant behaviour, unchanged.
+func tenantHosts(mt config.MultitenancyConfig) map[string][]string {
+	if !mt.Enabled {
+		return nil
+	}
+	out := make(map[string][]string, len(mt.Tenants))
+	for _, t := range mt.Tenants {
+		out[t.ID] = t.Hosts
+	}
+	return out
+}
+
+// sharedPaths reports which route paths are claimed by more than one tenant.
+// Those are the only routes that MUST be host-scoped; every other route keeps
+// its bare path pattern so a request is still served regardless of Host, which
+// is what ADR-001 means by "the route's tenant_id is authoritative".
+func sharedPaths(routes []config.RouteConfig, mt config.MultitenancyConfig) map[string]bool {
+	if !mt.Enabled {
+		return nil
+	}
+	owners := make(map[string]string, len(routes))
+	shared := make(map[string]bool)
+	for _, r := range routes {
+		if owner, seen := owners[r.Path]; seen && owner != r.TenantID {
+			shared[r.Path] = true
+			continue
+		}
+		owners[r.Path] = r.TenantID
+	}
+	return shared
+}
+
+// routePatterns returns the http.ServeMux patterns one route registers.
+//
+//   - No hosts (or single-tenant): just the bare path, as before.
+//   - Hosts declared: one "<host><path>" pattern per host, PLUS the bare path
+//     when no other tenant claims it. Host patterns are the more specific match,
+//     so they win when the Host matches and the bare pattern keeps serving
+//     everything else — no behaviour change for existing configs.
+//   - Hosts declared and the path IS shared: host patterns only. A request whose
+//     Host matches no tenant then 404s, which is correct: the gateway genuinely
+//     cannot tell which tenant's backend was meant.
+func routePatterns(route config.RouteConfig, hosts []string, isShared bool) ([]string, error) {
+	if len(hosts) == 0 {
+		if isShared {
+			// config.validateRoutes rejects this shape with a fuller message;
+			// this keeps proxy.New self-contained rather than trusting a caller
+			// to have validated first.
+			return nil, fmt.Errorf("route %q is shared by several tenants but tenant %q declares no hosts to route it by",
+				route.Path, route.TenantID)
+		}
+		return []string{route.Path}, nil
+	}
+	patterns := make([]string, 0, len(hosts)+1)
+	for _, h := range hosts {
+		patterns = append(patterns, hostPattern(h, route.Path))
+	}
+	if !isShared {
+		patterns = append(patterns, route.Path)
+	}
+	return patterns, nil
+}
+
+// hostPattern splices a Host into a route path to form a ServeMux pattern,
+// keeping a leading "METHOD " where an operator wrote one ("GET /orders" ->
+// "GET acme.example/orders"), since the method must stay the first token.
+func hostPattern(host, path string) string {
+	if i := strings.IndexByte(path, ' '); i >= 0 {
+		return path[:i+1] + host + path[i+1:]
+	}
+	return host + path
 }
 
 // registerPattern registers one route pattern, converting the panic

@@ -58,10 +58,32 @@ func TenantResolve(cfg config.MultitenancyConfig, routes []config.RouteConfig, l
 		}
 	}
 
+	// A prefix claimed by more than one tenant cannot identify a tenant by
+	// itself — that is the "one API surface, many customers" shape the proxy
+	// registers host-scoped (see proxy.routePatterns). Such a prefix is left
+	// OUT of the route table below so the Host decides it. Without this,
+	// whichever route happened to sort first would win the model-B lookup and
+	// the host/route agreement check would then 404 every tenant but that one,
+	// making the feature the proxy now supports unreachable in the data plane.
+	owner := make(map[string]string, len(routes))
+	ambiguous := make(map[string]bool)
+	for _, rt := range routes {
+		p := routePrefix(rt.Path)
+		if prev, seen := owner[p]; seen && prev != rt.TenantID {
+			ambiguous[p] = true
+			continue
+		}
+		owner[p] = rt.TenantID
+	}
+
 	// Route prefix → tenant (model B), longest prefix wins.
 	troutes := make([]tenantRoute, 0, len(routes))
 	for _, rt := range routes {
-		troutes = append(troutes, tenantRoute{path: routePrefix(rt.Path), tenant: rt.TenantID})
+		p := routePrefix(rt.Path)
+		if ambiguous[p] {
+			continue
+		}
+		troutes = append(troutes, tenantRoute{path: p, tenant: rt.TenantID})
 	}
 	sort.Slice(troutes, func(i, j int) bool { return len(troutes[i].path) > len(troutes[j].path) })
 

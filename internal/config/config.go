@@ -1009,10 +1009,6 @@ func validateOIDC(cfg GatewayConfig) error {
 	return nil
 }
 
-// validateRoutes rejects route options that would otherwise degrade silently.
-// In particular an unknown load_balance strategy used to fall back to
-// round-robin without any signal — an operator asking for "least_conn" got
-// different behaviour than configured.
 func validateRoutes(cfg GatewayConfig) error {
 	// Duplicate paths are rejected here rather than left to http.ServeMux, which
 	// PANICS on a conflicting pattern. That panic happens inside proxy.New, which
@@ -1022,6 +1018,10 @@ func validateRoutes(cfg GatewayConfig) error {
 	// reload path promises. proxy.registerPattern now recovers as a backstop;
 	// catching it here gives the operator a message that says which route and
 	// why, at boot, before anything is serving.
+	hostsOf := make(map[string][]string, len(cfg.Multitenancy.Tenants))
+	for _, t := range cfg.Multitenancy.Tenants {
+		hostsOf[t.ID] = t.Hosts
+	}
 	seen := make(map[string]RouteConfig, len(cfg.Routes))
 	for _, r := range cfg.Routes {
 		prev, dup := seen[r.Path]
@@ -1029,18 +1029,20 @@ func validateRoutes(cfg GatewayConfig) error {
 			seen[r.Path] = r
 			continue
 		}
-		// Same path under two tenants is not an operator typo — it is the
-		// obvious way to express "two customers, same API surface, routed by
-		// Host" (multitenancy model A in ADR-001). It cannot work today: the
-		// proxy's mux keys on path only, so both tenants would need the same
-		// pattern. Say that explicitly instead of reporting a generic
-		// duplicate, so the operator is not left thinking they mistyped.
+		// Two tenants sharing one path is not a typo — it is how "one API
+		// surface, many customers" is expressed (ADR-001 model A). proxy.New
+		// registers those routes host-scoped, so it works, but only if every
+		// tenant involved declares a Host to be told apart by.
 		if cfg.Multitenancy.Enabled && prev.TenantID != r.TenantID {
-			return fmt.Errorf("multitenancy: route %q is declared for both tenant %q and tenant %q; "+
-				"the proxy routes on path alone, so two tenants cannot share one path — "+
-				"give each tenant a distinct path prefix (e.g. %q and %q)",
-				r.Path, prev.TenantID, r.TenantID,
-				"/"+prev.TenantID+r.Path, "/"+r.TenantID+r.Path)
+			for _, share := range []RouteConfig{prev, r} {
+				if len(hostsOf[share.TenantID]) == 0 {
+					return fmt.Errorf("multitenancy: route %q is claimed by tenants %q and %q, so it can only be "+
+						"told apart by Host — but tenant %q declares no hosts; add hosts to it under "+
+						"multitenancy.tenants, or give each tenant its own path",
+						r.Path, prev.TenantID, r.TenantID, share.TenantID)
+				}
+			}
+			continue
 		}
 		return fmt.Errorf("route %q is declared more than once; each route path must be unique", r.Path)
 	}

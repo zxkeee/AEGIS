@@ -151,7 +151,7 @@ func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Stor
 // actually enforced in the data plane — not merely reported by the posture
 // dashboard.
 func BuildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st middleware.Store, catalog *discovery.Catalog, postureEng *discovery.PostureEngine) (http.Handler, *proxy.Gateway, error) {
-	gw, err := proxy.New(cfg.Routes, log)
+	gw, err := proxy.New(cfg.Routes, cfg.Multitenancy, log)
 	if err != nil {
 		return nil, nil, err
 	}
