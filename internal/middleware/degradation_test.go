@@ -116,7 +116,7 @@ func TestDegrade_Behavior_FailOpenServes(t *testing.T) {
 	_ = InitTrustedProxies(nil)
 	st := deadStore(t)
 	cfg := config.BehaviorConfig{Enabled: true, ScoreThreshold: 50, WindowSeconds: 60}
-	h := BehaviorAnalysis(cfg, fakeLogger{}, st)(okNext())
+	h := BehaviorAnalysis(cfg, fakeLogger{}, st, nil)(okNext())
 	if code := driveReq(h).Code; code != http.StatusOK {
 		t.Fatalf("behavior on outage = %d, want 200 (fail-open)", code)
 	}
@@ -130,7 +130,7 @@ func TestDegrade_DefaultChain_StaysAvailable(t *testing.T) {
 	chain := Chain(okNext(),
 		IPGuard(config.IPGuardConfig{Enabled: true}, fakeLogger{}, st),
 		RateLimit(config.RateLimitConfig{Enabled: true, Requests: 100, Window: time.Minute}, "test", fakeLogger{}, st),
-		BehaviorAnalysis(config.BehaviorConfig{Enabled: true, ScoreThreshold: 50, WindowSeconds: 60}, fakeLogger{}, st),
+		BehaviorAnalysis(config.BehaviorConfig{Enabled: true, ScoreThreshold: 50, WindowSeconds: 60}, fakeLogger{}, st, nil),
 	)
 	if code := driveReq(chain).Code; code != http.StatusOK {
 		t.Fatalf("default chain on outage = %d, want 200", code)

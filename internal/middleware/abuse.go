@@ -3,6 +3,7 @@ package middleware
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"api-gateway/internal/alert"
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
 	"api-gateway/internal/gql"
@@ -39,7 +41,7 @@ import (
 // query parameter, or JSON body field already do — see ROADMAP.md B5. Empty
 // (default) disables this: zero behavior change for a gateway that doesn't
 // front GraphQL.
-func AbuseDetection(cfg config.AbuseConfig, graphQLPath string, log Logger, st abuseStore) Middleware {
+func AbuseDetection(cfg config.AbuseConfig, graphQLPath string, log Logger, st abuseStore, al *Alerter) Middleware {
 	if !cfg.Enabled {
 		return passthrough
 	}
@@ -146,7 +148,7 @@ func AbuseDetection(cfg config.AbuseConfig, graphQLPath string, log Logger, st a
 					SecurityDeny(w, r, log, st, "bfla_privileged_access", ip, http.StatusForbidden, extra)
 					return
 				}
-				recordAbuse(r, log, st, "bfla_privileged_access", ip, extra)
+				recordAbuse(r, log, st, al, "bfla_privileged_access", ip, extra)
 				break
 			}
 
@@ -225,7 +227,7 @@ func AbuseDetection(cfg config.AbuseConfig, graphQLPath string, log Logger, st a
 						blocked = true
 						break
 					}
-					recordAbuse(r, log, st, "bola_enumeration", ip, extra)
+					recordAbuse(r, log, st, al, "bola_enumeration", ip, extra)
 				}
 			}
 			if blocked {
@@ -353,7 +355,7 @@ func AbuseDetection(cfg config.AbuseConfig, graphQLPath string, log Logger, st a
 							log.Error("abuse: set object-owner failed", map[string]any{"error": err.Error()})
 						}
 						if bodyOwner != identity {
-							recordAbuse(r, log, st, "bola_object_ownership", ip, map[string]any{
+							recordAbuse(r, log, st, al, "bola_object_ownership", ip, map[string]any{
 								"consumer":  consumer,
 								"object_id": objID,
 								"endpoint":  cand.endpoint,
@@ -381,7 +383,7 @@ func AbuseDetection(cfg config.AbuseConfig, graphQLPath string, log Logger, st a
 							continue
 						}
 						if !already && prior >= 1 && int(prior) <= shared {
-							recordAbuse(r, log, st, "bola_object_ownership", ip, map[string]any{
+							recordAbuse(r, log, st, al, "bola_object_ownership", ip, map[string]any{
 								"consumer":     consumer,
 								"object_id":    id,
 								"endpoint":     cand.endpoint,
@@ -550,7 +552,7 @@ func scalarString(v any) (string, bool) {
 // recordAbuse logs an abuse event and persists it to forensics WITHOUT denying
 // the request (detect-only mode). Mirrors SecurityDeny's side effects minus the
 // HTTP error, so detected-but-allowed events still appear in the console.
-func recordAbuse(r *http.Request, log Logger, st DenySink, reason, ip string, extra map[string]any) {
+func recordAbuse(r *http.Request, log Logger, st DenySink, al *Alerter, reason, ip string, extra map[string]any) {
 	log.BlockEvent(reason, ip, r.URL.Path, r.Method, extra)
 	st.IncrMetric(r.Context(), "abuse_"+reason)
 	st.PushForensic(r.Context(), secevent.Entry{
@@ -562,6 +564,29 @@ func recordAbuse(r *http.Request, log Logger, st DenySink, reason, ip string, ex
 		Code:      http.StatusOK, // allowed (detect-only)
 		Extra:     extra,
 	})
+
+	// Out-of-band notification. BOLA/BFLA is the detection this product is sold
+	// on, and until now it reached nobody who was not already reading the logs:
+	// the alert engine had no callers. Deduplicated per consumer so a caller
+	// that keeps enumerating does not page on-call once per request — the
+	// consumer is in the key for exactly that reason, and it is what an operator
+	// needs to act on.
+	consumer, _ := extra["consumer"].(string)
+	al.Notify(r.Context(), alertLevelFor(reason), reason+":"+consumer,
+		"AEGIS: "+reason,
+		fmt.Sprintf("consumer=%s ip=%s %s %s", consumer, ip, r.Method, r.URL.Path))
+}
+
+// alertLevelFor grades an abuse finding. A confirmed ownership violation is
+// someone reading another account's object, which is an incident; enumeration
+// and privileged-path attempts are strong signals that still want a human to
+// judge them, so they carry the level an operator can filter on with
+// alerting.min_severity rather than being forced to the top.
+func alertLevelFor(reason string) string {
+	if reason == "bola_object_ownership" {
+		return alert.SeverityCritical
+	}
+	return alert.SeverityWarning
 }
 
 // maxF returns the larger of two floats (used to avoid divide-by-zero when

@@ -129,7 +129,7 @@ func allControlsOn(upstream string) config.GatewayConfig {
 
 func chainServer(t *testing.T, cfg config.GatewayConfig) *httptest.Server {
 	t.Helper()
-	handler, _, err := BuildHandlerChain(cfg, logger.New("error"), nopStore{}, nil, discovery.NewPostureEngine(cfg))
+	handler, _, err := BuildHandlerChain(cfg, logger.New("error"), nopStore{}, nil, discovery.NewPostureEngine(cfg), nil)
 	if err != nil {
 		t.Fatalf("BuildHandlerChain: %v", err)
 	}

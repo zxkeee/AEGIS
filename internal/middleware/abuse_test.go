@@ -18,7 +18,7 @@ import (
 func runAbuse(cfg config.AbuseConfig, st Store, method, path, subject, roles string) *httptest.ResponseRecorder {
 	_ = InitTrustedProxies(nil)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	h := AbuseDetection(cfg, "", fakeLogger{}, st)(next)
+	h := AbuseDetection(cfg, "", fakeLogger{}, st, nil)(next)
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(method, path, nil)
 	r.RemoteAddr = "1.2.3.4:1"
@@ -37,7 +37,7 @@ func runAbuse(cfg config.AbuseConfig, st Store, method, path, subject, roles str
 func runAbuseStatus(cfg config.AbuseConfig, st Store, method, path, subject, roles string, status int) *httptest.ResponseRecorder {
 	_ = InitTrustedProxies(nil)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) })
-	h := AbuseDetection(cfg, "", fakeLogger{}, st)(next)
+	h := AbuseDetection(cfg, "", fakeLogger{}, st, nil)(next)
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(method, path, nil)
 	r.RemoteAddr = "1.2.3.4:1"
@@ -66,7 +66,7 @@ func runAbuseBody(cfg config.AbuseConfig, st Store, path, subject, roles string,
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	})
-	h := AbuseDetection(cfg, "", fakeLogger{}, st)(next)
+	h := AbuseDetection(cfg, "", fakeLogger{}, st, nil)(next)
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, path, nil)
 	r.RemoteAddr = "1.2.3.4:1"
@@ -231,7 +231,7 @@ func runAbuseBodyID(cfg config.AbuseConfig, st Store, path, subject, identity, r
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	})
-	h := AbuseDetection(cfg, "", fakeLogger{}, st)(next)
+	h := AbuseDetection(cfg, "", fakeLogger{}, st, nil)(next)
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, path, nil)
 	r.RemoteAddr = "1.2.3.4:1"
@@ -707,7 +707,7 @@ func TestAbuseDetection_BodyIDEnumeration(t *testing.T) {
 	st := &fakeStore{trackObject: func() (int64, error) { return 60, nil }}
 	_ = InitTrustedProxies(nil)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	h := AbuseDetection(cfg, "", fakeLogger{}, st)(next)
+	h := AbuseDetection(cfg, "", fakeLogger{}, st, nil)(next)
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/orders/action", strings.NewReader(`{"order_id":9001}`))
 	r.Header.Set("Content-Type", "application/json")
@@ -781,7 +781,7 @@ func TestAbuseDetection_GraphQLEnumeration(t *testing.T) {
 	st := &fakeStore{trackObject: func() (int64, error) { return 60, nil }}
 	_ = InitTrustedProxies(nil)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	h := AbuseDetection(cfg, "/graphql", fakeLogger{}, st)(next)
+	h := AbuseDetection(cfg, "/graphql", fakeLogger{}, st, nil)(next)
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"query GetUser { user(id: 42) { id } }"}`))
 	r.Header.Set("Content-Type", "application/json")
@@ -811,7 +811,7 @@ func TestAbuseDetection_GraphQLPathUnsetIgnoresGraphQLBody(t *testing.T) {
 	st := &fakeStore{trackObject: func() (int64, error) { return 60, nil }}
 	_ = InitTrustedProxies(nil)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	h := AbuseDetection(cfg, "", fakeLogger{}, st)(next) // graphQLPath: ""
+	h := AbuseDetection(cfg, "", fakeLogger{}, st, nil)(next) // graphQLPath: ""
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"query GetUser { user(id: 42) { id } }"}`))
 	r.Header.Set("Content-Type", "application/json")
@@ -997,7 +997,7 @@ func runAbusePseudonym(cfg config.AbuseConfig, st Store, path, consumerKey strin
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	})
-	h := AbuseDetection(cfg, "", fakeLogger{}, st)(next)
+	h := AbuseDetection(cfg, "", fakeLogger{}, st, nil)(next)
 	r := httptest.NewRequest(http.MethodGet, path, nil)
 	r.RemoteAddr = "1.2.3.4:1"
 	if consumerKey != "" {
@@ -1082,7 +1082,7 @@ func TestAbuse_CountsIdentityDerivedFromAddressAlone(t *testing.T) {
 	defer func() { _ = InitTrustedProxies(nil) }()
 
 	st := &fakeStore{}
-	h := AbuseDetection(config.AbuseConfig{Enabled: true}, "", fakeLogger{}, st)(
+	h := AbuseDetection(config.AbuseConfig{Enabled: true}, "", fakeLogger{}, st, nil)(
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 
 	// Behind the trusted proxy, with no credential of any kind: the identity is
@@ -1101,7 +1101,7 @@ func TestAbuse_CountsIdentityDerivedFromAddressAlone(t *testing.T) {
 
 	// A verified subject is a real identity and must not be counted as one.
 	st2 := &fakeStore{}
-	h2 := AbuseDetection(config.AbuseConfig{Enabled: true}, "", fakeLogger{}, st2)(
+	h2 := AbuseDetection(config.AbuseConfig{Enabled: true}, "", fakeLogger{}, st2, nil)(
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	r2 := httptest.NewRequest(http.MethodGet, "/orders/42", nil)
 	r2.Header.Set("X-Gateway-Subject", "alice")

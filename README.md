@@ -1260,7 +1260,9 @@ counters are available as JSON through the admin API and can be scraped or
 forwarded into your metrics stack; native Prometheus exposition is available at
 `GET /metrics` on the admin plane (text format 0.0.4, behind the admin bearer).
 First-class SIEM connectors are on the roadmap; the `alerting` config block
-already delivers webhook alerts (generic/Slack formats).
+delivers webhook alerts (generic/Slack formats) for the BOLA/BFLA detections
+and behavioural auto-bans. Delivery is asynchronous and deduplicated per event
+and subject, and stays active in observe mode.
 
 ---
 

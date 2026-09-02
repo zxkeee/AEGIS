@@ -234,7 +234,7 @@ func main() {
 
 	// ── Build Handler Chain ───────────────────────────────────────────────────
 	var activeHandler atomic.Value
-	handler, gw, err := gateway.BuildHandlerChain(cfg, log, st, catalog, postureEng)
+	handler, gw, err := gateway.BuildHandlerChain(cfg, log, st, catalog, postureEng, alerts)
 	if err != nil {
 		log.Error("failed to build handler chain", map[string]any{"error": err.Error()})
 		os.Exit(1)
@@ -639,7 +639,12 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 		// chain and the catalog must share the same fresh instance.
 		newPosture := discovery.NewPostureEngine(newCfg)
 
-		newHandler, _, err := gateway.BuildHandlerChain(newCfg, log, st, catalog, newPosture)
+		// Rebuild the alert engine from the new config so alerting.webhook_url,
+		// format and min_severity are hot-reloadable like the rest of the data
+		// plane, instead of being pinned to whatever was set at boot.
+		newAlerts := alert.NewWithConfig(newCfg.Alerting.WebhookURL, newCfg.Alerting.Format, newCfg.Alerting.MinSeverity, log)
+
+		newHandler, _, err := gateway.BuildHandlerChain(newCfg, log, st, catalog, newPosture, newAlerts)
 		if err != nil {
 			log.Error("hot-reload: chain build error", map[string]any{"error": err.Error()})
 			return

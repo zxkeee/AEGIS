@@ -59,7 +59,7 @@ func TestChainOrder(t *testing.T) {
 	// With every control disabled the constructors return passthrough without
 	// ever touching the store, so a nil Store is sufficient to assemble — and
 	// pin the order of — the chain without a live Redis.
-	steps := chainSteps(cfg, log, nil, nil, postureEng, nil)
+	steps := chainSteps(cfg, log, nil, nil, postureEng, nil, nil)
 
 	if len(steps) != len(want) {
 		t.Fatalf("chain length = %d, want %d", len(steps), len(want))
@@ -81,7 +81,7 @@ func TestBuildHandlerChain_NilCatalog(t *testing.T) {
 	log := logger.New("error")
 	postureEng := discovery.NewPostureEngine(cfg)
 
-	handler, gw, err := BuildHandlerChain(cfg, log, nil, nil, postureEng)
+	handler, gw, err := BuildHandlerChain(cfg, log, nil, nil, postureEng, nil)
 	if err != nil {
 		t.Fatalf("BuildHandlerChain: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestBuildHandlerChain_WarnsAboutExactMatchRoutes(t *testing.T) {
 	postureEng := discovery.NewPostureEngine(cfg)
 
 	out := captureStdout(t, func() {
-		if _, _, err := BuildHandlerChain(cfg, logger.New("warn"), nil, nil, postureEng); err != nil {
+		if _, _, err := BuildHandlerChain(cfg, logger.New("warn"), nil, nil, postureEng, nil); err != nil {
 			t.Fatalf("BuildHandlerChain: %v", err)
 		}
 	})
@@ -199,7 +199,7 @@ func TestBuildHandlerChain_SilentOnWellFormedRoutes(t *testing.T) {
 	postureEng := discovery.NewPostureEngine(cfg)
 
 	out := captureStdout(t, func() {
-		if _, _, err := BuildHandlerChain(cfg, logger.New("warn"), nil, nil, postureEng); err != nil {
+		if _, _, err := BuildHandlerChain(cfg, logger.New("warn"), nil, nil, postureEng, nil); err != nil {
 			t.Fatalf("BuildHandlerChain: %v", err)
 		}
 	})
