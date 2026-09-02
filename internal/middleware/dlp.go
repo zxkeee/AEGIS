@@ -225,17 +225,25 @@ func (d *dlpWriter) Flush() {
 	if !d.passthrough {
 		return
 	}
-	if f, ok := d.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+	// ResponseController, not a direct d.ResponseWriter.(http.Flusher): the
+	// writer directly beneath DLP is AbuseDetection's captureWriter, which
+	// exposes the real connection via Unwrap and has no Flush method of its
+	// own, so the assertion silently failed and the flush went nowhere.
+	//nolint:errcheck // best-effort: a writer that cannot flush simply buffers
+	http.NewResponseController(d.ResponseWriter).Flush()
 }
 
 // Hijack implements http.Hijacker so WebSocket and other connection upgrades
 // proxied through the gateway continue to work.
 func (d *dlpWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	if hj, ok := d.ResponseWriter.(http.Hijacker); ok {
-		d.passthrough = true
-		return hj.Hijack()
+	// Same reason as Flush above: the writer beneath is Unwrap-only, so a direct
+	// http.Hijacker assertion failed and every WebSocket upgrade through the
+	// gateway answered 502 with "dlp: underlying ResponseWriter does not support
+	// hijacking" — despite this method existing precisely to make them work.
+	conn, rw, err := http.NewResponseController(d.ResponseWriter).Hijack()
+	if err != nil {
+		return nil, nil, fmt.Errorf("dlp: hijack: %w", err)
 	}
-	return nil, nil, fmt.Errorf("dlp: underlying ResponseWriter does not support hijacking")
+	d.passthrough = true
+	return conn, rw, nil
 }

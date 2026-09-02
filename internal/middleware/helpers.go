@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -30,6 +31,25 @@ func (sw *statusWriter) WriteHeader(code int) {
 // (SSE) and Hijack (WebSocket) initiated by the reverse proxy reach the real
 // connection through this wrapper.
 func (sw *statusWriter) Unwrap() http.ResponseWriter { return sw.ResponseWriter }
+
+// Flush and Hijack are real methods, not left to Unwrap alone.
+//
+// Unwrap only serves callers that go through http.ResponseController. Not all
+// do: Coraza's interceptor decides what to propagate downstream with direct
+// `w.(http.Flusher)` / `w.(http.Hijacker)` assertions, and that broke streaming
+// outright through wafStatusWriter (see its comment). Nothing currently asserts
+// directly on THIS writer — the chain tests still pass without these two — so
+// they are defence against the same class, not a fix for a reproduced failure.
+// They cost three lines and make the writer honestly support what its Unwrap
+// already advertises.
+func (sw *statusWriter) Flush() {
+	//nolint:errcheck // best-effort: a writer that cannot flush simply buffers
+	http.NewResponseController(sw.ResponseWriter).Flush()
+}
+
+func (sw *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return http.NewResponseController(sw.ResponseWriter).Hijack()
+}
 
 // trustedProxyNets holds pre-parsed CIDRs set via InitTrustedProxies. It is an
 // atomic pointer (not a plain slice) because InitTrustedProxies also runs on

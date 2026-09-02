@@ -1,8 +1,11 @@
 package middleware
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -296,5 +299,49 @@ func TestDLP_ObserveDoesNotRedact(t *testing.T) {
 	}
 	if !obs.PII || len(obs.PIITypes) == 0 {
 		t.Fatalf("observe mode must still FLAG the observation as PII (pii=%v types=%v)", obs.PII, obs.PIITypes)
+	}
+}
+
+// unwrapOnlyWriter is the shape several wrappers in this chain have: it exposes
+// the real connection through Unwrap (for http.ResponseController) but has no
+// Flush/Hijack method of its own. AbuseDetection's captureWriter is exactly
+// this, and it sits directly above DLP whenever object-ownership detection is
+// active.
+type unwrapOnlyWriter struct{ http.ResponseWriter }
+
+func (u unwrapOnlyWriter) Unwrap() http.ResponseWriter { return u.ResponseWriter }
+
+// hijackableWriter stands in for the real connection at the bottom of the stack.
+type hijackableWriter struct {
+	http.ResponseWriter
+	hijacked bool
+}
+
+func (h *hijackableWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h.hijacked = true
+	c1, c2 := net.Pipe()
+	_ = c2.Close()
+	return c1, bufio.NewReadWriter(bufio.NewReader(c1), bufio.NewWriter(c1)), nil
+}
+
+// A WebSocket upgrade must survive an Unwrap-only wrapper sitting between DLP
+// and the connection. A direct d.ResponseWriter.(http.Hijacker) assertion — what
+// this used to do — fails against such a wrapper, so an upgrade on a path that
+// activates AbuseDetection's captureWriter (e.g. /api/chat/42/ws) answered 502
+// with "dlp: underlying ResponseWriter does not support hijacking".
+func TestDLPWriter_HijacksThroughUnwrapOnlyWrapper(t *testing.T) {
+	base := &hijackableWriter{ResponseWriter: httptest.NewRecorder()}
+	d := &dlpWriter{ResponseWriter: unwrapOnlyWriter{base}, buf: &bytes.Buffer{}, status: http.StatusOK}
+
+	conn, _, err := d.Hijack()
+	if err != nil {
+		t.Fatalf("hijack must reach the connection through an Unwrap-only wrapper: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if !base.hijacked {
+		t.Fatal("hijack did not reach the underlying connection")
+	}
+	if !d.passthrough {
+		t.Fatal("a hijacked response must switch DLP to passthrough")
 	}
 }

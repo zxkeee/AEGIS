@@ -1,10 +1,12 @@
 package middleware
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -368,3 +370,23 @@ func (w *wafStatusWriter) WriteHeader(code int) {
 // Unwrap exposes the underlying writer to http.ResponseController (Flush/Hijack
 // pass-through for SSE and WebSocket).
 func (w *wafStatusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// Flush and Hijack must be REAL METHODS here, not just Unwrap: this is the
+// writer handed to Coraza, and Coraza decides what to propagate downstream with
+// direct type assertions, not http.ResponseController. Its wrap() does
+// `i.w.(http.Hijacker)` and only passes a Hijacker down when that succeeds, and
+// rwInterceptor.Flush does `i.w.(http.Flusher)` before forwarding a flush.
+//
+// With only Unwrap, both assertions failed, so with the WAF enabled — the
+// default — the gateway could not proxy a WebSocket at all (502 "Hijack failed
+// on protocol switch") and dropped every SSE flush, delivering zero events
+// until the response ended. Every layer underneath had careful streaming
+// support; this was the one link that broke the chain.
+func (w *wafStatusWriter) Flush() {
+	//nolint:errcheck // best-effort: a writer that cannot flush simply buffers
+	http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *wafStatusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return http.NewResponseController(w.ResponseWriter).Hijack()
+}
