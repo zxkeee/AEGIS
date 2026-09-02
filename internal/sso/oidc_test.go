@@ -1,6 +1,7 @@
 package sso
 
 import (
+	"strings"
 	"testing"
 
 	"api-gateway/internal/config"
@@ -191,5 +192,42 @@ func TestMapIdentity_EmailVerifiedStringFalseRejected(t *testing.T) {
 	// String "true" and absent are accepted.
 	if _, err := a.mapIdentity(map[string]any{"email": "u@x.com", "email_verified": "true"}); err != nil {
 		t.Fatalf(`email_verified:"true" (string) should pass: %v`, err)
+	}
+}
+
+// A tenant id from an OIDC claim reaches Redis key namespaces
+// (gw:t:<tenant>:...) and the tenants table. The allowlist is optional, so a
+// deployment that sets tenant_claim and leaves allowed_tenants empty took
+// whatever the provider sent — while the config file and the admin API both
+// enforce a shape. One identifier, three doors, one of them unguarded.
+func TestMapIdentity_RejectsMalformedTenantClaim(t *testing.T) {
+	a := &Authenticator{cfg: config.OIDCConfig{TenantClaim: "org", RolesClaim: "groups"}}
+
+	for _, bad := range []string{
+		"acme:evil",             // a separator lands in the key namespace
+		"gw:t:acme",             // forges a whole prefix
+		"acme/evil",             // path separator
+		"acme evil",             // space
+		strings.Repeat("a", 65), // over the length bound
+	} {
+		_, err := a.mapIdentity(map[string]any{"email": "x@acme.io", "org": bad})
+		if err == nil {
+			t.Errorf("tenant_claim %q was accepted; it becomes a Redis key namespace", bad)
+		}
+	}
+
+	// A well-formed claim still works, so the check has not closed the feature.
+	id, err := a.mapIdentity(map[string]any{"email": "x@acme.io", "org": "acme.corp-1"})
+	if err != nil {
+		t.Fatalf("a valid tenant claim was rejected: %v", err)
+	}
+	if id.TenantID != "acme.corp-1" {
+		t.Fatalf("tenant = %q, want acme.corp-1", id.TenantID)
+	}
+
+	// An absent claim keeps the default tenant, unchanged behaviour.
+	id, err = a.mapIdentity(map[string]any{"email": "x@acme.io"})
+	if err != nil || id.TenantID != "default" {
+		t.Fatalf("absent claim: tenant=%q err=%v, want default", id.TenantID, err)
 	}
 }

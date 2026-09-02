@@ -4,16 +4,17 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
-	"regexp"
 	"strings"
 
+	"api-gateway/internal/config"
 	"api-gateway/internal/iam"
 	"api-gateway/internal/tenant"
 )
 
-// idShape limits tenant/user identifiers to characters that are safe to embed
-// in URLs and Redis keys (no colons, no slashes). Enforced on every create.
-var idShape = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+// Tenant ids are validated with config.ValidTenantID, the single rule shared by
+// the config file, this API and the OIDC tenant_claim. It used to be a second,
+// slightly different regexp here — the kind of near-duplicate that drifts and
+// leaves one door unguarded, which is exactly what happened on the SSO path.
 
 // requireSuperAdmin gates endpoints that can affect more than one tenant.
 // AdminAuth has already ensured the caller is authenticated; this is the
@@ -95,8 +96,8 @@ func (h *handlers) createTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.ID = strings.TrimSpace(req.ID)
-	if !idShape.MatchString(req.ID) {
-		writeError(w, http.StatusBadRequest, "tenant id must match [a-zA-Z0-9_-]{1,64}")
+	if !config.ValidTenantID(req.ID) {
+		writeError(w, http.StatusBadRequest, "tenant id must match [A-Za-z0-9._-]{1,64}")
 		return
 	}
 	if req.Name == "" {
@@ -224,8 +225,8 @@ func (h *handlers) createUser(w http.ResponseWriter, r *http.Request) {
 	// (gw:t:<tenant>:...), where a colon or a slash stops naming one tenant's
 	// namespace and starts naming another's. One validation for one identifier,
 	// wherever it enters.
-	if !idShape.MatchString(target) {
-		writeError(w, http.StatusBadRequest, "tenant id must match [a-zA-Z0-9_-]{1,64}")
+	if !config.ValidTenantID(target) {
+		writeError(w, http.StatusBadRequest, "tenant id must match [A-Za-z0-9._-]{1,64}")
 		return
 	}
 	if !h.canManageTenant(r, target) {

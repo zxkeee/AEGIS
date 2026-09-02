@@ -24,6 +24,15 @@ import (
 // disjoint. See the property test in internal/store.
 var tenantIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
+// ValidTenantID reports whether id is safe to use as a tenant identifier.
+//
+// Exported because a tenant id enters the system from three places — the config
+// file, the admin API, and an OIDC tenant_claim — and each of them used to
+// decide for itself. The claim path decided nothing at all, so a value from an
+// identity provider reached Redis key namespaces (gw:t:<tenant>:...) and the
+// tenants table unchecked. One identifier deserves one rule, at every door.
+func ValidTenantID(id string) bool { return tenantIDPattern.MatchString(id) }
+
 // PathHasPrefix reports whether path is covered by the prefix on a path-segment
 // boundary. Unlike a raw strings.HasPrefix, "/public" matches "/public" and
 // "/public/x" but NOT "/publicXYZ" — preventing an exclude/override rule from
