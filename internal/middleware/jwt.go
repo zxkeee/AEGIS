@@ -23,11 +23,14 @@ import (
 // JWTAuth validates JWT tokens and propagates identity downstream.
 // Supports both HMAC (shared secret) and RSA/ECDSA (JWKS URL) validation.
 type JWTAuth struct {
-	cfg    config.AuthConfig
-	log    Logger
-	st     RevocationChecker
-	jwks   keyfunc.Keyfunc
-	jwksMu sync.RWMutex
+	cfg config.AuthConfig
+	log Logger
+	st  RevocationChecker
+	// excludeLower is cfg.Exclude lower-cased once, for the case-insensitive
+	// prefix match in Middleware.
+	excludeLower []string
+	jwks         keyfunc.Keyfunc
+	jwksMu       sync.RWMutex
 }
 
 // NewJWTAuth creates a new JWT authentication middleware instance.
@@ -35,6 +38,9 @@ type JWTAuth struct {
 // Otherwise, falls back to HMAC shared-secret validation.
 func NewJWTAuth(cfg config.AuthConfig, log Logger, st RevocationChecker) *JWTAuth {
 	ja := &JWTAuth{cfg: cfg, log: log, st: st}
+	for _, ex := range cfg.Exclude {
+		ja.excludeLower = append(ja.excludeLower, strings.ToLower(ex))
+	}
 
 	if cfg.JWKSURL != "" {
 		go ja.initJWKS()
@@ -130,8 +136,16 @@ func (ja *JWTAuth) Middleware() Middleware {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Check if path is excluded (segment-boundary match, so "/public"
 			// excludes "/public" and "/public/x" but not "/publicXYZ").
-			for _, ex := range ja.cfg.Exclude {
-				if config.PathHasPrefix(r.URL.Path, ex) {
+			//
+			// Compared case-insensitively, matching discovery.authExcluded. The two
+			// implement one operator setting and used to disagree: this one was
+			// case-sensitive, that one was not, and since the chain picks enforcing
+			// vs identify-only from the posture engine, the looser rule decided
+			// every request and this check never got a say. Two spellings of one
+			// policy, with the weaker silently winning, is the shape of every route
+			// -matching bug already fixed in this codebase.
+			for _, ex := range ja.excludeLower {
+				if config.PathHasPrefix(strings.ToLower(r.URL.Path), ex) {
 					next.ServeHTTP(w, r)
 					return
 				}

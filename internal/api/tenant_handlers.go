@@ -218,6 +218,16 @@ func (h *handlers) createUser(w http.ResponseWriter, r *http.Request) {
 	if target == "" {
 		target = tenant.From(r.Context())
 	}
+	// Same shape createTenant enforces. It was checked there and not here, so a
+	// super-admin could create a user in a tenant id that createTenant would have
+	// refused — and tenant ids are concatenated into Redis keys
+	// (gw:t:<tenant>:...), where a colon or a slash stops naming one tenant's
+	// namespace and starts naming another's. One validation for one identifier,
+	// wherever it enters.
+	if !idShape.MatchString(target) {
+		writeError(w, http.StatusBadRequest, "tenant id must match [a-zA-Z0-9_-]{1,64}")
+		return
+	}
 	if !h.canManageTenant(r, target) {
 		writeError(w, http.StatusForbidden, "cannot create users in another tenant")
 		return

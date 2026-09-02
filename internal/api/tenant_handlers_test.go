@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -392,5 +393,45 @@ func TestUsers_DeleteRevokesLiveSessions(t *testing.T) {
 
 	if _, ok, _ := h.store.ValidateSession(context.Background(), "tok-victim"); ok {
 		t.Error("session for the deleted user must be revoked, not just left to expire on TTL")
+	}
+}
+
+// createTenant enforces idShape; createUser did not, so a super-admin could
+// place a user in a tenant id createTenant would have refused. Tenant ids are
+// concatenated into Redis keys (gw:t:<tenant>:...), where a colon or a slash
+// stops naming one tenant's namespace and starts naming another's — the
+// isolation ADR-001 exists to guarantee. One identifier, one validation,
+// wherever it enters.
+func TestUsers_RejectsMalformedTenantID(t *testing.T) {
+	h := freshHandlers(t)
+	su := ctxAs("default", iam.RoleAdmin, true)
+
+	for _, bad := range []string{"acme:evil", "acme/evil", "gw:t:acme", "acme evil", strings.Repeat("a", 65)} {
+		rec, _ := doReq(h.createUser, http.MethodPost, "/api/users", su, map[string]any{
+			"email": "x@acme.io", "password": "longlonglonglong", "tenant": bad,
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("createUser with tenant %q: %d, want 400 — the id reaches Redis key namespaces", bad, rec.Code)
+		}
+	}
+
+	// An omitted (or whitespace-only) tenant still means "the caller's own",
+	// which is the documented default and must not be caught by the shape check.
+	rec, body := doReq(h.createUser, http.MethodPost, "/api/users",
+		ctxAs("default", iam.RoleAdmin, false), map[string]any{
+			"email": "self@default.io", "password": "longlonglonglong", "tenant": "  ",
+		})
+	if rec.Code != http.StatusCreated || body["tenant"] != "default" {
+		t.Fatalf("blank tenant: %d body=%v, want 201 in the caller's own tenant", rec.Code, body)
+	}
+
+	// A well-formed id is still accepted, so the check has not simply closed the
+	// endpoint.
+	_, _ = doReq(h.createTenant, http.MethodPost, "/api/tenants", su, map[string]any{"id": "acme"})
+	rec, body = doReq(h.createUser, http.MethodPost, "/api/users", su, map[string]any{
+		"email": "ok@acme.io", "password": "longlonglonglong", "tenant": "acme",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("createUser with a valid tenant id: %d, body=%v", rec.Code, body)
 	}
 }
