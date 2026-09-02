@@ -26,6 +26,39 @@ func tkey(ctx context.Context, suffix string) string {
 	return "gw:t:" + tenant.From(ctx) + ":" + suffix
 }
 
+// keyPart escapes a variable component before it is joined into a Redis key.
+//
+// Keys are built by concatenating parts with ":", and several of those parts
+// come from the request — the endpoint template, the object id, the consumer.
+// A part containing a colon shifts the boundary between fields, so two
+// structurally different things can produce one key. Reachable from ordinary
+// request parsing:
+//
+//	GET /a/body.foo:123           -> objowner:/a/{id}:body.foo:123
+//	GET /a/1  + body {"foo":123}  -> objowner:/a/{id}:body.foo:123
+//
+// One key, two different objects. Object ownership is what tells a confirmed
+// IDOR from a caller reading its own record, so a caller that can alias its way
+// onto another key can be recorded as the owner of an object it never owned —
+// and the detection that AEGIS exists to make then reports nothing. (The
+// path-derived id is not shape-checked: bolaTargets' fallback branch takes the
+// last path segment verbatim, so the colon needs no trick to get in.)
+//
+// Escaping "%" first keeps the mapping injective, so distinct inputs stay
+// distinct after escaping.
+//
+// Keys written by an earlier version do not match the new form. They are
+// TTL-bearing counters and ownership bindings, so the effect of an upgrade is
+// that they expire unused — a one-off loss of in-flight enumeration state, not
+// of anything durable.
+func keyPart(s string) string {
+	if !strings.ContainsAny(s, "%:") {
+		return s
+	}
+	s = strings.ReplaceAll(s, "%", "%25")
+	return strings.ReplaceAll(s, ":", "%3A")
+}
+
 // ForensicEntry represents a security event for audit trails. It is an alias of
 // secevent.Entry: the canonical type lives in the dependency-free secevent leaf
 // so the middleware layer can emit events without importing this package (audit
@@ -558,7 +591,7 @@ func (s *Store) RecordEndpoint(ctx context.Context, endpoint string) (bool, erro
 
 // RecordParameters tracks query parameters per endpoint and returns newly discovered ones.
 func (s *Store) RecordParameters(ctx context.Context, endpoint string, params []string) ([]string, error) {
-	key := tkey(ctx, "api_params:"+endpoint)
+	key := tkey(ctx, "api_params:"+keyPart(endpoint))
 	if card, err := s.client.SCard(ctx, key).Result(); err == nil && card >= inventoryMaxParamsPerEndpoint {
 		return nil, nil
 	}
@@ -706,7 +739,7 @@ func (s *Store) TakeLoginFlow(ctx context.Context, state string) (string, bool, 
 // IDOR (BOLA) signal. Distinct counting uses a HyperLogLog so memory stays
 // bounded regardless of how many IDs are swept.
 func (s *Store) TrackObjectAccess(ctx context.Context, consumer, endpoint, objectID string, window time.Duration) (int64, error) {
-	key := tkey(ctx, "bola:"+consumer+":"+endpoint)
+	key := tkey(ctx, "bola:"+keyPart(consumer)+":"+keyPart(endpoint))
 	pipe := s.client.Pipeline()
 	pipe.PFAdd(ctx, key, objectID)
 	pipe.Expire(ctx, key, window)
@@ -739,7 +772,7 @@ var baselineScript = redis.NewScript(`
 // (pre-update) and, when learn is true, updates that EWMA toward `current`.
 // Anomalous spikes pass learn=false so the baseline is not poisoned by an attack.
 func (s *Store) TrackBaseline(ctx context.Context, consumer, endpoint string, current int64, learn bool, ttl time.Duration) (float64, error) {
-	key := tkey(ctx, "blbase:"+consumer+":"+endpoint)
+	key := tkey(ctx, "blbase:"+keyPart(consumer)+":"+keyPart(endpoint))
 	learnFlag := "0"
 	if learn {
 		learnFlag = "1"
@@ -773,7 +806,7 @@ const objectOwnerSetCap = 64
 // The owner set is capped (objectOwnerSetCap) and TTL'd; callers decide what
 // priorOwners count counts as "shared" (and is therefore benign).
 func (s *Store) TrackObjectOwner(ctx context.Context, endpoint, objectID, consumer string, ttl time.Duration) (priorOwners int64, alreadyOwned bool, err error) {
-	key := tkey(ctx, "objown:"+endpoint+":"+objectID)
+	key := tkey(ctx, "objown:"+keyPart(endpoint)+":"+keyPart(objectID))
 	pipe := s.client.Pipeline()
 	member := pipe.SIsMember(ctx, key, consumer)
 	card := pipe.SCard(ctx, key)
@@ -807,14 +840,14 @@ func (s *Store) SetObjectOwner(ctx context.Context, endpoint, objectID, owner st
 	if owner == "" {
 		return nil
 	}
-	return s.client.Set(ctx, tkey(ctx, "objowner:"+endpoint+":"+objectID), owner, ttl).Err()
+	return s.client.Set(ctx, tkey(ctx, "objowner:"+keyPart(endpoint)+":"+keyPart(objectID)), owner, ttl).Err()
 }
 
 // GetObjectOwner returns the confirmed owner of an object (from a prior response
 // body) and whether one is known. A known owner different from the caller's
 // identity is a cross-owner access that can be blocked BEFORE forwarding.
 func (s *Store) GetObjectOwner(ctx context.Context, endpoint, objectID string) (owner string, known bool, err error) {
-	v, err := s.client.Get(ctx, tkey(ctx, "objowner:"+endpoint+":"+objectID)).Result()
+	v, err := s.client.Get(ctx, tkey(ctx, "objowner:"+keyPart(endpoint)+":"+keyPart(objectID))).Result()
 	if err == redis.Nil {
 		return "", false, nil
 	}
