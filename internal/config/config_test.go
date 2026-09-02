@@ -774,3 +774,43 @@ func TestValidate_AcceptsDistinctPathsPerTenant(t *testing.T) {
 		t.Fatalf("distinct paths per tenant must be accepted: %v", err)
 	}
 }
+
+// The shipped config/gateway.yaml is the front door: `make run`, the Dockerfile
+// CMD and the README all point at it. It must start in observe mode, so a first
+// deployment cannot block, throttle or rewrite a single live request before the
+// operator has seen what AEGIS would have done. Flipping that default is a
+// deliberate product decision, not something a config edit should do quietly.
+func TestShippedDefaultConfigIsObserveMode(t *testing.T) {
+	cfg, err := Load("../../config/gateway.yaml")
+	if err != nil {
+		t.Fatalf("load shipped config: %v", err)
+	}
+	if !cfg.Observe {
+		t.Fatal("config/gateway.yaml must ship with observe: true — it is the config a first deployment runs")
+	}
+
+	// Belt and braces: prove the coercion actually leaves nothing that can
+	// disrupt traffic, rather than trusting the flag alone.
+	cfg.ApplyObserveMode()
+	s := cfg.Security
+	for name, blocking := range map[string]bool{
+		"waf.block_mode":     s.WAF.BlockMode,
+		"schema.block_mode":  s.Schema.BlockMode,
+		"abuse.block_mode":   s.Abuse.BlockMode,
+		"rate_limit.enabled": s.RateLimit.Enabled,
+		"ip_guard.enabled":   s.IPGuard.Enabled,
+		"bot.enabled":        s.Bot.Enabled,
+		"challenge.enabled":  s.Challenge.Enabled,
+		"behavior.enabled":   s.Behavior.Enabled,
+	} {
+		if blocking {
+			t.Errorf("%s is still active after observe coercion: the shipped config could disrupt live traffic", name)
+		}
+	}
+	if !s.DLP.Observe {
+		t.Error("dlp must be in observe mode: the shipped config must never rewrite a response body")
+	}
+	if !s.Auth.Observe {
+		t.Error("auth must be soft: the shipped config must never return 401 on its own")
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 
 	"api-gateway/internal/config"
@@ -418,5 +419,97 @@ func TestScreenXXE_DetectsAndRewinds(t *testing.T) {
 				t.Fatalf("body corrupted by screening:\n got  %q\n want %q", rest, tc.body)
 			}
 		})
+	}
+}
+
+// capturingLogger records Warn calls so a test can assert what an operator
+// would actually see in the log.
+type capturingLogger struct {
+	mu    sync.Mutex
+	warns []map[string]any
+}
+
+func (c *capturingLogger) Info(string, ...map[string]any)  {}
+func (c *capturingLogger) Debug(string, ...map[string]any) {}
+func (c *capturingLogger) Error(string, ...map[string]any) {}
+func (c *capturingLogger) Warn(msg string, f ...map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry := map[string]any{"msg": msg}
+	if len(f) > 0 {
+		for k, v := range f[0] {
+			entry[k] = v
+		}
+	}
+	c.warns = append(c.warns, entry)
+}
+func (c *capturingLogger) BlockEvent(string, string, string, string, map[string]any) {}
+
+func (c *capturingLogger) detections() []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []map[string]any
+	for _, w := range c.warns {
+		if w["msg"] == "waf_detection" {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// In observe mode the WAF blocks nothing — so the ONLY thing it produces is the
+// record of what it saw. Before ruleMatchLogger there was no such record at all:
+// the post-handler accounting in WAF() fires only on an interruption, so a run
+// full of SQLi produced one counter (requests_passed_waf) and no evidence
+// anything was ever detected. Observe is the posture the shipped config starts
+// in, and "show me what you would have blocked" is the entire point of a pilot.
+func TestWAF_ObserveModeStillReportsDetections(t *testing.T) {
+	log := &capturingLogger{}
+	h := WAF(config.WAFConfig{Enabled: true, Observe: true}, log, &fakeStore{})(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?id=1%20UNION%20SELECT%20password%20FROM%20users", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("observe mode must not block: got %d", rec.Code)
+	}
+	found := log.detections()
+	if len(found) == 0 {
+		t.Fatal("observe mode recorded no detection: an operator would see nothing at all for a blatant SQLi")
+	}
+	// The "would this have blocked?" signal in observe mode is severity, NOT
+	// Disruptive: Coraza reports whether a disruptive action was actually
+	// performed, and DetectionOnly performs none, so Disruptive is always false
+	// here. Assert on what an operator can genuinely act on.
+	var sawCritical bool
+	for _, d := range found {
+		if sev, _ := d["severity"].(string); strings.EqualFold(sev, "critical") {
+			sawCritical = true
+		}
+		if d["rule_id"] == nil || d["uri"] == nil || d["severity"] == nil {
+			t.Errorf("detection is missing the fields needed to act on it: %v", d)
+		}
+	}
+	if !sawCritical {
+		t.Error("no CRITICAL detection recorded: an operator cannot tell which rules would have blocked")
+	}
+}
+
+// Enforcing mode must keep reporting detections too — the callback is wired for
+// both engines, not just the detection-only one.
+func TestWAF_EnforcingModeAlsoReportsDetections(t *testing.T) {
+	log := &capturingLogger{}
+	h := WAF(config.WAFConfig{Enabled: true, BlockMode: true}, log, &fakeStore{})(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?id=1%20UNION%20SELECT%20password%20FROM%20users", nil))
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("enforcing mode must block SQLi: got %d", rec.Code)
+	}
+	if len(log.detections()) == 0 {
+		t.Fatal("enforcing mode recorded no waf_detection")
 	}
 }

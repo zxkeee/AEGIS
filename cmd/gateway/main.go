@@ -58,7 +58,7 @@ func main() {
 	}
 
 	// ── Load Configuration ────────────────────────────────────────────────────
-	cfg, trustedProxyNets, licStatus, err := loadValidatedConfig(*cfgPath)
+	cfg, trustedProxyNets, licStatus, coercions, err := loadValidatedConfig(*cfgPath)
 	if err != nil {
 		// Exit, don't panic: this is a rejected CONFIGURATION, not a bug in the
 		// gateway, and a goroutine dump buries the one line the operator needs
@@ -84,7 +84,8 @@ func main() {
 	if cfg.Observe {
 		log.Warn("OBSERVE MODE ACTIVE: passive pilot posture — the gateway inspects and records but blocks nothing, "+
 			"modifies no response body, and never fails closed. Discovery, findings, WAF-detection, DLP-classification "+
-			"and BOLA/BFLA still run. Do NOT rely on AEGIS for enforcement in this mode.", nil)
+			"and BOLA/BFLA still run. Do NOT rely on AEGIS for enforcement in this mode.",
+			map[string]any{"coerced": coercions})
 	}
 
 	// ── Redis Store ───────────────────────────────────────────────────────────
@@ -431,13 +432,18 @@ func main() {
 // caller must call middleware.SetTrustedProxies with the returned set only
 // once the ENTIRE reload (including BuildHandlerChain) has succeeded; on
 // boot there is no prior chain to protect, so main() commits immediately.
-func loadValidatedConfig(path string) (config.GatewayConfig, []*net.IPNet, license.Status, error) {
+//
+// The fourth result lists the observe-mode coercions applied (empty when
+// observe is off). It is returned rather than dropped because observe is the
+// posture the shipped config/gateway.yaml starts in: an operator must be able
+// to see WHICH controls were forced passive, not just that some were.
+func loadValidatedConfig(path string) (config.GatewayConfig, []*net.IPNet, license.Status, []string, error) {
 	cfg, err := config.Load(path)
 	if err != nil {
-		return config.GatewayConfig{}, nil, license.Status{}, err
+		return config.GatewayConfig{}, nil, license.Status{}, nil, err
 	}
 	if err := config.Validate(cfg); err != nil {
-		return config.GatewayConfig{}, nil, license.Status{}, err
+		return config.GatewayConfig{}, nil, license.Status{}, nil, err
 	}
 	// License is a hard boot gate, not a soft degrade: no valid license means
 	// the gateway does not come up at all — same treatment as any other
@@ -456,7 +462,7 @@ func loadValidatedConfig(path string) (config.GatewayConfig, []*net.IPNet, licen
 	// license.LoadWithGrace's doc comment and docs/licensing.md.
 	licStatus := license.LoadWithGrace(cfg.LicensePath, license.DefaultHardwareGrace)
 	if !licStatus.Valid {
-		return config.GatewayConfig{}, nil, licStatus, fmt.Errorf(
+		return config.GatewayConfig{}, nil, licStatus, nil, fmt.Errorf(
 			"no valid license: %s (see docs/licensing.md — issue one with cmd/licensegen)", licStatus.Reason)
 	}
 	// Tier entitlement: "trial"/"pilot" are pre-commercial and may only ever
@@ -473,7 +479,7 @@ func loadValidatedConfig(path string) (config.GatewayConfig, []*net.IPNet, licen
 	// believe an unentitled feature is protecting live traffic when it
 	// structurally isn't running.
 	if err := license.CheckFeatureGates(licStatus.Claims, cfg.Multitenancy.Enabled, cfg.OIDC.Enabled); err != nil {
-		return config.GatewayConfig{}, nil, licStatus, fmt.Errorf("license feature entitlement: %w", err)
+		return config.GatewayConfig{}, nil, licStatus, nil, fmt.Errorf("license feature entitlement: %w", err)
 	}
 	// Threaded into the chain as a runtime-only field (see its doc comment) so
 	// middleware.LicenseRateLimit can enforce it without BuildHandlerChain
@@ -482,12 +488,12 @@ func loadValidatedConfig(path string) (config.GatewayConfig, []*net.IPNet, licen
 	// Observe/pilot mode coercion runs AFTER validation, so the returned config is
 	// already in its guaranteed non-disruptive shape before any chain is built —
 	// on startup and on every hot-reload alike.
-	cfg.ApplyObserveMode()
+	coercions := cfg.ApplyObserveMode()
 	trustedProxyNets, err := middleware.ParseTrustedProxies(cfg.TrustedProxies)
 	if err != nil {
-		return config.GatewayConfig{}, nil, license.Status{}, err
+		return config.GatewayConfig{}, nil, license.Status{}, nil, err
 	}
-	return cfg, trustedProxyNets, licStatus, nil
+	return cfg, trustedProxyNets, licStatus, coercions, nil
 }
 
 // logLicenseStatus reports a valid license's terms so licensee/tier/expiry
@@ -634,7 +640,7 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 		// doc comment); it only takes effect once BuildHandlerChain below also
 		// succeeds, so a later failure genuinely leaves the old chain's trust
 		// boundary untouched too, not just its routing.
-		newCfg, newTrustedProxyNets, newLicStatus, err := loadValidatedConfig(absPath)
+		newCfg, newTrustedProxyNets, newLicStatus, newCoercions, err := loadValidatedConfig(absPath)
 		if err != nil {
 			log.Error("hot-reload: rejected, previous config stays active", map[string]any{"error": err.Error()})
 			return
@@ -643,7 +649,8 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 		adminSrv.SetLicenseStatus(newLicStatus)
 		currentLicensePath.Store(newCfg.LicensePath)
 		if newCfg.Observe {
-			log.Warn("hot-reload: OBSERVE MODE ACTIVE — controls coerced to passive (record-only, no blocking/redaction)", nil)
+			log.Warn("hot-reload: OBSERVE MODE ACTIVE — controls coerced to passive (record-only, no blocking/redaction)",
+				map[string]any{"coerced": newCoercions})
 		}
 
 		// Rebuild the posture engine from the new config; it is the authority for

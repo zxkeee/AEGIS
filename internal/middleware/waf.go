@@ -18,6 +18,7 @@ import (
 	coreruleset "github.com/corazawaf/coraza-coreruleset/v4"
 	"github.com/corazawaf/coraza/v3"
 	txhttp "github.com/corazawaf/coraza/v3/http"
+	"github.com/corazawaf/coraza/v3/types"
 	"github.com/jcchavezs/mergefs"
 	mergefsio "github.com/jcchavezs/mergefs/io"
 )
@@ -214,7 +215,7 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 		directives = strings.Replace(directives, "SecRuleEngine On", "SecRuleEngine DetectionOnly", 1)
 	}
 
-	waf, err := buildCorazaWAF(cfg, directives)
+	waf, err := buildCorazaWAF(cfg, directives, log)
 	if err != nil {
 		// Always counted, regardless of FailClosed, so a bad ruleset deploy shows
 		// up on /metrics instead of being visible only in logs (VULN-801).
@@ -308,12 +309,54 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 	}
 }
 
+// ruleMatchLogger surfaces every rule Coraza matches, whether or not it went on
+// to block.
+//
+// Without it the WAF is completely silent in detection mode: Coraza calls this
+// callback on a match, but the post-handler accounting in WAF() only records
+// something when the request was actually INTERRUPTED. In enforcing mode that is
+// fine — a block is the record. In observe/DetectionOnly it means an operator
+// sees nothing at all: a run carrying blatant SQLi, XSS, traversal and Log4Shell
+// produced exactly one counter, `requests_passed_waf`, and no evidence that
+// anything was ever detected. That silence is worst precisely where it matters
+// most, since observe is the posture the shipped config starts in and the whole
+// point of a pilot is to show what AEGIS *would* have blocked.
+//
+// This logs only. The metric and forensic entry stay on the enforcing path
+// because they are tenant-scoped through the request context, and Coraza's
+// callback carries no context to read the tenant from — emitting them here would
+// attribute every tenant's detections to `default`, breaking the isolation
+// ADR-001 exists to guarantee. Correlate by request instead: the client IP and
+// URI below appear in the access log too.
+func ruleMatchLogger(log Logger) func(types.MatchedRule) {
+	return func(mr types.MatchedRule) {
+		r := mr.Rule()
+		log.Warn("waf_detection", map[string]any{
+			"rule_id":  r.ID(),
+			"severity": r.Severity().String(),
+			"tags":     r.Tags(),
+			"message":  mr.Message(),
+			"data":     mr.Data(),
+			"uri":      mr.URI(),
+			"ip":       mr.ClientIPAddress(),
+			// Disruptive reports whether the rule ACTUALLY performed a
+			// disruptive action — so it is true in enforcing mode and false in
+			// DetectionOnly, where the engine performs none. It therefore does
+			// NOT answer "would this have blocked?" in observe mode; severity and
+			// tags above are the signal for that (the built-in blocking rules all
+			// carry severity CRITICAL). Logged anyway because in enforcing mode it
+			// distinguishes a rule that blocked from one that only scored.
+			"disruptive": mr.Disruptive(),
+		})
+	}
+}
+
 // buildCorazaWAF assembles the Coraza engine. In CRS mode it loads the full
 // OWASP Core Rule Set v4 (embedded via coraza-coreruleset) with anomaly scoring
 // at the configured paranoia level and threshold; otherwise it uses the built-in
 // starter directives. A RulesetPath is included last as operator overrides
 // (e.g. SecRuleRemoveById for a tuned-out false positive).
-func buildCorazaWAF(cfg config.WAFConfig, builtin string) (coraza.WAF, error) {
+func buildCorazaWAF(cfg config.WAFConfig, builtin string, log Logger) (coraza.WAF, error) {
 	if cfg.UseCRS {
 		pl := firstPositive(cfg.ParanoiaLevel, 1)
 		at := firstPositive(cfg.AnomalyThreshold, 5)
@@ -335,6 +378,7 @@ Include @owasp_crs/*.conf
 
 		wafCfg := coraza.NewWAFConfig().
 			WithRootFS(mergefs.Merge(coreruleset.FS, mergefsio.OSFS)).
+			WithErrorCallback(ruleMatchLogger(log)).
 			WithDirectives(directives)
 		if cfg.RulesetPath != "" {
 			wafCfg = wafCfg.WithDirectivesFromFile(cfg.RulesetPath)
@@ -342,7 +386,7 @@ Include @owasp_crs/*.conf
 		return coraza.NewWAF(wafCfg)
 	}
 
-	wafCfg := coraza.NewWAFConfig()
+	wafCfg := coraza.NewWAFConfig().WithErrorCallback(ruleMatchLogger(log))
 	if cfg.RulesetPath != "" {
 		wafCfg = wafCfg.WithDirectivesFromFile(cfg.RulesetPath)
 	}

@@ -1,5 +1,31 @@
 # AEGIS — API Security Gateway Configuration
 
+# ─────────────────────────────────────────────────────────────────────────────
+# observe: START HERE. This file ships in OBSERVE mode on purpose.
+#
+# AEGIS sits in the request path. Everything below is switched on, but with
+# observe: true every control is coerced to record-only before any of it can
+# touch a request (ApplyObserveMode, internal/config/config.go — it runs after
+# validation, on startup AND on every hot-reload, and no per-route override can
+# escape it). Nothing is blocked, throttled, challenged, redacted or 401'd.
+#
+# You still get everything AEGIS is for: the API catalog, posture scoring,
+# findings, the consumer graph, WAF detections, PII classification and BOLA/BFLA
+# — a full picture of the API surface, with zero risk to live traffic.
+#
+# What observe: true coerces (the startup log lists exactly what changed):
+#   waf.block_mode -> false (DetectionOnly)   rate_limit -> off
+#   schema.block_mode -> false                ip_guard   -> off
+#   abuse.block_mode -> false                 bot        -> off
+#   dlp -> classify, never rewrite a body     challenge  -> off
+#   auth -> identity only, never 401          behavior   -> off (feeds auto-ban)
+#
+# TO ENFORCE: set observe: false. Do that once the findings from a real run have
+# shown you what AEGIS would have blocked — not before. Turning it off makes
+# every setting below live, including auto-ban and WAF blocking.
+# ─────────────────────────────────────────────────────────────────────────────
+observe: true
+
 listen: ":8080"          # Gateway proxy port
 admin_listen: ":8081"    # Admin API port
 admin_auth: true

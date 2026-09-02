@@ -261,7 +261,7 @@ license_path: "` + licPath + `"
 		t.Fatalf("write config: %v", err)
 	}
 
-	_, nets, _, err := loadValidatedConfig(p)
+	_, nets, _, _, err := loadValidatedConfig(p)
 	if err != nil {
 		t.Fatalf("loadValidatedConfig: %v", err)
 	}
@@ -345,7 +345,7 @@ observe: false
 		t.Fatalf("write config: %v", err)
 	}
 
-	_, _, licStatus, err := loadValidatedConfig(p)
+	_, _, licStatus, _, err := loadValidatedConfig(p)
 	if err == nil {
 		t.Fatal("expected loadValidatedConfig to reject a config with no valid license")
 	}
@@ -371,7 +371,7 @@ license_path: "` + licPath + `"
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, _, _, err := loadValidatedConfig(p)
+	cfg, _, _, _, err := loadValidatedConfig(p)
 	if err != nil {
 		t.Fatalf("loadValidatedConfig: %v", err)
 	}
@@ -397,7 +397,7 @@ license_path: "` + licPath + `"
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, _, _, err := loadValidatedConfig(p)
+	cfg, _, _, _, err := loadValidatedConfig(p)
 	if err != nil {
 		t.Fatalf("loadValidatedConfig: %v", err)
 	}
@@ -427,7 +427,7 @@ multitenancy:
 		t.Fatalf("write config: %v", err)
 	}
 
-	if _, _, _, err := loadValidatedConfig(p); err == nil {
+	if _, _, _, _, err := loadValidatedConfig(p); err == nil {
 		t.Fatal("expected boot to fail: multitenancy enabled but not licensed")
 	}
 }
@@ -454,7 +454,7 @@ multitenancy:
 		t.Fatalf("write config: %v", err)
 	}
 
-	if _, _, _, err := loadValidatedConfig(p); err != nil {
+	if _, _, _, _, err := loadValidatedConfig(p); err != nil {
 		t.Fatalf("an unrestricted (no Features) license must not block multitenancy: %v", err)
 	}
 }
@@ -482,7 +482,7 @@ redis:
 trusted_proxies: ["10.0.0.0/8"]
 license_path: "`+licPath+`"
 `)
-	if _, _, _, err := loadValidatedConfig(good); err != nil {
+	if _, _, _, _, err := loadValidatedConfig(good); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
 
@@ -510,7 +510,7 @@ routes:
 	}
 	for name, body := range cases {
 		p := write(strings.ReplaceAll(name, " ", "-")+".yaml", body)
-		if _, _, _, err := loadValidatedConfig(p); err == nil {
+		if _, _, _, _, err := loadValidatedConfig(p); err == nil {
 			t.Fatalf("%s: unsafe config accepted", name)
 		}
 	}
