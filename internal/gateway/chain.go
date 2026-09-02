@@ -40,7 +40,7 @@ type step struct {
 //   - AbuseDetection runs AFTER auth so it sees verified JWT roles.
 //
 // Read this before reordering anything.
-func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Store, cat middleware.Catalog, postureEng *discovery.PostureEngine, schemaSpecFor func(context.Context) *discovery.Spec) []step {
+func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Store, cat middleware.Catalog, postureEng *discovery.PostureEngine, schemaSpecFor func(context.Context) *discovery.Spec, al *middleware.Alerter) []step {
 	// effective resolves the merged controls (global security.* + per-route
 	// overrides) for a request path. The route-overridable controls below are
 	// built force-enabled and gated on these booleans, so a route can switch a
@@ -137,10 +137,10 @@ func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Stor
 		// meaning. Inside Discovery, so the observation it is about to record
 		// carries the identity.
 		{"ConsumerID", middleware.ConsumerID(cfg.Security.ConsumerID, cfg.Security.ConsumerID.Salt)},
-		{"SchemaValidation", middleware.SchemaValidation(cfg.Security.Schema, schemaSpecFor, log, st)},                 // positive security: validate against OpenAPI contract
-		{"AbuseDetection", middleware.AbuseDetection(cfg.Security.Abuse, cfg.Security.Inventory.GraphQLPath, log, st)}, // BOLA/BFLA (needs verified roles)
+		{"SchemaValidation", middleware.SchemaValidation(cfg.Security.Schema, schemaSpecFor, log, st)},                     // positive security: validate against OpenAPI contract
+		{"AbuseDetection", middleware.AbuseDetection(cfg.Security.Abuse, cfg.Security.Inventory.GraphQLPath, log, st, al)}, // BOLA/BFLA (needs verified roles)
 		{"DLP", dlpMW},
-		{"BehaviorAnalysis", middleware.BehaviorAnalysis(cfg.Security.Behavior, log, st)},
+		{"BehaviorAnalysis", middleware.BehaviorAnalysis(cfg.Security.Behavior, log, st, al)},
 	}
 }
 
@@ -153,7 +153,9 @@ func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Stor
 // controls are wrapped in middleware.RouteGate so a per-route override is
 // actually enforced in the data plane — not merely reported by the posture
 // dashboard.
-func BuildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st middleware.Store, catalog *discovery.Catalog, postureEng *discovery.PostureEngine) (http.Handler, *proxy.Gateway, error) {
+// alerts may be nil: with no engine wired the notification path is a no-op and
+// everything else behaves identically.
+func BuildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st middleware.Store, catalog *discovery.Catalog, postureEng *discovery.PostureEngine, alerts middleware.AlertEngine) (http.Handler, *proxy.Gateway, error) {
 	gw, err := proxy.New(cfg.Routes, cfg.Multitenancy, log)
 	if err != nil {
 		return nil, nil, err
@@ -184,7 +186,7 @@ func BuildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st middlewa
 
 	warnExactMatchRoutes(cfg.Routes, log)
 
-	steps := chainSteps(cfg, log, st, cat, postureEng, schemaSpecFor)
+	steps := chainSteps(cfg, log, st, cat, postureEng, schemaSpecFor, middleware.NewAlerter(alerts, st, log))
 	mws := make([]middleware.Middleware, len(steps))
 	for i, s := range steps {
 		mws[i] = s.mw

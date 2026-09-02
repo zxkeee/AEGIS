@@ -1,8 +1,10 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 
+	"api-gateway/internal/alert"
 	"api-gateway/internal/config"
 )
 
@@ -23,7 +25,7 @@ import (
 // not by this scoring logic. Volumetric bursts are RateLimit's job (a real
 // atomic counter, see ratelimit.go); this middleware's guarantee is about
 // score-driven blocking once elevated, not about capping in-flight bursts.
-func BehaviorAnalysis(cfg config.BehaviorConfig, log Logger, st behaviorStore) Middleware {
+func BehaviorAnalysis(cfg config.BehaviorConfig, log Logger, st behaviorStore, al *Alerter) Middleware {
 	if !cfg.Enabled {
 		return passthrough
 	}
@@ -44,6 +46,14 @@ func BehaviorAnalysis(cfg config.BehaviorConfig, log Logger, st behaviorStore) M
 							"ttl":   cfg.AutoBanTTL.String(),
 						})
 						st.IncrMetric(r.Context(), "behavior_autoban")
+						// The gateway has just started refusing a client on its
+						// own judgement. That is the other event the alerting
+						// config names, and the one most likely to be a false
+						// positive an operator wants to see quickly. Keyed by IP
+						// so a ban storm from one source pages once.
+						al.Notify(r.Context(), alert.SeverityWarning, "behavior_autoban:"+ip,
+							"AEGIS: IP auto-banned on behaviour score",
+							fmt.Sprintf("ip=%s score=%d threshold=%d ttl=%s", ip, score, cfg.ScoreThreshold, cfg.AutoBanTTL))
 					}
 				}
 				SecurityDeny(w, r, log, st, "behavior_high_risk", ip, http.StatusTooManyRequests, map[string]any{

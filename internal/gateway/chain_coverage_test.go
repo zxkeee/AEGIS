@@ -30,10 +30,10 @@ func TestChainSteps_ControlsEnabled(t *testing.T) {
 	log := logger.New("error")
 	postureEng := discovery.NewPostureEngine(cfg)
 
-	steps := chainSteps(cfg, log, nil, nil, postureEng, nil)
+	steps := chainSteps(cfg, log, nil, nil, postureEng, nil, nil)
 	// The step count is invariant to which controls are active (off controls are
 	// passthrough placeholders, not omitted).
-	baseline := chainSteps(config.GatewayConfig{}, log, nil, nil, discovery.NewPostureEngine(config.GatewayConfig{}), nil)
+	baseline := chainSteps(config.GatewayConfig{}, log, nil, nil, discovery.NewPostureEngine(config.GatewayConfig{}), nil, nil)
 	if len(steps) != len(baseline) {
 		t.Fatalf("enabled-controls chain has %d steps, baseline %d — count must be invariant", len(steps), len(baseline))
 	}
@@ -59,7 +59,7 @@ func TestChainSteps_RouteOverridesOnly(t *testing.T) {
 		t.Error("anyRouteEnablesBool(WAF) should be true")
 	}
 	// chainSteps must build with these overrides and a nil store.
-	if steps := chainSteps(cfg, logger.New("error"), nil, nil, discovery.NewPostureEngine(cfg), nil); len(steps) == 0 {
+	if steps := chainSteps(cfg, logger.New("error"), nil, nil, discovery.NewPostureEngine(cfg), nil, nil); len(steps) == 0 {
 		t.Fatal("chainSteps returned no steps")
 	}
 }

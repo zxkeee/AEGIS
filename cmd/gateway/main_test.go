@@ -116,7 +116,7 @@ func TestChain_IdentifiesCallerOnRoutesThatDoNotRequireAuth(t *testing.T) {
 	}
 
 	log := logger.New("error")
-	handler, _, err := gateway.BuildHandlerChain(cfg, log, st, nil, discovery.NewPostureEngine(cfg))
+	handler, _, err := gateway.BuildHandlerChain(cfg, log, st, nil, discovery.NewPostureEngine(cfg), nil)
 	if err != nil {
 		t.Fatalf("BuildHandlerChain: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestChain_PostureMatchesEnforcement(t *testing.T) {
 
 	log := logger.New("error")
 	postureEng := discovery.NewPostureEngine(cfg)
-	handler, _, err := gateway.BuildHandlerChain(cfg, log, st, nil, postureEng)
+	handler, _, err := gateway.BuildHandlerChain(cfg, log, st, nil, postureEng, nil)
 	if err != nil {
 		t.Fatalf("BuildHandlerChain: %v", err)
 	}

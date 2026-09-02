@@ -93,7 +93,7 @@ func runBehavior(cfg config.BehaviorConfig, st Store, statusFromNext int) *httpt
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(statusFromNext)
 	})
-	h := BehaviorAnalysis(cfg, fakeLogger{}, st)(next)
+	h := BehaviorAnalysis(cfg, fakeLogger{}, st, nil)(next)
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/x", nil)
 	r.RemoteAddr = "1.2.3.4:5555"

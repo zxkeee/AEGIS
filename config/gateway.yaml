@@ -95,7 +95,13 @@ logging:
   level: "info"
   format: "json"
 
-# Outbound alerting for security events (BOLA/BFLA, IP blocks, etc.).
+# Outbound alerting. Fired by the BOLA/BFLA detections (enumeration, privileged
+# path, confirmed object-ownership violation) and by a behavioural auto-ban.
+# Delivery is asynchronous and detached from the request, so a slow webhook adds
+# nothing to request latency and a caller cannot cancel the alert about its own
+# activity by disconnecting. Deliveries are deduplicated per event and subject
+# for 5 minutes, so a caller in a loop pages on-call once rather than per
+# request. Alerting stays active in observe mode — recording is the point there.
 # webhook_url empty = alerts logged locally only. Set AEGIS_ALERT_WEBHOOK_URL
 # to override the URL from the environment (keeps the secret out of the file).
 alerting:
