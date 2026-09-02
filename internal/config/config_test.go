@@ -814,3 +814,58 @@ func TestShippedDefaultConfigIsObserveMode(t *testing.T) {
 		t.Error("auth must be soft: the shipped config must never return 401 on its own")
 	}
 }
+
+// The proxy tells tenants sharing a path apart by Host; the posture engine
+// cannot — it resolves controls from the path alone. Differing overrides would
+// therefore put one tenant under the other's security policy, silently, decided
+// by config order. Reject that rather than pick a winner.
+func TestValidate_RejectsSharedPathWithDifferentSecurityOverrides(t *testing.T) {
+	base := func() GatewayConfig {
+		c := validBase()
+		c.Multitenancy = MultitenancyConfig{
+			Enabled: true,
+			Tenants: []TenantConfig{
+				{ID: "acme", Hosts: []string{"acme.example"}},
+				{ID: "globex", Hosts: []string{"globex.example"}},
+			},
+		}
+		return c
+	}
+	no, yes := false, true
+
+	c := base()
+	c.Routes = []RouteConfig{
+		{Path: "/orders", TenantID: "acme", RequireAuth: &no, Upstreams: []string{"http://a:1"}},
+		{Path: "/orders", TenantID: "globex", RequireAuth: &yes, Upstreams: []string{"http://b:2"}},
+	}
+	err := Validate(c)
+	if err == nil {
+		t.Fatal("tenants sharing a path with different require_auth must be rejected")
+	}
+	for _, want := range []string{"acme", "globex", "/orders", "different security overrides"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error must explain the divergence (missing %q), got: %v", want, err)
+		}
+	}
+
+	// One override set and the other left unset is a divergence too: "unset"
+	// means "inherit the global", which is not the same policy.
+	c = base()
+	c.Routes = []RouteConfig{
+		{Path: "/orders", TenantID: "acme", WAF: &no, Upstreams: []string{"http://a:1"}},
+		{Path: "/orders", TenantID: "globex", Upstreams: []string{"http://b:2"}},
+	}
+	if err := Validate(c); err == nil {
+		t.Fatal("one route overriding waf and the other inheriting it must be rejected")
+	}
+
+	// Identical overrides are fine — the path-only resolution is then harmless.
+	c = base()
+	c.Routes = []RouteConfig{
+		{Path: "/orders", TenantID: "acme", RequireAuth: &yes, Upstreams: []string{"http://a:1"}},
+		{Path: "/orders", TenantID: "globex", RequireAuth: &yes, Upstreams: []string{"http://b:2"}},
+	}
+	if err := Validate(c); err != nil {
+		t.Fatalf("identical overrides on a shared path must be accepted: %v", err)
+	}
+}

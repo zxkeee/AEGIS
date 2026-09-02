@@ -1009,6 +1009,34 @@ func validateOIDC(cfg GatewayConfig) error {
 	return nil
 }
 
+// validateRoutes rejects route options that would otherwise degrade silently.
+// In particular an unknown load_balance strategy used to fall back to
+// round-robin without any signal — an operator asking for "least_conn" got
+// different behaviour than configured.
+// sameSecurityOverrides reports whether two routes declare identical per-route
+// security overrides. Used to keep tenants that share a path (and are told apart
+// by Host in the proxy) from diverging in a way the path-only posture engine
+// cannot represent — see validateRoutes.
+func sameSecurityOverrides(a, b RouteConfig) bool {
+	eqBool := func(x, y *bool) bool {
+		if x == nil || y == nil {
+			return x == y // both unset, or one set and one not
+		}
+		return *x == *y
+	}
+	if !eqBool(a.RequireAuth, b.RequireAuth) || !eqBool(a.WAF, b.WAF) || !eqBool(a.DLP, b.DLP) {
+		return false
+	}
+	switch {
+	case a.RateLimit == nil && b.RateLimit == nil:
+		return true
+	case a.RateLimit == nil || b.RateLimit == nil:
+		return false
+	default:
+		return *a.RateLimit == *b.RateLimit
+	}
+}
+
 func validateRoutes(cfg GatewayConfig) error {
 	// Duplicate paths are rejected here rather than left to http.ServeMux, which
 	// PANICS on a conflicting pattern. That panic happens inside proxy.New, which
@@ -1041,6 +1069,22 @@ func validateRoutes(cfg GatewayConfig) error {
 						"multitenancy.tenants, or give each tenant its own path",
 						r.Path, prev.TenantID, r.TenantID, share.TenantID)
 				}
+			}
+			// The PROXY tells these routes apart by Host, but the posture engine
+			// does not: it resolves controls from the path alone, because the
+			// reporting side (catalog rows) has only a path template to work
+			// with. With differing overrides it would hand every tenant on this
+			// path whichever route happens to sort first — one tenant silently
+			// running under another's auth/WAF/DLP policy. Requiring the
+			// overrides to agree makes that resolution provably harmless.
+			// Lifting this restriction means making the posture engine
+			// host-aware, not relaxing the check.
+			if !sameSecurityOverrides(prev, r) {
+				return fmt.Errorf("multitenancy: tenants %q and %q share route %q but declare different security "+
+					"overrides (require_auth/waf/dlp/rate_limit); the posture engine resolves controls by path "+
+					"alone, so one tenant would silently run under the other's policy — make the overrides "+
+					"identical, or give each tenant its own path",
+					prev.TenantID, r.TenantID, r.Path)
 			}
 			continue
 		}

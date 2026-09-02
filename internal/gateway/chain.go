@@ -292,9 +292,20 @@ func exactMatchRoutes(routes []config.RouteConfig) []string {
 }
 
 // warnExactMatchRoutes logs the exactMatchRoutes finding once per chain build.
-// It warns rather than refusing to start because the mismatch fails closed —
-// the risk is a confusing outage, not a silent exposure. It cost real debugging
-// time twice while building the sample stand, so it is worth one startup line.
+// It warns rather than refusing to start because the risk is a confusing 404,
+// not a silent exposure: sub-paths fall through to whichever route really serves
+// them, and that route's own posture applies.
+//
+// That last clause was NOT true when this comment was first written. The posture
+// engine matched routes by prefix while ServeMux matches a slash-less pattern
+// exactly, so the sub-paths kept the declared route's (often more permissive)
+// controls while being served by a different route — a confirmed authentication
+// bypass, the opposite of failing closed. discovery.matchRoute now mirrors
+// ServeMux (see its doc comment), which is what makes the claim above hold.
+// If that ever diverges again, this warning becomes a lie a second time.
+//
+// It cost real debugging time twice while building the sample stand, so it is
+// worth one startup line.
 func warnExactMatchRoutes(routes []config.RouteConfig, log *logger.Logger) {
 	suspect := exactMatchRoutes(routes)
 	if len(suspect) == 0 {

@@ -111,7 +111,11 @@ func TestMatchRoute_SegmentBoundary(t *testing.T) {
 			WAF:  config.WAFConfig{Enabled: true},
 		},
 		Routes: []config.RouteConfig{
-			{Path: "/api/public", RequireAuth: boolPtr(false), WAF: boolPtr(false)},
+			// Declared as a SUBTREE ("/api/public/"), because that is what makes
+			// http.ServeMux — and therefore matchRoute — own the paths below it.
+			// The slash-less form owns only the exact path; see
+			// TestMatchRoute_ExactPatternDoesNotOwnItsSubtree.
+			{Path: "/api/public/", RequireAuth: boolPtr(false), WAF: boolPtr(false)},
 		},
 	}
 	e := NewPostureEngine(cfg)
@@ -155,7 +159,7 @@ func TestMatchRoute_CaseInsensitive(t *testing.T) {
 			WAF:  config.WAFConfig{Enabled: true},
 		},
 		Routes: []config.RouteConfig{
-			{Path: "/Admin", RequireAuth: boolPtr(true), WAF: boolPtr(true)},
+			{Path: "/Admin/", RequireAuth: boolPtr(true), WAF: boolPtr(true)},
 		},
 	}
 	e := NewPostureEngine(cfg)
@@ -180,5 +184,68 @@ func TestMatchRoute_CaseInsensitive(t *testing.T) {
 		if c.AuthRequired {
 			t.Errorf("ControlsFor(%q) = %+v, want AuthRequired=false (exclude match) — case variation defeated the exclude", p, c)
 		}
+	}
+}
+
+// TestMatchRoute_ExactPatternDoesNotOwnItsSubtree pins the fix for a confirmed
+// authentication bypass (2026-09-02, reproduced against a running gateway).
+//
+// http.ServeMux — what the proxy actually routes with — treats a pattern with no
+// trailing slash as an EXACT match. matchRoute matched every route as a prefix,
+// so this config
+//
+//   - path: /public   require_auth: false
+//   - path: /         require_auth: true
+//
+// handed the permissive posture to the entire "/public/..." subtree, which the
+// proxy serves from the catch-all. The auth gate reads this resolver, so
+// "/public/admin/delete-everything" reached the backend unauthenticated while
+// the dashboard attributed it to the route the operator had deliberately opened.
+//
+// The two resolvers must agree about which route serves a path. This asserts the
+// exact form owns only its own path, and that everything below it falls to the
+// route that really serves it.
+func TestMatchRoute_ExactPatternDoesNotOwnItsSubtree(t *testing.T) {
+	cfg := config.GatewayConfig{
+		Security: config.SecurityConfig{Auth: config.AuthConfig{Enabled: true}},
+		Routes: []config.RouteConfig{
+			{Path: "/public", RequireAuth: boolPtr(false)},
+			{Path: "/", RequireAuth: boolPtr(true)},
+		},
+	}
+	e := NewPostureEngine(cfg)
+
+	if c, _ := e.ControlsFor("/public"); c.AuthRequired {
+		t.Error(`ControlsFor("/public"): the exact path must still get its own override`)
+	}
+	for _, p := range []string{"/public/secret", "/public/admin/delete-everything", "/public/"} {
+		if c, _ := e.ControlsFor(p); !c.AuthRequired {
+			t.Errorf("ControlsFor(%q): inherited /public's override, but the proxy serves this path from the catch-all — auth bypass", p)
+		}
+	}
+}
+
+// The subtree form is how an operator expresses "this prefix and everything
+// under it", and it must keep working — otherwise the fix above would just move
+// the disagreement to the other side.
+func TestMatchRoute_SubtreePatternOwnsItsSubtree(t *testing.T) {
+	cfg := config.GatewayConfig{
+		Security: config.SecurityConfig{Auth: config.AuthConfig{Enabled: true}},
+		Routes: []config.RouteConfig{
+			{Path: "/public/", RequireAuth: boolPtr(false)},
+			{Path: "/", RequireAuth: boolPtr(true)},
+		},
+	}
+	e := NewPostureEngine(cfg)
+
+	// "/public" (no slash) is served by the "/public/" route too — ServeMux
+	// redirects it there — so the posture must not differ between the two forms.
+	for _, p := range []string{"/public", "/public/", "/public/secret", "/public/a/b"} {
+		if c, _ := e.ControlsFor(p); c.AuthRequired {
+			t.Errorf("ControlsFor(%q): subtree route override did not apply", p)
+		}
+	}
+	if c, _ := e.ControlsFor("/publicity"); !c.AuthRequired {
+		t.Error(`ControlsFor("/publicity"): adjacent path must not inherit the subtree override`)
 	}
 }
