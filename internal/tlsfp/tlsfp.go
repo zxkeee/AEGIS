@@ -45,12 +45,35 @@ func NewRegistry() *Registry {
 	return &Registry{m: make(map[net.Conn]*holder)}
 }
 
+// connKey returns the connection identity the registry indexes by: the RAW
+// transport connection, never the TLS wrapper around it.
+//
+// The two entry points see different objects for the same connection, and that
+// mismatch silently disabled this entire package. http.Server.ServeTLS wraps the
+// listener with tls.NewListener, so Accept — and therefore ConnContext — yields
+// a *tls.Conn. crypto/tls sets ClientHelloInfo.Conn to the connection it was
+// handed, which is the underlying *net.TCPConn. Keying the map on whatever each
+// caller happened to pass meant the handshake looked up a key that was never
+// inserted, found nothing, and stored the fingerprint nowhere. Every request
+// then read an empty string, so X-JA3-Fingerprint was never set, bot.blocked_ja3
+// could never match, and CheckJA3Consistency saw no data — while the package
+// doc promised a spoof-proof fingerprint. Normalising both sides to the raw
+// connection is what makes the two halves meet.
+func connKey(c net.Conn) net.Conn {
+	if tc, ok := c.(*tls.Conn); ok {
+		if raw := tc.NetConn(); raw != nil {
+			return raw
+		}
+	}
+	return c
+}
+
 // ConnContext is wired into http.Server.ConnContext. It runs before the TLS
 // handshake, so a holder exists by the time GetConfigForClient fires.
 func (reg *Registry) ConnContext(ctx context.Context, c net.Conn) context.Context {
 	h := &holder{}
 	reg.mu.Lock()
-	reg.m[c] = h
+	reg.m[connKey(c)] = h
 	reg.mu.Unlock()
 	return context.WithValue(ctx, ctxKey{}, h)
 }
@@ -60,7 +83,7 @@ func (reg *Registry) ConnContext(ctx context.Context, c net.Conn) context.Contex
 func (reg *Registry) ConnState(c net.Conn, state http.ConnState) {
 	if state == http.StateClosed || state == http.StateHijacked {
 		reg.mu.Lock()
-		delete(reg.m, c)
+		delete(reg.m, connKey(c))
 		reg.mu.Unlock()
 	}
 }
@@ -76,7 +99,7 @@ func (reg *Registry) TLSConfig(base *tls.Config) *tls.Config {
 	cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 		fp := Fingerprint(hello)
 		reg.mu.Lock()
-		if h := reg.m[hello.Conn]; h != nil {
+		if h := reg.m[connKey(hello.Conn)]; h != nil {
 			h.fp = fp
 		}
 		reg.mu.Unlock()
