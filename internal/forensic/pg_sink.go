@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"api-gateway/internal/store"
@@ -26,6 +27,9 @@ type PGSink struct {
 	ch   chan store.ForensicEntry
 	wg   sync.WaitGroup
 	quit chan struct{}
+	// dropped counts entries discarded because the buffer was full, reported by
+	// flushWorker. See Push.
+	dropped atomic.Int64
 }
 
 const createTableSQL = `
@@ -100,15 +104,37 @@ func NewPGSink(dsn string, log Logger) (*PGSink, error) {
 	return s, nil
 }
 
-// Push enqueues a forensic entry for async persistence.
-// Non-blocking: drops events if the buffer is full (back-pressure).
+// Push enqueues a forensic entry for async persistence. Non-blocking: an entry
+// is dropped when the buffer is full, so a burst never stalls the request path.
+//
+// Drops are COUNTED and reported, because the buffer fills exactly when the
+// forensic record matters most — a burst of blocks is an attack in progress —
+// and an unreported drop leaves an operator unable to tell a complete evidence
+// trail from one missing most of the incident.
+//
+// This used to be silent, on the stated grounds that "Redis still has the
+// event, so no data is truly lost". That does not hold: the Redis ring is
+// trimmed to the last 1000 entries (store.PushForensic), so the same burst that
+// overflows this 4096-entry buffer also rolls the ring several times over. Both
+// copies are lost together, which is the case the reasoning assumed away.
+// internal/audit already logs its equivalent drop; this is the same defect,
+// handled the same way.
 func (s *PGSink) Push(e store.ForensicEntry) {
 	select {
 	case s.ch <- e:
 	default:
-		// Buffer full — drop event to avoid blocking the request path.
-		// Redis still has the event, so no data is truly lost.
+		s.dropped.Add(1)
 	}
+}
+
+// Dropped reports how many entries have been discarded for lack of buffer space
+// since the sink started. Exposed so the gap can be surfaced alongside the other
+// coverage counters rather than living only in the log.
+func (s *PGSink) Dropped() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.dropped.Load()
 }
 
 // Close drains the buffer and shuts down the sink.
@@ -142,6 +168,15 @@ func (s *PGSink) flushWorker() {
 			if len(batch) > 0 {
 				s.flush(batch)
 				batch = batch[:0]
+			}
+			// Report drops on the tick rather than per drop: the overflow that
+			// causes them is a burst, so a line per dropped entry would answer a
+			// flood of events with a flood of logs.
+			if n := s.dropped.Swap(0); n > 0 {
+				s.log.Error("forensic: buffer full, entries dropped — the persisted record is incomplete", map[string]any{
+					"dropped":     n,
+					"buffer_size": cap(s.ch),
+				})
 			}
 		case <-s.quit:
 			// Drain remaining
