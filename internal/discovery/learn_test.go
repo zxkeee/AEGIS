@@ -183,6 +183,20 @@ func TestPathLearner_BoundedUnderPathFlood(t *testing.T) {
 	}
 }
 
+// TestPathLearner_ConcurrentUse exercises the learner from several goroutines
+// at once; run under -race it is the guard against concurrent Template calls
+// corrupting the tree.
+//
+// Every goroutine feeds values from its OWN namespace. That is load-bearing, not
+// cosmetic. The fixture used to have all eight goroutines replay the same 50
+// owner values, which put the owner position's new-value rate at 50 distinct
+// over ~4000 hits — 0.125, just under the 0.15 the learner requires to call a
+// position variable. The assertion below then depended on which eval window an
+// interleaving happened to land on, so the test failed at random under load
+// (reproduced on the pre-existing tree with -count=20). A concurrency test must
+// not also sit on a classification threshold: with per-goroutine values every
+// request introduces a new one, the rate is unambiguous, and a failure here
+// means the tree actually broke.
 func TestPathLearner_ConcurrentUse(t *testing.T) {
 	l := NewPathLearner(LearnerConfig{})
 	var wg sync.WaitGroup
@@ -191,7 +205,7 @@ func TestPathLearner_ConcurrentUse(t *testing.T) {
 		go func(w int) {
 			defer wg.Done()
 			for i := 0; i < 500; i++ {
-				l.Template("default", fmt.Sprintf("/api/repos/owner-%d/repo-%d/commits", i%50, i))
+				l.Template("default", fmt.Sprintf("/api/repos/owner-%d-%d/repo-%d-%d/commits", w, i, w, i))
 			}
 		}(w)
 	}
