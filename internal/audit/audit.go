@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -85,7 +86,13 @@ type Store struct {
 
 	wg   sync.WaitGroup
 	quit chan struct{}
+	// dropped counts entries discarded because the buffer was full, reported
+	// periodically by worker. See Record.
+	dropped atomic.Int64
 }
+
+// dropReportInterval is how often the worker reports accumulated drops.
+const dropReportInterval = 3 * time.Second
 
 // New connects, migrates, and starts the background writer. It reuses the same
 // PostgreSQL instance as the forensic/catalog stores (forensic_dsn).
@@ -135,16 +142,35 @@ func (s *Store) Record(e Entry) {
 	select {
 	case s.ch <- e:
 	default:
-		s.log.Error("audit: buffer full, dropping entry", map[string]any{"action": e.Action, "path": e.Path})
+		// Counted, not logged per entry: the buffer fills during a burst, so a
+		// line per dropped entry answers a flood of events with a flood of logs.
+		// The worker reports the total periodically instead.
+		s.dropped.Add(1)
 	}
+}
+
+// Dropped reports how many entries have been discarded for lack of buffer space
+// since the store started.
+func (s *Store) Dropped() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.dropped.Load()
 }
 
 func (s *Store) worker() {
 	defer s.wg.Done()
+	ticker := time.NewTicker(dropReportInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case e := <-s.ch:
 			s.insert(e)
+		case <-ticker.C:
+			if n := s.dropped.Swap(0); n > 0 {
+				s.log.Error("audit: buffer full, entries dropped — the admin action trail is incomplete",
+					map[string]any{"dropped": n, "buffer_size": cap(s.ch)})
+			}
 		case <-s.quit:
 			for {
 				select {
