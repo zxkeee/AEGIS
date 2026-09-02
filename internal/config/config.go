@@ -175,9 +175,13 @@ func (c *GatewayConfig) ApplyObserveMode() []string {
 	s.Schema.BlockMode = false
 	s.Abuse.BlockMode = false
 	s.Abuse.ObjectOwnershipBlock = false
-	// DLP classifies + flags the observation but never rewrites the body.
+	// DLP classifies + flags the observation but never rewrites the body, and
+	// never refuses one either — observe mode must not turn an oversized
+	// response into an error the customer's client sees.
 	note(s.DLP.Enabled, "dlp -> observe (classify, no redaction)")
+	note(s.DLP.FailClosed, "dlp.fail_closed -> false")
 	s.DLP.Observe = true
+	s.DLP.FailClosed = false
 	// Auth extracts identity from a valid token but never rejects.
 	note(s.Auth.Enabled || anyRouteRequiresAuthCfg(c.Routes), "auth -> soft (identity only, no 401)")
 	s.Auth.Observe = true
@@ -543,6 +547,18 @@ type DLPConfig struct {
 	// a pilot report "this endpoint leaks cards" without altering the customer's
 	// traffic.
 	Observe bool `yaml:"-"`
+	// MaxBufferBytes caps how much of a response body DLP holds in memory to
+	// inspect it. 0 selects the built-in default (4 MB). A response larger than
+	// this cannot be scanned; FailClosed decides what happens then.
+	MaxBufferBytes int64 `yaml:"max_buffer_bytes"`
+	// FailClosed refuses a response too large to inspect instead of streaming it
+	// through unscanned. Default false keeps availability: an oversized response
+	// is delivered intact and the gap is logged and counted. Set true where an
+	// unscanned response is not an acceptable outcome — the size of a response
+	// is often within a caller's control (a pagination limit, an export range),
+	// so the default makes the one control that redacts PII switchable off by
+	// the very party it is meant to constrain.
+	FailClosed bool `yaml:"fail_closed"`
 }
 
 type CORSConfig struct {
@@ -1013,7 +1029,84 @@ func validateOIDC(cfg GatewayConfig) error {
 // In particular an unknown load_balance strategy used to fall back to
 // round-robin without any signal — an operator asking for "least_conn" got
 // different behaviour than configured.
+// sameSecurityOverrides reports whether two routes declare identical per-route
+// security overrides. Used to keep tenants that share a path (and are told apart
+// by Host in the proxy) from diverging in a way the path-only posture engine
+// cannot represent — see validateRoutes.
+func sameSecurityOverrides(a, b RouteConfig) bool {
+	eqBool := func(x, y *bool) bool {
+		if x == nil || y == nil {
+			return x == y // both unset, or one set and one not
+		}
+		return *x == *y
+	}
+	if !eqBool(a.RequireAuth, b.RequireAuth) || !eqBool(a.WAF, b.WAF) || !eqBool(a.DLP, b.DLP) {
+		return false
+	}
+	switch {
+	case a.RateLimit == nil && b.RateLimit == nil:
+		return true
+	case a.RateLimit == nil || b.RateLimit == nil:
+		return false
+	default:
+		return *a.RateLimit == *b.RateLimit
+	}
+}
+
 func validateRoutes(cfg GatewayConfig) error {
+	// Duplicate paths are rejected here rather than left to http.ServeMux, which
+	// PANICS on a conflicting pattern. That panic happens inside proxy.New, which
+	// the hot-reload goroutine calls on every config change with nothing
+	// recovering it — so a duplicated path in a live config killed the process
+	// instead of being rejected with the "previous config stays active" the
+	// reload path promises. proxy.registerPattern now recovers as a backstop;
+	// catching it here gives the operator a message that says which route and
+	// why, at boot, before anything is serving.
+	hostsOf := make(map[string][]string, len(cfg.Multitenancy.Tenants))
+	for _, t := range cfg.Multitenancy.Tenants {
+		hostsOf[t.ID] = t.Hosts
+	}
+	seen := make(map[string]RouteConfig, len(cfg.Routes))
+	for _, r := range cfg.Routes {
+		prev, dup := seen[r.Path]
+		if !dup {
+			seen[r.Path] = r
+			continue
+		}
+		// Two tenants sharing one path is not a typo — it is how "one API
+		// surface, many customers" is expressed (ADR-001 model A). proxy.New
+		// registers those routes host-scoped, so it works, but only if every
+		// tenant involved declares a Host to be told apart by.
+		if cfg.Multitenancy.Enabled && prev.TenantID != r.TenantID {
+			for _, share := range []RouteConfig{prev, r} {
+				if len(hostsOf[share.TenantID]) == 0 {
+					return fmt.Errorf("multitenancy: route %q is claimed by tenants %q and %q, so it can only be "+
+						"told apart by Host — but tenant %q declares no hosts; add hosts to it under "+
+						"multitenancy.tenants, or give each tenant its own path",
+						r.Path, prev.TenantID, r.TenantID, share.TenantID)
+				}
+			}
+			// The PROXY tells these routes apart by Host, but the posture engine
+			// does not: it resolves controls from the path alone, because the
+			// reporting side (catalog rows) has only a path template to work
+			// with. With differing overrides it would hand every tenant on this
+			// path whichever route happens to sort first — one tenant silently
+			// running under another's auth/WAF/DLP policy. Requiring the
+			// overrides to agree makes that resolution provably harmless.
+			// Lifting this restriction means making the posture engine
+			// host-aware, not relaxing the check.
+			if !sameSecurityOverrides(prev, r) {
+				return fmt.Errorf("multitenancy: tenants %q and %q share route %q but declare different security "+
+					"overrides (require_auth/waf/dlp/rate_limit); the posture engine resolves controls by path "+
+					"alone, so one tenant would silently run under the other's policy — make the overrides "+
+					"identical, or give each tenant its own path",
+					prev.TenantID, r.TenantID, r.Path)
+			}
+			continue
+		}
+		return fmt.Errorf("route %q is declared more than once; each route path must be unique", r.Path)
+	}
+
 	for _, r := range cfg.Routes {
 		switch r.LoadBalance {
 		case "", "round_robin":

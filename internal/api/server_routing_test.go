@@ -40,7 +40,7 @@ func newTestServer(t *testing.T) *Server {
 	t.Cleanup(func() { _ = st.Close() })
 
 	log := logger.New("error")
-	gw, err := proxy.New([]config.RouteConfig{{Path: "/x", Upstreams: []string{"http://127.0.0.1:9"}}}, log)
+	gw, err := proxy.New([]config.RouteConfig{{Path: "/x", Upstreams: []string{"http://127.0.0.1:9"}}}, config.MultitenancyConfig{}, log)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}

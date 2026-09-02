@@ -48,7 +48,7 @@ func TestDLP_EndToEnd_ChunkedBackendIsRedacted(t *testing.T) {
 		Upstreams:   []string{backend.URL},
 		LoadBalance: "round_robin",
 		Timeout:     "5s",
-	}}, log)
+	}}, config.MultitenancyConfig{}, log)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}

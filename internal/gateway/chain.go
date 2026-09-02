@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
+
+	"api-gateway/internal/audit"
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
@@ -151,7 +154,7 @@ func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Stor
 // actually enforced in the data plane — not merely reported by the posture
 // dashboard.
 func BuildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st middleware.Store, catalog *discovery.Catalog, postureEng *discovery.PostureEngine) (http.Handler, *proxy.Gateway, error) {
-	gw, err := proxy.New(cfg.Routes, log)
+	gw, err := proxy.New(cfg.Routes, cfg.Multitenancy, log)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -292,9 +295,20 @@ func exactMatchRoutes(routes []config.RouteConfig) []string {
 }
 
 // warnExactMatchRoutes logs the exactMatchRoutes finding once per chain build.
-// It warns rather than refusing to start because the mismatch fails closed —
-// the risk is a confusing outage, not a silent exposure. It cost real debugging
-// time twice while building the sample stand, so it is worth one startup line.
+// It warns rather than refusing to start because the risk is a confusing 404,
+// not a silent exposure: sub-paths fall through to whichever route really serves
+// them, and that route's own posture applies.
+//
+// That last clause was NOT true when this comment was first written. The posture
+// engine matched routes by prefix while ServeMux matches a slash-less pattern
+// exactly, so the sub-paths kept the declared route's (often more permissive)
+// controls while being served by a different route — a confirmed authentication
+// bypass, the opposite of failing closed. discovery.matchRoute now mirrors
+// ServeMux (see its doc comment), which is what makes the claim above hold.
+// If that ever diverges again, this warning becomes a lie a second time.
+//
+// It cost real debugging time twice while building the sample stand, so it is
+// worth one startup line.
 func warnExactMatchRoutes(routes []config.RouteConfig, log *logger.Logger) {
 	suspect := exactMatchRoutes(routes)
 	if len(suspect) == 0 {
@@ -304,4 +318,53 @@ func warnExactMatchRoutes(routes []config.RouteConfig, log *logger.Logger) {
 		"routes": suspect,
 		"hint":   "declare both forms (e.g. \"/api/v1/orders\" and \"/api/v1/orders/\") to serve a collection and its items",
 	})
+}
+
+// probePaths are the liveness/readiness endpoints. They are unauthenticated by
+// design and are polled by infrastructure that must never be told "slow down".
+var probePaths = map[string]bool{"/health": true, "/readyz": true}
+
+// BuildAdminChain assembles the control-plane handler: the admin API wrapped in
+// its middleware. Extracted from main.go for the same reason BuildHandlerChain
+// was — the ordering is load-bearing and needs a test that can see it.
+//
+// The per-IP rate limit sits OUTSIDE AdminAuth on purpose: AdminAuth returns
+// early on a bad credential, so a limiter inside it would never see the
+// unauthenticated brute-force traffic it exists to absorb.
+//
+// But it must not cover the probes. It is keyed by RealIP, and with
+// trusted_proxies unset — the documented safe default — every request arriving
+// through a load balancer collapses onto that balancer's address and shares one
+// bucket. Any unauthenticated caller sending a handful of requests per second
+// could therefore push /readyz over the limit, the balancer would see 429, mark
+// the instance unhealthy and pull it from rotation: a full outage triggered from
+// outside, with no credential. Probes are gated out of the limiter here, and
+// their cost is bounded instead by caching the readiness check (see
+// handlers.readyz), so exempting them cannot turn /readyz into a Redis
+// amplifier.
+func BuildAdminChain(adminSrv http.Handler, cfg config.GatewayConfig, log *logger.Logger, st middleware.Store, aud audit.Recorder) http.Handler {
+	// 5 requests/second/IP, a fixed window enforced atomically in internal/store.
+	// There is no separate burst allowance above this rate.
+	adminRateLimit := config.RateLimitConfig{Enabled: true, Requests: 5, Window: time.Second}
+
+	// The admin plane gets its own CORS policy when admin_cors is set; otherwise
+	// it inherits security.cors (legacy behaviour). The console is same-origin,
+	// so most deployments never need to set either for the admin plane.
+	adminCORS := cfg.Security.CORS
+	if cfg.AdminCORS != nil {
+		adminCORS = *cfg.AdminCORS
+	}
+
+	rateLimited := middleware.RouteGate(
+		func(p string) bool { return !probePaths[p] },
+		middleware.RateLimit(adminRateLimit, "admin", log, st),
+	)
+
+	return middleware.Chain(adminSrv,
+		middleware.RequestID(),       // outermost: stamp every request before anything else
+		middleware.SecurityHeaders(), // must wrap AdminAuth so 401/403 responses carry CSP/HSTS
+		rateLimited,
+		middleware.AdminAuth(cfg, log, st, aud),
+		middleware.CORS(adminCORS),
+	)
 }

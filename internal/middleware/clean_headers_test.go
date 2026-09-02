@@ -87,3 +87,60 @@ func TestCleanHeaders_TrustedPeer_PreservesForwarding(t *testing.T) {
 		t.Errorf("trusted X-Forwarded-Host should be preserved, got %q", got.Get("X-Forwarded-Host"))
 	}
 }
+
+// A client behind a real load balancer could send its own X-Real-IP and have it
+// forwarded untouched: the trusted-peer branch kept the whole forwarding family
+// and never re-asserted the gateway's own verdict. The gateway then logged,
+// rate-limited and banned the address it resolved from X-Forwarded-For, while
+// the backend's IP allowlist read whatever the caller had put in X-Real-IP —
+// 127.0.0.1 being the obvious choice. Both ends must see the same client.
+func TestCleanHeaders_ReassertsRealIPBehindATrustedProxy(t *testing.T) {
+	if err := InitTrustedProxies([]string{"203.0.113.7"}); err != nil {
+		t.Fatalf("InitTrustedProxies: %v", err)
+	}
+	defer func() { _ = InitTrustedProxies(nil) }()
+
+	var forwarded string
+	h := CleanHeaders()(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		forwarded = r.Header.Get("X-Real-IP")
+	}))
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "203.0.113.7:5555" // the trusted load balancer
+	r.Header.Set("X-Forwarded-For", "198.51.100.9")
+	r.Header.Set("X-Real-IP", "127.0.0.1") // the caller's own claim
+	h.ServeHTTP(httptest.NewRecorder(), r)
+
+	if forwarded == "127.0.0.1" {
+		t.Fatal("the caller's X-Real-IP reached the backend: a spoofed loopback address defeats a backend IP allowlist")
+	}
+	if want := RealIP(r); forwarded != want {
+		t.Fatalf("X-Real-IP forwarded as %q, want the gateway's own verdict %q — the two ends must not disagree", forwarded, want)
+	}
+	if forwarded != "198.51.100.9" {
+		t.Fatalf("X-Real-IP = %q, want the address resolved from the forwarding chain", forwarded)
+	}
+}
+
+// The trusted branch must still keep the forwarding chain itself: those headers
+// are authoritative from a real upstream, and dropping them would lose the hop
+// history the backend and the proxy both rely on.
+func TestCleanHeaders_KeepsTheChainFromATrustedProxy(t *testing.T) {
+	if err := InitTrustedProxies([]string{"203.0.113.7"}); err != nil {
+		t.Fatalf("InitTrustedProxies: %v", err)
+	}
+	defer func() { _ = InitTrustedProxies(nil) }()
+
+	var xff string
+	h := CleanHeaders()(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		xff = r.Header.Get("X-Forwarded-For")
+	}))
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "203.0.113.7:5555"
+	r.Header.Set("X-Forwarded-For", "198.51.100.9")
+	h.ServeHTTP(httptest.NewRecorder(), r)
+
+	if xff != "198.51.100.9" {
+		t.Fatalf("X-Forwarded-For = %q, want it preserved from the trusted upstream", xff)
+	}
+}

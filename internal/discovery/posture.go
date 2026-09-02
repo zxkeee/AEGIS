@@ -45,32 +45,71 @@ func NewPostureEngine(cfg config.GatewayConfig) *PostureEngine {
 	return &PostureEngine{cfg: cfg, routes: routes}
 }
 
-// matchRoute returns the most specific configured route for a path, or nil.
+// matchRoute returns the configured route that will actually SERVE the path, or
+// nil.
 //
-// Uses config.PathHasPrefix (segment-boundary-safe), NOT a raw strings.HasPrefix:
-// a raw prefix match lets an adjacent route name "cover" a longer path that
-// merely starts with the same characters — e.g. a permissive "/api/public"
-// route would incorrectly match "/api/publicdata/42" and hand it that route's
-// (weaker) auth/WAF/DLP/rate-limit posture. This is the same bug class already
-// fixed in middleware/tenant.go and middleware/jwt.go's Exclude matching; this
-// resolver was the one place it was missed, and it feeds RouteGate for every
-// route-overridable control (ControlsFor / RateLimitFor below), so the gap
-// silently disabled those controls for any such adjacent path.
+// It mirrors http.ServeMux, because that is what the proxy routes with, and the
+// two must agree about which route owns a request. They did not: this resolver
+// matched every route as a prefix, while ServeMux treats a pattern WITHOUT a
+// trailing slash as an exact match. So a route declared
 //
-// Matching is case-insensitive (both path and route.Path are lowercased
-// before comparison) for the same reason middleware/abuse.go's BFLA check
-// already is: a backend that routes case-insensitively would otherwise let
-// "/Admin" or "/ADMIN" slip past a "/admin" route override and silently fall
-// back to the weaker global posture — a residual variant of the same
-// route-prefix bypass this resolver was already fixed for.
+//   - path: /public          # require_auth: false
+//   - path: /                # require_auth: true
+//
+// handed its permissive posture to the whole "/public/..." subtree, which
+// ServeMux actually routes to the catch-all. The gate in front of auth read this
+// resolver, so "/public/admin/delete-everything" reached the backend with no
+// authentication at all, while the posture dashboard reported it as belonging to
+// the route the operator had deliberately opened. Confirmed end to end against a
+// running gateway (2026-09-02) — which also disproves warnExactMatchRoutes's
+// claim that this mismatch "fails closed".
+//
+// The rules, matching ServeMux exactly:
+//   - a pattern ending in "/" owns its subtree;
+//   - any other pattern matches that one path and nothing below it;
+//   - the longest pattern wins (routes are pre-sorted).
+//
+// Matching is case-insensitive (both sides lowercased) for the same reason
+// middleware/abuse.go's BFLA check already is: a backend that routes
+// case-insensitively would otherwise let "/Admin" slip past an "/admin" route
+// override and fall back to the weaker global posture.
 func (e *PostureEngine) matchRoute(path string) *config.RouteConfig {
 	lpath := strings.ToLower(path)
 	for i := range e.routes {
-		if config.PathHasPrefix(lpath, strings.ToLower(e.routes[i].Path)) {
+		if routeServes(lpath, strings.ToLower(e.routes[i].Path)) {
 			return &e.routes[i]
 		}
 	}
 	return nil
+}
+
+// routeServes reports whether an http.ServeMux pattern of this shape would be
+// selected for path. Both arguments are already lower-cased by the caller.
+//
+// A pattern may carry a leading "METHOD " and/or a host (see
+// config.RoutePatterns); neither participates in this path-only resolution, so
+// they are stripped first. Stripping the host rather than ignoring the route
+// entirely is deliberate: the reporting side (catalog rows) knows only a path
+// template, and reporting a host-scoped route's posture is better than reporting
+// none.
+func routeServes(path, pattern string) bool {
+	if i := strings.IndexByte(pattern, ' '); i >= 0 {
+		pattern = pattern[i+1:] // drop "METHOD "
+	}
+	if i := strings.IndexByte(pattern, '/'); i > 0 {
+		pattern = pattern[i:] // drop a leading host
+	}
+	if pattern == "" {
+		return false
+	}
+	if strings.HasSuffix(pattern, "/") {
+		// Subtree pattern: owns the prefix and everything under it. ServeMux also
+		// serves the bare "/x" for a registered "/x/" (via a redirect), so treat
+		// the slash-less form as owned too — the posture must not differ between
+		// "/x" and "/x/".
+		return config.PathHasPrefix(path, pattern) || path == strings.TrimSuffix(pattern, "/")
+	}
+	return path == pattern
 }
 
 // ControlsFor computes the effective controls for a request path. The second

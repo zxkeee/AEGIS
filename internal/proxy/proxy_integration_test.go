@@ -18,7 +18,7 @@ import (
 
 func testGW(t *testing.T, routes []config.RouteConfig) *Gateway {
 	t.Helper()
-	gw, err := New(routes, logger.New("error"))
+	gw, err := New(routes, config.MultitenancyConfig{}, logger.New("error"))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -26,14 +26,14 @@ func testGW(t *testing.T, routes []config.RouteConfig) *Gateway {
 }
 
 func TestNew_NoUpstreams_Error(t *testing.T) {
-	_, err := New([]config.RouteConfig{{Path: "/x"}}, logger.New("error"))
+	_, err := New([]config.RouteConfig{{Path: "/x"}}, config.MultitenancyConfig{}, logger.New("error"))
 	if err == nil {
 		t.Fatal("route without upstreams must error")
 	}
 }
 
 func TestNew_InvalidUpstream_Error(t *testing.T) {
-	_, err := New([]config.RouteConfig{{Path: "/x", Upstreams: []string{"://bad"}}}, logger.New("error"))
+	_, err := New([]config.RouteConfig{{Path: "/x", Upstreams: []string{"://bad"}}}, config.MultitenancyConfig{}, logger.New("error"))
 	if err == nil {
 		t.Fatal("invalid upstream URL must error")
 	}
@@ -508,5 +508,116 @@ func TestProxy_WebSocketUpgradePassesThrough(t *testing.T) {
 	echoed, err := br.ReadString('\n')
 	if err != nil || echoed != "echo:ping\n" {
 		t.Fatalf("upgraded connection is not bidirectional: %q err=%v", echoed, err)
+	}
+}
+
+// A conflicting route pattern must come back as an error, never as a panic.
+// http.ServeMux panics on a duplicate pattern, and proxy.New is called by
+// gateway.BuildHandlerChain from the hot-reload goroutine, where nothing
+// recovers — so before registerPattern, a duplicated path in a live config
+// took the whole gateway down instead of leaving the previous config serving.
+// config.Validate rejects the common shapes first; this asserts the backstop
+// holds for anything ServeMux still refuses.
+func TestNew_ConflictingRoutePatternIsAnErrorNotAPanic(t *testing.T) {
+	defer func() {
+		if p := recover(); p != nil {
+			t.Fatalf("proxy.New panicked instead of returning an error: %v", p)
+		}
+	}()
+	_, err := New([]config.RouteConfig{
+		{Path: "/orders", Upstreams: []string{"http://127.0.0.1:1"}},
+		{Path: "/orders", Upstreams: []string{"http://127.0.0.1:2"}},
+	}, config.MultitenancyConfig{}, logger.New("error"))
+	if err == nil {
+		t.Fatal("duplicate route pattern must return an error")
+	}
+	if !strings.Contains(err.Error(), "/orders") {
+		t.Fatalf("error must name the conflicting pattern, got: %v", err)
+	}
+}
+
+// Two tenants fronting the SAME path — one API surface, many customers — is
+// multitenancy model A in ADR-001. It was structurally impossible: both routes
+// registered the identical path pattern, so the gateway panicked at boot and
+// the model existed only on paper. They are now registered host-scoped, so the
+// Host header selects the tenant's own upstream.
+func TestNew_TenantsShareOnePathRoutedByHost(t *testing.T) {
+	acme := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "acme-backend")
+	}))
+	defer acme.Close()
+	globex := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "globex-backend")
+	}))
+	defer globex.Close()
+
+	mt := config.MultitenancyConfig{
+		Enabled: true,
+		Tenants: []config.TenantConfig{
+			{ID: "acme", Hosts: []string{"acme.example"}},
+			{ID: "globex", Hosts: []string{"globex.example"}},
+		},
+	}
+	gw, err := New([]config.RouteConfig{
+		{Path: "/orders", TenantID: "acme", Upstreams: []string{acme.URL}},
+		{Path: "/orders", TenantID: "globex", Upstreams: []string{globex.URL}},
+	}, mt, logger.New("error"))
+	if err != nil {
+		t.Fatalf("two tenants sharing a path must build: %v", err)
+	}
+
+	get := func(host string) (int, string) {
+		r := httptest.NewRequest(http.MethodGet, "http://"+host+"/orders", nil)
+		r.Host = host
+		w := httptest.NewRecorder()
+		gw.ServeHTTP(w, r)
+		return w.Code, w.Body.String()
+	}
+
+	if code, body := get("acme.example"); body != "acme-backend" {
+		t.Fatalf("acme.example must reach acme's upstream, got %d %q", code, body)
+	}
+	if code, body := get("globex.example"); body != "globex-backend" {
+		t.Fatalf("globex.example must reach globex's upstream, got %d %q", code, body)
+	}
+	// The Host is carried through a port, as ServeMux strips it before matching.
+	if code, body := get("globex.example:8443"); body != "globex-backend" {
+		t.Fatalf("a Host with a port must still match, got %d %q", code, body)
+	}
+	// An unknown Host on a shared path must NOT silently land on one tenant's
+	// backend: the gateway genuinely cannot tell which tenant was meant, and
+	// guessing would be a cross-tenant data leak.
+	if code, _ := get("stranger.example"); code != http.StatusNotFound {
+		t.Fatalf("unknown Host on a shared path must 404, got %d", code)
+	}
+}
+
+// A route path claimed by ONE tenant keeps its bare pattern, so it is served
+// whatever Host is used — ADR-001 makes the route's tenant_id authoritative,
+// and host-scoping every route would silently break that for existing configs.
+func TestNew_UnsharedTenantPathStillServesAnyHost(t *testing.T) {
+	be := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "acme-backend")
+	}))
+	defer be.Close()
+
+	mt := config.MultitenancyConfig{
+		Enabled: true,
+		Tenants: []config.TenantConfig{{ID: "acme", Hosts: []string{"acme.example"}}},
+	}
+	gw, err := New([]config.RouteConfig{
+		{Path: "/orders", TenantID: "acme", Upstreams: []string{be.URL}},
+	}, mt, logger.New("error"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, host := range []string{"acme.example", "10.0.0.7", "anything.internal"} {
+		r := httptest.NewRequest(http.MethodGet, "http://"+host+"/orders", nil)
+		r.Host = host
+		w := httptest.NewRecorder()
+		gw.ServeHTTP(w, r)
+		if w.Body.String() != "acme-backend" {
+			t.Fatalf("Host %q: unshared path must still be served, got %d %q", host, w.Code, w.Body.String())
+		}
 	}
 }

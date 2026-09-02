@@ -238,3 +238,30 @@ func TestJWT_ObserveSoftAuth(t *testing.T) {
 		t.Fatalf("enforce invalid token: got %d, want 401", got)
 	}
 }
+
+// auth.exclude is one operator setting with two implementations: this one and
+// discovery.authExcluded, which the chain consults to pick enforcing vs
+// identify-only. They used to disagree on case, so the looser (case-insensitive)
+// rule decided every request and this check never got a say — a policy whose
+// weaker spelling silently won. They must agree.
+func TestJWT_ExcludeIsCaseInsensitive(t *testing.T) {
+	ja := NewJWTAuth(config.AuthConfig{Enabled: true, Secret: "s", Exclude: []string{"/Public"}},
+		fakeLogger{}, &fakeStore{})
+	h := ja.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for _, p := range []string{"/Public", "/public", "/PUBLIC", "/public/info", "/PuBlIc/info"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: got %d, want 200 — the exclusion must not depend on case", p, rec.Code)
+		}
+	}
+	// An adjacent path is still not excluded: the boundary rule is unchanged.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/publicity", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("/publicity: got %d, want 401 — case-insensitivity must not widen the prefix", rec.Code)
+	}
+}

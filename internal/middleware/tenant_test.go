@@ -151,3 +151,57 @@ func TestRoutePrefix(t *testing.T) {
 		}
 	}
 }
+
+// When two tenants share a path, the path cannot identify either of them and
+// the Host must decide. Before this, the shared prefix stayed in the model-B
+// route table, so whichever route sorted first won the lookup and every OTHER
+// tenant's request failed the host/route agreement check with a 404 — making
+// the shared-path routing the proxy supports unreachable in the data plane.
+func TestTenant_SharedPathResolvedByHost(t *testing.T) {
+	mt := config.MultitenancyConfig{Enabled: true, Tenants: []config.TenantConfig{
+		{ID: "acme", Hosts: []string{"acme.example"}},
+		{ID: "globex", Hosts: []string{"globex.example"}},
+	}}
+	routes := []config.RouteConfig{
+		{Path: "/orders", TenantID: "acme"},
+		{Path: "/orders", TenantID: "globex"},
+	}
+	for host, want := range map[string]string{"acme.example": "acme", "globex.example": "globex"} {
+		got, code := tenantOf(t, mt, routes, func(r *http.Request) {
+			r.URL.Path = "/orders/42"
+			r.Host = host
+		})
+		if code != http.StatusOK || got != want {
+			t.Fatalf("Host %q: tenant=%q code=%d, want %s/200", host, got, code, want)
+		}
+	}
+	// An unknown Host on a shared path is genuinely unattributable — resolving
+	// it to either tenant would be a cross-tenant leak.
+	if _, code := tenantOf(t, mt, routes, func(r *http.Request) {
+		r.URL.Path = "/orders/42"
+		r.Host = "stranger.example"
+	}); code != http.StatusNotFound {
+		t.Fatalf("unknown Host on a shared path: code=%d, want 404", code)
+	}
+}
+
+// A longer path claimed by a single tenant still resolves by route, even when a
+// shorter prefix of it is shared — the ambiguity is per-prefix, not global.
+func TestTenant_UnsharedLongerPathStillResolvesByRoute(t *testing.T) {
+	mt := config.MultitenancyConfig{Enabled: true, Tenants: []config.TenantConfig{
+		{ID: "acme", Hosts: []string{"acme.example"}},
+		{ID: "globex", Hosts: []string{"globex.example"}},
+	}}
+	routes := []config.RouteConfig{
+		{Path: "/orders", TenantID: "acme"},
+		{Path: "/orders", TenantID: "globex"},
+		{Path: "/orders/legacy", TenantID: "acme"},
+	}
+	got, code := tenantOf(t, mt, routes, func(r *http.Request) {
+		r.URL.Path = "/orders/legacy/7"
+		r.Host = "acme.example"
+	})
+	if code != http.StatusOK || got != "acme" {
+		t.Fatalf("unshared longer path: tenant=%q code=%d, want acme/200", got, code)
+	}
+}

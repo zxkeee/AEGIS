@@ -47,20 +47,36 @@ func CleanHeaders() Middleware {
 
 			// Forwarding headers: trust them only from a configured trusted proxy.
 			// From anyone else (a direct client) they are spoofable, so strip the
-			// whole family and re-assert the gateway's own view of the client. This
-			// runs before RealIP-dependent controls and before the proxy forwards.
+			// whole family. This runs before RealIP-dependent controls and before
+			// the proxy forwards.
+			//
+			// X-Forwarded-For is left deleted on purpose: the reverse proxy
+			// (httputil) re-sets it to the real client IP when forwarding, so the
+			// backend gets a single authoritative entry with no attacker prefix.
 			if !RemotePeerTrusted(r) {
-				realIP := RealIP(r) // with an untrusted peer this is the TCP RemoteAddr
 				for _, h := range spoofableForwardHeaders {
 					r.Header.Del(h)
 				}
-				// X-Forwarded-For is left deleted on purpose: the reverse proxy
-				// (httputil) re-sets it to the real client IP when forwarding, so
-				// the backend gets a single authoritative entry with no attacker
-				// prefix. X-Real-IP is not managed by the proxy, so set it here.
-				if realIP != "" {
-					r.Header.Set("X-Real-IP", realIP)
-				}
+			}
+
+			// X-Real-IP is re-asserted for EVERY request, trusted peer or not.
+			//
+			// It used to be set only on the untrusted branch, so a client behind a
+			// real load balancer could send its own X-Real-IP and have it forwarded
+			// untouched: the gateway resolved the caller from the X-Forwarded-For
+			// chain and logged, rate-limited and banned one address while the
+			// backend's own IP allowlist read a different one the caller had chosen
+			// — 127.0.0.1, say. Two components disagreeing about who the client is,
+			// which is the whole class of confusion this file exists to remove.
+			//
+			// RealIP is the gateway's own verdict, derived from the trusted-proxy
+			// walk. Forwarding exactly that keeps the backend's view identical to
+			// the one every control here acted on. Where an upstream sets X-Real-IP
+			// but no X-Forwarded-For, this replaces its value with the peer address
+			// the gateway itself used — the honest answer, and the one that keeps
+			// the two ends consistent.
+			if realIP := RealIP(r); realIP != "" {
+				r.Header.Set("X-Real-IP", realIP)
 			}
 
 			next.ServeHTTP(w, r)

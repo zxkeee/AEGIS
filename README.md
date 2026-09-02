@@ -805,10 +805,42 @@ too-short secret; if a wildcard CORS origin is combined with authentication; if 
 threat-feed URL is not HTTPS; or if a trusted-proxy entry is not a valid IP or
 CIDR.
 
+### 7.1 Observe mode: the shipped default
+
+`config/gateway.yaml` ships with `observe: true`, and this is deliberate. AEGIS
+sits in the request path, so a first deployment that can block is a first
+deployment that can cause an outage on someone else's traffic before it has
+earned any trust.
+
+In observe mode `ApplyObserveMode` (`internal/config/config.go`) rewrites the
+security configuration after validation — on startup and on every hot-reload —
+into a posture that provably cannot disrupt a request. It is not a suggestion a
+per-route override can escape:
+
+| Coerced to record-only | Disabled outright |
+|---|---|
+| `waf.block_mode` → `false` (Coraza `DetectionOnly`) | `rate_limit` |
+| `schema.block_mode` → `false` | `ip_guard` |
+| `abuse.block_mode` → `false` | `bot` |
+| `dlp` → classify PII, never rewrite a body | `challenge` |
+| `auth` → extract identity from a valid token, never return 401 | `behavior` (feeds auto-ban) |
+
+Everything AEGIS is actually for keeps working: the catalog, posture scoring,
+findings, the consumer graph, WAF detections, PII classification and BOLA/BFLA
+detection. The startup log states the mode and lists exactly which settings were
+coerced.
+
+**Moving to enforcement.** Set `observe: false` once a real run's findings have
+shown you what AEGIS *would* have blocked. That order matters — the findings are
+the evidence you use to tune per-route overrides before anything is enforced.
+The adoption path in [section 10](#1044-integrating-aegis-into-a-company) walks
+through it.
+
 ### Top-level keys
 
 | Key | Type | Description |
 |---|---|---|
+| `observe` | bool | **Ships as `true`.** Coerces every control to record-only: nothing is blocked, throttled, challenged, redacted or 401'd. Discovery, posture, findings, WAF detections, PII classification and BOLA/BFLA all still run. Set to `false` to enforce — see [7.1](#71-observe-mode-the-shipped-default) |
 | `listen` | string | Data-plane listen address (default `:8080`) |
 | `admin_listen` | string | Admin-plane listen address (default `:8081`) |
 | `admin_auth` | bool | Enable admin bearer-token authentication |
@@ -1516,6 +1548,11 @@ variables.
 # supplied via environment variables and override anything set here.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Record-only posture: nothing is blocked, throttled, redacted or 401'd, while
+# discovery, posture, findings and all detections keep running. This is how the
+# shipped config starts; set false to enforce (see 7.1).
+observe: true
+
 listen: ":8080"            # Data-plane (proxy) listen address.
 admin_listen: ":8081"      # Admin-plane listen address. Never expose publicly.
 
@@ -2006,6 +2043,20 @@ AEGIS читає єдиний файл YAML (за замовчуванням `co
 стартувати, якщо, наприклад, увімкнено адмін-автентифікацію з відсутнім чи надто
 коротким секретом; якщо wildcard CORS поєднано з автентифікацією; якщо URL
 threat-feed не HTTPS; або якщо запис trusted-proxy не є дійсним IP/CIDR.
+
+**`observe` — режим за замовчуванням.** `config/gateway.yaml` постачається з
+`observe: true`. AEGIS стоїть у розриві трафіку, тому перше розгортання, здатне
+блокувати, — це перше розгортання, здатне влаштувати аварію на чужому трафіку ще
+до того, як воно заслужило довіру. `ApplyObserveMode` після валідації (і на
+старті, і на кожному hot-reload) переписує конфігурацію безпеки у стан, який
+доказово не може зашкодити запиту: WAF/schema/abuse → лише детект, DLP
+класифікує PII але не переписує тіло, auth дістає ідентичність із валідного
+токена але ніколи не повертає 401, а суто-примусові контролі (`rate_limit`,
+`ip_guard`, `bot`, `challenge`, `behavior`) вимикаються. Перевизначення на рівні
+маршруту цього обійти не можуть. Каталог, оцінка стану, findings, граф
+споживачів і детекція BOLA/BFLA працюють як звичайно. Для примусу поставте
+`observe: false` — після того, як findings реального прогону показали, що саме
+AEGIS заблокував би.
 
 Маршрути (`routes`) пересилають префікс шляху на один або кілька бекендів і можуть
 перевизначати глобальну політику безпеки для цього префікса через опційні поля

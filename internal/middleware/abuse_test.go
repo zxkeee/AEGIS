@@ -1067,3 +1067,46 @@ func TestBOLA_PseudonymEnumerationIsAttributed(t *testing.T) {
 		t.Errorf("consumer = %v, want token:sweeper (not the source address)", got)
 	}
 }
+
+// When a caller presents neither a verified JWT subject nor an opaque
+// credential, BOLA can only name it by address — and behind a proxy that address
+// comes from a header the caller controls, so varying it makes every request a
+// fresh consumer and enumeration never accumulates. That is not fixable inside
+// the detector, but it must be visible: an operator reading a BOLA report needs
+// to know what share of traffic the verdict rested on such an identity, rather
+// than assuming it was zero.
+func TestAbuse_CountsIdentityDerivedFromAddressAlone(t *testing.T) {
+	if err := InitTrustedProxies([]string{"203.0.113.7"}); err != nil {
+		t.Fatalf("InitTrustedProxies: %v", err)
+	}
+	defer func() { _ = InitTrustedProxies(nil) }()
+
+	st := &fakeStore{}
+	h := AbuseDetection(config.AbuseConfig{Enabled: true}, "", fakeLogger{}, st)(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	// Behind the trusted proxy, with no credential of any kind: the identity is
+	// whatever X-Forwarded-For says.
+	r := httptest.NewRequest(http.MethodGet, "/orders/42", nil)
+	r.RemoteAddr = "203.0.113.7:5555"
+	r.Header.Set("X-Forwarded-For", "198.51.100.9")
+	h.ServeHTTP(httptest.NewRecorder(), r)
+
+	if st.metrics["abuse_consumer_ip_only"] == 0 {
+		t.Error("an address-only consumer was not counted: the weakness is invisible on /api/metrics")
+	}
+	if st.metrics["abuse_consumer_ip_from_header"] == 0 {
+		t.Error("a header-derived address was not distinguished from a real peer address")
+	}
+
+	// A verified subject is a real identity and must not be counted as one.
+	st2 := &fakeStore{}
+	h2 := AbuseDetection(config.AbuseConfig{Enabled: true}, "", fakeLogger{}, st2)(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	r2 := httptest.NewRequest(http.MethodGet, "/orders/42", nil)
+	r2.Header.Set("X-Gateway-Subject", "alice")
+	h2.ServeHTTP(httptest.NewRecorder(), r2)
+	if st2.metrics["abuse_consumer_ip_only"] != 0 {
+		t.Error("a JWT-identified caller was counted as address-only")
+	}
+}

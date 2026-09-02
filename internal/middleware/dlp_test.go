@@ -1,8 +1,11 @@
 package middleware
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -297,4 +300,126 @@ func TestDLP_ObserveDoesNotRedact(t *testing.T) {
 	if !obs.PII || len(obs.PIITypes) == 0 {
 		t.Fatalf("observe mode must still FLAG the observation as PII (pii=%v types=%v)", obs.PII, obs.PIITypes)
 	}
+}
+
+// unwrapOnlyWriter is the shape several wrappers in this chain have: it exposes
+// the real connection through Unwrap (for http.ResponseController) but has no
+// Flush/Hijack method of its own. AbuseDetection's captureWriter is exactly
+// this, and it sits directly above DLP whenever object-ownership detection is
+// active.
+type unwrapOnlyWriter struct{ http.ResponseWriter }
+
+func (u unwrapOnlyWriter) Unwrap() http.ResponseWriter { return u.ResponseWriter }
+
+// hijackableWriter stands in for the real connection at the bottom of the stack.
+type hijackableWriter struct {
+	http.ResponseWriter
+	hijacked bool
+}
+
+func (h *hijackableWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h.hijacked = true
+	c1, c2 := net.Pipe()
+	_ = c2.Close()
+	return c1, bufio.NewReadWriter(bufio.NewReader(c1), bufio.NewWriter(c1)), nil
+}
+
+// A WebSocket upgrade must survive an Unwrap-only wrapper sitting between DLP
+// and the connection. A direct d.ResponseWriter.(http.Hijacker) assertion — what
+// this used to do — fails against such a wrapper, so an upgrade on a path that
+// activates AbuseDetection's captureWriter (e.g. /api/chat/42/ws) answered 502
+// with "dlp: underlying ResponseWriter does not support hijacking".
+func TestDLPWriter_HijacksThroughUnwrapOnlyWrapper(t *testing.T) {
+	base := &hijackableWriter{ResponseWriter: httptest.NewRecorder()}
+	d := &dlpWriter{ResponseWriter: unwrapOnlyWriter{base}, buf: &bytes.Buffer{}, status: http.StatusOK}
+
+	conn, _, err := d.Hijack()
+	if err != nil {
+		t.Fatalf("hijack must reach the connection through an Unwrap-only wrapper: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if !base.hijacked {
+		t.Fatal("hijack did not reach the underlying connection")
+	}
+	if !d.passthrough {
+		t.Fatal("a hijacked response must switch DLP to passthrough")
+	}
+}
+
+// dlpBody drives one response of n bytes carrying a card number through DLP and
+// returns what the client received.
+func dlpBody(t *testing.T, cfg config.DLPConfig, n int) (int, string, map[string]int) {
+	t.Helper()
+	st := &fakeStore{}
+	h := DLP(cfg, fakeLogger{}, st)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"card":"4111111111111111","pad":"`))
+		chunk := bytes.Repeat([]byte("A"), 4096)
+		for written := 0; written < n; written += len(chunk) {
+			_, _ = w.Write(chunk)
+		}
+		_, _ = w.Write([]byte(`"}`))
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/report", nil))
+	return rec.Code, rec.Body.String(), st.metrics
+}
+
+// A response too large to buffer cannot be scanned. By default it is delivered
+// intact and the gap is recorded — but that makes redaction something the caller
+// can switch off, because response size usually follows a caller-supplied
+// pagination or export parameter. fail_closed refuses it instead.
+func TestDLP_OversizedResponse(t *testing.T) {
+	small := int(dlpMaxBuffer / 4)
+	big := int(dlpMaxBuffer) + (1 << 20)
+
+	t.Run("within the buffer is redacted", func(t *testing.T) {
+		code, body, _ := dlpBody(t, config.DLPConfig{Enabled: true}, small)
+		if code != http.StatusOK || strings.Contains(body, "4111111111111111") {
+			t.Fatalf("code=%d, card present=%v; want 200 and a redacted body", code, strings.Contains(body, "4111111111111111"))
+		}
+	})
+
+	t.Run("oversized passes through by default, and says so", func(t *testing.T) {
+		code, body, metrics := dlpBody(t, config.DLPConfig{Enabled: true}, big)
+		if code != http.StatusOK {
+			t.Fatalf("code = %d, want 200: the default must preserve availability", code)
+		}
+		if !strings.Contains(body, "4111111111111111") {
+			t.Fatal("expected the unscanned body through by default")
+		}
+		if metrics["dlp_skipped_oversized"] == 0 {
+			t.Error("the inspection gap was not counted; it would be indistinguishable from a clean scan")
+		}
+	})
+
+	t.Run("fail_closed refuses it and leaks nothing", func(t *testing.T) {
+		code, body, metrics := dlpBody(t, config.DLPConfig{Enabled: true, FailClosed: true}, big)
+		if code != http.StatusBadGateway {
+			t.Fatalf("code = %d, want 502", code)
+		}
+		if strings.Contains(body, "4111111111111111") {
+			t.Fatal("the refused response still delivered the card number")
+		}
+		if metrics["dlp_blocked_oversized"] == 0 {
+			t.Error("the refusal was not counted")
+		}
+	})
+
+	t.Run("a raised buffer scans what used to overflow", func(t *testing.T) {
+		code, body, _ := dlpBody(t, config.DLPConfig{Enabled: true, MaxBufferBytes: dlpMaxBuffer * 4}, big)
+		if code != http.StatusOK || strings.Contains(body, "4111111111111111") {
+			t.Fatalf("code=%d, card present=%v; raising max_buffer_bytes must bring the body back in scope",
+				code, strings.Contains(body, "4111111111111111"))
+		}
+	})
+
+	// Observe mode must never turn a response into an error the caller sees,
+	// whatever fail_closed says.
+	t.Run("observe never refuses", func(t *testing.T) {
+		code, _, _ := dlpBody(t, config.DLPConfig{Enabled: true, FailClosed: true, Observe: true}, big)
+		if code != http.StatusOK {
+			t.Fatalf("code = %d, want 200: observe mode must not block", code)
+		}
+	})
 }

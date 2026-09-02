@@ -673,3 +673,199 @@ func TestApplyObserveMode(t *testing.T) {
 		t.Error("Observe=false must not change anything")
 	}
 }
+
+// Duplicate route paths used to reach http.ServeMux, which PANICS on a
+// conflicting pattern — inside proxy.New, called by the hot-reload goroutine
+// with nothing recovering it. An operator typo in a live config therefore
+// killed the process instead of being rejected. Validate must catch it first.
+func TestValidate_RejectsDuplicateRoutePath(t *testing.T) {
+	c := validBase()
+	c.Routes = []RouteConfig{
+		{Path: "/orders", Upstreams: []string{"http://a:1"}},
+		{Path: "/orders", Upstreams: []string{"http://b:2"}},
+	}
+	err := Validate(c)
+	if err == nil {
+		t.Fatal("duplicate route path must be rejected (it panics http.ServeMux)")
+	}
+	if !strings.Contains(err.Error(), "/orders") {
+		t.Fatalf("error must name the offending route, got: %v", err)
+	}
+}
+
+// Two tenants sharing one path is how "one API surface, many customers" is
+// expressed (ADR-001 model A). It is supported when each tenant declares a Host
+// to be told apart by — proxy.New then registers the route host-scoped.
+func TestValidate_AcceptsSamePathAcrossTenantsWithHosts(t *testing.T) {
+	c := validBase()
+	c.Multitenancy = MultitenancyConfig{
+		Enabled: true,
+		Tenants: []TenantConfig{
+			{ID: "acme", Hosts: []string{"acme.example"}},
+			{ID: "globex", Hosts: []string{"globex.example"}},
+		},
+	}
+	c.Routes = []RouteConfig{
+		{Path: "/orders", TenantID: "acme", Upstreams: []string{"http://a:1"}},
+		{Path: "/orders", TenantID: "globex", Upstreams: []string{"http://b:2"}},
+	}
+	if err := Validate(c); err != nil {
+		t.Fatalf("host-disambiguated shared path must be accepted: %v", err)
+	}
+}
+
+// ...but only then: without a Host there is nothing to route on, and both
+// tenants would need the same http.ServeMux pattern. The message must name the
+// tenant that is missing hosts, not report a generic duplicate — otherwise the
+// operator reads it as a typo and retries the same thing.
+func TestValidate_RejectsSamePathWhenATenantDeclaresNoHosts(t *testing.T) {
+	c := validBase()
+	c.Multitenancy = MultitenancyConfig{
+		Enabled: true,
+		Tenants: []TenantConfig{
+			{ID: "acme", Hosts: []string{"acme.example"}},
+			{ID: "globex"}, // no hosts
+		},
+	}
+	c.Routes = []RouteConfig{
+		{Path: "/orders", TenantID: "acme", Upstreams: []string{"http://a:1"}},
+		{Path: "/orders", TenantID: "globex", Upstreams: []string{"http://b:2"}},
+	}
+	err := Validate(c)
+	if err == nil {
+		t.Fatal("shared path must be rejected when a tenant declares no hosts")
+	}
+	for _, want := range []string{"/orders", "globex", "declares no hosts"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error must name the tenant missing hosts (missing %q), got: %v", want, err)
+		}
+	}
+}
+
+// The same path twice under the SAME tenant is always a typo — Host cannot
+// disambiguate a tenant from itself.
+func TestValidate_RejectsDuplicatePathWithinOneTenant(t *testing.T) {
+	c := validBase()
+	c.Multitenancy = MultitenancyConfig{
+		Enabled: true,
+		Tenants: []TenantConfig{{ID: "acme", Hosts: []string{"acme.example"}}},
+	}
+	c.Routes = []RouteConfig{
+		{Path: "/orders", TenantID: "acme", Upstreams: []string{"http://a:1"}},
+		{Path: "/orders", TenantID: "acme", Upstreams: []string{"http://b:2"}},
+	}
+	if err := Validate(c); err == nil {
+		t.Fatal("the same path twice in one tenant must be rejected")
+	}
+}
+
+// A route path unique per tenant is the supported shape and must still pass.
+func TestValidate_AcceptsDistinctPathsPerTenant(t *testing.T) {
+	c := validBase()
+	c.Multitenancy = MultitenancyConfig{
+		Enabled: true,
+		Tenants: []TenantConfig{{ID: "acme"}, {ID: "globex"}},
+	}
+	c.Routes = []RouteConfig{
+		{Path: "/acme/orders", TenantID: "acme", Upstreams: []string{"http://a:1"}},
+		{Path: "/globex/orders", TenantID: "globex", Upstreams: []string{"http://b:2"}},
+	}
+	if err := Validate(c); err != nil {
+		t.Fatalf("distinct paths per tenant must be accepted: %v", err)
+	}
+}
+
+// The shipped config/gateway.yaml is the front door: `make run`, the Dockerfile
+// CMD and the README all point at it. It must start in observe mode, so a first
+// deployment cannot block, throttle or rewrite a single live request before the
+// operator has seen what AEGIS would have done. Flipping that default is a
+// deliberate product decision, not something a config edit should do quietly.
+func TestShippedDefaultConfigIsObserveMode(t *testing.T) {
+	cfg, err := Load("../../config/gateway.yaml")
+	if err != nil {
+		t.Fatalf("load shipped config: %v", err)
+	}
+	if !cfg.Observe {
+		t.Fatal("config/gateway.yaml must ship with observe: true — it is the config a first deployment runs")
+	}
+
+	// Belt and braces: prove the coercion actually leaves nothing that can
+	// disrupt traffic, rather than trusting the flag alone.
+	cfg.ApplyObserveMode()
+	s := cfg.Security
+	for name, blocking := range map[string]bool{
+		"waf.block_mode":     s.WAF.BlockMode,
+		"schema.block_mode":  s.Schema.BlockMode,
+		"abuse.block_mode":   s.Abuse.BlockMode,
+		"rate_limit.enabled": s.RateLimit.Enabled,
+		"ip_guard.enabled":   s.IPGuard.Enabled,
+		"bot.enabled":        s.Bot.Enabled,
+		"challenge.enabled":  s.Challenge.Enabled,
+		"behavior.enabled":   s.Behavior.Enabled,
+	} {
+		if blocking {
+			t.Errorf("%s is still active after observe coercion: the shipped config could disrupt live traffic", name)
+		}
+	}
+	if !s.DLP.Observe {
+		t.Error("dlp must be in observe mode: the shipped config must never rewrite a response body")
+	}
+	if !s.Auth.Observe {
+		t.Error("auth must be soft: the shipped config must never return 401 on its own")
+	}
+}
+
+// The proxy tells tenants sharing a path apart by Host; the posture engine
+// cannot — it resolves controls from the path alone. Differing overrides would
+// therefore put one tenant under the other's security policy, silently, decided
+// by config order. Reject that rather than pick a winner.
+func TestValidate_RejectsSharedPathWithDifferentSecurityOverrides(t *testing.T) {
+	base := func() GatewayConfig {
+		c := validBase()
+		c.Multitenancy = MultitenancyConfig{
+			Enabled: true,
+			Tenants: []TenantConfig{
+				{ID: "acme", Hosts: []string{"acme.example"}},
+				{ID: "globex", Hosts: []string{"globex.example"}},
+			},
+		}
+		return c
+	}
+	no, yes := false, true
+
+	c := base()
+	c.Routes = []RouteConfig{
+		{Path: "/orders", TenantID: "acme", RequireAuth: &no, Upstreams: []string{"http://a:1"}},
+		{Path: "/orders", TenantID: "globex", RequireAuth: &yes, Upstreams: []string{"http://b:2"}},
+	}
+	err := Validate(c)
+	if err == nil {
+		t.Fatal("tenants sharing a path with different require_auth must be rejected")
+	}
+	for _, want := range []string{"acme", "globex", "/orders", "different security overrides"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error must explain the divergence (missing %q), got: %v", want, err)
+		}
+	}
+
+	// One override set and the other left unset is a divergence too: "unset"
+	// means "inherit the global", which is not the same policy.
+	c = base()
+	c.Routes = []RouteConfig{
+		{Path: "/orders", TenantID: "acme", WAF: &no, Upstreams: []string{"http://a:1"}},
+		{Path: "/orders", TenantID: "globex", Upstreams: []string{"http://b:2"}},
+	}
+	if err := Validate(c); err == nil {
+		t.Fatal("one route overriding waf and the other inheriting it must be rejected")
+	}
+
+	// Identical overrides are fine — the path-only resolution is then harmless.
+	c = base()
+	c.Routes = []RouteConfig{
+		{Path: "/orders", TenantID: "acme", RequireAuth: &yes, Upstreams: []string{"http://a:1"}},
+		{Path: "/orders", TenantID: "globex", RequireAuth: &yes, Upstreams: []string{"http://b:2"}},
+	}
+	if err := Validate(c); err != nil {
+		t.Fatalf("identical overrides on a shared path must be accepted: %v", err)
+	}
+}

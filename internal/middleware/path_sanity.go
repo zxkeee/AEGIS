@@ -3,6 +3,7 @@ package middleware
 import (
 	"net/http"
 	"strings"
+	"unicode/utf8"
 )
 
 // PathSanity rejects requests whose URL path uses traversal or encoded path
@@ -41,7 +42,20 @@ func unsafePath(r *http.Request) string {
 	}
 	// 2. A ".." segment in the decoded path is traversal. Checked per-segment so a
 	//    literal filename like "..foo" or a dotfile "." is not falsely rejected.
+	//
+	//    Path parameters are stripped before the comparison. A segment like
+	//    "..;" — or "..;jsessionid=x" — is not literally "..", but every Java
+	//    servlet container (Tomcat, Jetty, and Spring on top of them) strips the
+	//    ";..." suffix during normalisation and then resolves what is left, so
+	//    the backend sees "..". "/public/..;/orders" therefore matched an
+	//    "auth.exclude: /public" prefix here and reached "/orders" there — the
+	//    exact gateway-vs-backend disagreement this whole file exists to refuse,
+	//    slipping through because the check compared the un-stripped segment
+	//    (confirmed against a running gateway, 2026-09-02).
 	for _, seg := range strings.Split(r.URL.Path, "/") {
+		if i := strings.IndexByte(seg, ';'); i >= 0 {
+			seg = seg[:i]
+		}
 		if seg == ".." {
 			return "path-traversal (..) segment in path"
 		}
@@ -50,6 +64,28 @@ func unsafePath(r *http.Request) string {
 	//    risk when combined with dots.
 	if strings.Contains(r.URL.Path, "\\") {
 		return "backslash in path"
+	}
+	// 4. Double encoding. r.URL.Path has already been percent-decoded once, so a
+	//    percent-escape STILL present in it means the client encoded the encoding:
+	//    "%252e%252e" arrives here as "%2e%2e". We see dots that are not dots and
+	//    match our prefixes accordingly; a backend that decodes a second time —
+	//    common behind a second proxy, or in any framework that decodes path
+	//    variables itself — sees "..". Only the three path-significant escapes are
+	//    rejected, so an ordinary literal '%' in a path (a product code, an
+	//    encoded label) is unaffected.
+	lpath := strings.ToLower(r.URL.Path)
+	for _, enc := range []string{"%2e", "%2f", "%5c"} {
+		if strings.Contains(lpath, enc) {
+			return "double-encoded path escape (" + enc + ") in path"
+		}
+	}
+	// 5. Invalid UTF-8. An overlong encoding such as %c0%af is not "/" to Go and
+	//    not "/" to a modern backend, but it is to any decoder that accepts
+	//    overlong forms — the classic IIS traversal. A normalised API path is
+	//    valid UTF-8, so rejecting the rest costs nothing and removes a whole
+	//    family of decoder-disagreement tricks rather than one spelling of it.
+	if !utf8.ValidString(r.URL.Path) {
+		return "invalid UTF-8 in path"
 	}
 	return ""
 }
