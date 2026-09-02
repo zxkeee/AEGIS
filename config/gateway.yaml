@@ -201,6 +201,17 @@ security:
   dlp:
     enabled: true
     patterns: []
+    # DLP buffers a response to inspect it, so the buffer has to be capped —
+    # otherwise a large body is an OOM vector. max_buffer_bytes is that cap
+    # (default 4 MB). A response bigger than it cannot be scanned, and
+    # fail_closed decides what happens then: false (default) delivers it intact
+    # and records the gap on /api/metrics as dlp_skipped_oversized; true refuses
+    # it with 502. Worth setting true where an unscanned response is not
+    # acceptable — response size usually follows a caller-supplied pagination or
+    # export parameter, so the default leaves redaction switchable off by the
+    # party it constrains. Raising max_buffer_bytes is the other way out.
+    max_buffer_bytes: 0
+    fail_closed: false
 
   cors:
     enabled: true

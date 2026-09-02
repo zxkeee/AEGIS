@@ -14,9 +14,10 @@ import (
 	"api-gateway/internal/config"
 )
 
-// dlpMaxBuffer caps how much of a response body DLP will hold in memory for
-// inspection. Beyond this the response streams through unmodified — a bounded
-// inspection gap is preferable to unbounded memory growth (OOM/DoS).
+// dlpMaxBuffer is the default cap on how much of a response body DLP holds in
+// memory for inspection; dlp.max_buffer_bytes overrides it. The cap itself is
+// not optional — buffering without one is an OOM vector — but what happens at
+// the cap is: see dlp.fail_closed.
 const dlpMaxBuffer = 4 << 20 // 4 MB
 
 // DLP provides Data Loss Prevention by masking sensitive data in responses.
@@ -34,6 +35,15 @@ func DLP(cfg config.DLPConfig, log Logger, st MetricsSink) Middleware {
 			customPatterns = append(customPatterns, re)
 		}
 	}
+
+	maxBuffer := cfg.MaxBufferBytes
+	if maxBuffer <= 0 {
+		maxBuffer = dlpMaxBuffer
+	}
+	// Observe mode must never turn a response into an error the caller sees;
+	// config.ApplyObserveMode already clears this, and this is the belt to its
+	// braces so a DLP built directly (tests, future callers) cannot block either.
+	failClosed := cfg.FailClosed && !cfg.Observe
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -56,13 +66,16 @@ func DLP(cfg config.DLPConfig, log Logger, st MetricsSink) Middleware {
 				ip:             RealIP(r),
 				ctx:            r.Context(),
 				metrics:        st,
+				maxBuffer:      maxBuffer,
+				failClosed:     failClosed,
 			}
 
 			next.ServeHTTP(dw, r)
 
 			// Streaming, protocol upgrades, or oversized responses were passed
-			// through directly — nothing left to inspect or write.
-			if dw.passthrough {
+			// through directly — nothing left to inspect or write. A refused
+			// oversized response has already had its status written.
+			if dw.passthrough || dw.refused {
 				return
 			}
 
@@ -139,6 +152,12 @@ type dlpWriter struct {
 	ip          string
 	ctx         context.Context
 	metrics     MetricsSink
+	maxBuffer   int64
+	// failClosed refuses a response too large to inspect rather than streaming
+	// it through unscanned; refused records that this has happened, so the outer
+	// handler does not then write a body of its own.
+	failClosed bool
+	refused    bool
 }
 
 func (d *dlpWriter) Write(b []byte) (int, error) {
@@ -151,10 +170,33 @@ func (d *dlpWriter) Write(b []byte) (int, error) {
 	// distinguishes "over the cap, not scanned" from "scanned and clean" —
 	// record it so operators can see the coverage gap (e.g. tune pagination
 	// limits on endpoints that trip this).
-	if d.buf.Len()+len(b) > dlpMaxBuffer {
+	if d.refused {
+		return len(b), nil // status already sent; the body is deliberately dropped
+	}
+	if int64(d.buf.Len()+len(b)) > d.maxBuffer {
+		// This response cannot be scanned. Which way that fails is the
+		// operator's call, because both directions have a real cost: streaming
+		// it through means PII may leave unredacted, and the size of a response
+		// is often within the caller's control (a pagination limit, an export
+		// range), so passing is a control the caller can switch off. Refusing
+		// means a legitimate large response becomes an error.
+		if d.failClosed {
+			if d.log != nil {
+				d.log.Warn("dlp: response exceeds inspection buffer; refusing it (fail_closed)", map[string]any{
+					"path": d.path, "ip": d.ip, "max_buffer_bytes": d.maxBuffer,
+				})
+			}
+			if d.metrics != nil {
+				d.metrics.IncrMetric(d.ctx, "dlp_blocked_oversized")
+			}
+			d.refused = true
+			d.buf.Reset() // nothing buffered may reach the client
+			http.Error(d.ResponseWriter, "Response too large to inspect", http.StatusBadGateway)
+			return len(b), nil
+		}
 		if d.log != nil {
 			d.log.Warn("dlp: response exceeds inspection buffer; skipping DLP for this response", map[string]any{
-				"path": d.path, "ip": d.ip, "max_buffer_bytes": dlpMaxBuffer,
+				"path": d.path, "ip": d.ip, "max_buffer_bytes": d.maxBuffer,
 			})
 		}
 		if d.metrics != nil {

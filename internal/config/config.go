@@ -175,9 +175,13 @@ func (c *GatewayConfig) ApplyObserveMode() []string {
 	s.Schema.BlockMode = false
 	s.Abuse.BlockMode = false
 	s.Abuse.ObjectOwnershipBlock = false
-	// DLP classifies + flags the observation but never rewrites the body.
+	// DLP classifies + flags the observation but never rewrites the body, and
+	// never refuses one either — observe mode must not turn an oversized
+	// response into an error the customer's client sees.
 	note(s.DLP.Enabled, "dlp -> observe (classify, no redaction)")
+	note(s.DLP.FailClosed, "dlp.fail_closed -> false")
 	s.DLP.Observe = true
+	s.DLP.FailClosed = false
 	// Auth extracts identity from a valid token but never rejects.
 	note(s.Auth.Enabled || anyRouteRequiresAuthCfg(c.Routes), "auth -> soft (identity only, no 401)")
 	s.Auth.Observe = true
@@ -543,6 +547,18 @@ type DLPConfig struct {
 	// a pilot report "this endpoint leaks cards" without altering the customer's
 	// traffic.
 	Observe bool `yaml:"-"`
+	// MaxBufferBytes caps how much of a response body DLP holds in memory to
+	// inspect it. 0 selects the built-in default (4 MB). A response larger than
+	// this cannot be scanned; FailClosed decides what happens then.
+	MaxBufferBytes int64 `yaml:"max_buffer_bytes"`
+	// FailClosed refuses a response too large to inspect instead of streaming it
+	// through unscanned. Default false keeps availability: an oversized response
+	// is delivered intact and the gap is logged and counted. Set true where an
+	// unscanned response is not an acceptable outcome — the size of a response
+	// is often within a caller's control (a pagination limit, an export range),
+	// so the default makes the one control that redacts PII switchable off by
+	// the very party it is meant to constrain.
+	FailClosed bool `yaml:"fail_closed"`
 }
 
 type CORSConfig struct {
