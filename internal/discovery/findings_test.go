@@ -95,3 +95,44 @@ func TestFindings_ShadowWithPII(t *testing.T) {
 		t.Fatal("shadow endpoint should still raise the data-exposure finding")
 	}
 }
+
+// "We saw no evidence" and "we kept no evidence" are opposite statements that an
+// empty result cannot tell apart. Every finding must therefore say which one it
+// is: an auditor asking "show me the requests behind this" needs to be told
+// plainly when the answer is that they were counted and never retained.
+func TestDetectFindings_DeclareTheirEvidenceProvenance(t *testing.T) {
+	cases := []struct {
+		name    string
+		ep      Endpoint
+		ctrl    Controls
+		matched bool
+	}{
+		{"confirmed exposure", Endpoint{PIICount: 5, AnonCount: 2, PIITypes: []string{"credit_card"}}, Controls{AuthRequired: true}, true},
+		{"latent exposure", Endpoint{PIICount: 5, PIITypes: []string{"ssn"}}, Controls{AuthRequired: false}, true},
+		{"shadow endpoint", Endpoint{PIICount: 3, PIITypes: []string{"email"}}, Controls{AuthRequired: true}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			found := DetectFindings(c.ep, c.ctrl, c.matched)
+			if len(found) == 0 {
+				t.Fatal("no finding produced; fixture no longer exercises the path")
+			}
+			for _, f := range found {
+				if f.Evidence.Kind == "" {
+					t.Errorf("%s: evidence kind is empty — a reader cannot tell recorded from tallied", f.Code)
+				}
+				// These are all counter-derived today. The point of saying so is
+				// that the absence is stated rather than implied by an empty list.
+				if f.Evidence.Kind != EvidenceCounters {
+					t.Errorf("%s: kind = %q, want %q", f.Code, f.Evidence.Kind, EvidenceCounters)
+				}
+				if f.Evidence.Note == "" {
+					t.Errorf("%s: counter-derived finding gives no reason for having no events", f.Code)
+				}
+				if len(f.Evidence.Reasons) != 0 {
+					t.Errorf("%s: counter-derived finding must not point at forensic reasons it does not have", f.Code)
+				}
+			}
+		})
+	}
+}

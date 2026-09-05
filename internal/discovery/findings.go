@@ -31,6 +31,50 @@ type Finding struct {
 	Severity string `json:"severity"` // critical | warning | info
 	Title    string `json:"title"`
 	Why      string `json:"why"`
+	// Evidence states what backs this finding. See EvidenceRef.
+	Evidence EvidenceRef `json:"evidence"`
+}
+
+// Evidence kinds. A reader must be able to tell a finding whose individual
+// occurrences were recorded from one that exists only as a tally.
+const (
+	// EvidenceEvents: individual occurrences are in the forensic record and can
+	// be retrieved for any period, by the reasons listed on the finding.
+	EvidenceEvents = "events"
+	// EvidenceCounters: the finding was derived from aggregate counters. The
+	// occurrences behind them were never written down, so there is nothing to
+	// retrieve — which is NOT the same as there being no occurrences.
+	EvidenceCounters = "counters"
+)
+
+// EvidenceRef says where the proof of a finding lives.
+//
+// It exists because "we saw no evidence" and "we kept no evidence" are opposite
+// statements that an empty result cannot distinguish. An auditor asking "show me
+// the requests behind this" must be told plainly when the answer is that they
+// were counted and not retained, rather than handed an empty list that reads as
+// an all-clear.
+type EvidenceRef struct {
+	// Kind is EvidenceEvents or EvidenceCounters.
+	Kind string `json:"kind"`
+	// Reasons are the forensic reason codes carrying this finding's occurrences.
+	// Only set when Kind is EvidenceEvents.
+	Reasons []string `json:"reasons,omitempty"`
+	// Note explains the absence when Kind is EvidenceCounters.
+	Note string `json:"note,omitempty"`
+}
+
+// countersOnly is the evidence descriptor shared by the data-exposure findings.
+// They are computed from per-endpoint tallies the catalog rolls up; the
+// individual responses that incremented those tallies are not retained, so no
+// query can produce them. Recording a bounded sample of them is the open work
+// this descriptor exists to make visible rather than to paper over.
+func countersOnly() EvidenceRef {
+	return EvidenceRef{
+		Kind: EvidenceCounters,
+		Note: "derived from per-endpoint counters; the individual responses behind them are not retained, " +
+			"so this cannot be evidenced request by request",
+	}
 }
 
 // DetectFindings derives findings for an endpoint from its accumulated counters
@@ -58,6 +102,7 @@ func DetectFindings(e Endpoint, c Controls, matched bool) []Finding {
 				Why: "endpoint returned " + label + " on " + strconv.FormatInt(e.PIICount, 10) +
 					" response(s) while " + strconv.FormatInt(e.AnonCount, 10) +
 					" request(s) arrived without authentication",
+				Evidence: countersOnly(),
 			})
 		case !c.AuthRequired:
 			// Latent: data is returned and the endpoint does not enforce auth, so
@@ -70,6 +115,7 @@ func DetectFindings(e Endpoint, c Controls, matched bool) []Finding {
 				Title:    "Sensitive data on an endpoint that does not require authentication",
 				Why: "endpoint returned " + label + " on " + strconv.FormatInt(e.PIICount, 10) +
 					" response(s) and authentication is not enforced by its configuration",
+				Evidence: countersOnly(),
 			})
 		}
 	}
@@ -84,6 +130,7 @@ func DetectFindings(e Endpoint, c Controls, matched bool) []Finding {
 			Title:    "Undocumented (shadow) endpoint serving sensitive data",
 			Why: "endpoint matches no configured route yet returned " + dataLabel(e.PIITypes) +
 				" on " + strconv.FormatInt(e.PIICount, 10) + " response(s)",
+			Evidence: countersOnly(),
 		})
 	}
 

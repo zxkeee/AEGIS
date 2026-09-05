@@ -77,7 +77,19 @@ type complianceFramework struct {
 	Controls  []complianceControl `json:"controls"`
 }
 
+// evidenceProvenance states where a report's runtime numbers came from and what
+// period they cover. Without it a report reads as complete regardless of whether
+// it was built from the durable record or from a capped in-memory buffer.
+type evidenceProvenance struct {
+	Source   string `json:"source"`
+	Complete bool   `json:"complete"`
+	From     any    `json:"from"`
+	To       any    `json:"to"`
+	Note     string `json:"note,omitempty"`
+}
+
 type complianceReport struct {
+	Evidence   evidenceProvenance    `json:"evidence"`
 	Frameworks []complianceFramework `json:"frameworks"`
 	Summary    struct {
 		Critical         int `json:"critical"`

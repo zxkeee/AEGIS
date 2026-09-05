@@ -105,3 +105,51 @@ func TestBlockLog_WindowReachesTheQuery(t *testing.T) {
 		t.Errorf("X-Evidence-From = %q, want the requested bound echoed", got)
 	}
 }
+
+// The compliance report's runtime numbers used to be tallied from the last 300
+// entries of the in-memory ring — a capped, restart-losing buffer — and
+// presented without saying so. That is a count of whatever happened to fit,
+// offered as evidence of what happened.
+func TestCompliance_CountsFromTheDurableRecord(t *testing.T) {
+	h, sink := durableHandlers(t)
+	h.catalog = nil // no catalog: this test is about the runtime half
+
+	old := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	recent := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	for _, ts := range []time.Time{old, recent, recent} {
+		sink.Push(store.ForensicEntry{
+			Tenant: "default", Timestamp: ts, IP: "9.9.9.9",
+			Path: "/orders/42", Method: "GET", Reason: "bola_enumeration", Code: 200,
+		})
+	}
+	// An unrelated reason must not be counted as access-control abuse.
+	sink.Push(store.ForensicEntry{
+		Tenant: "default", Timestamp: recent, IP: "9.9.9.9",
+		Path: "/x", Method: "GET", Reason: "waf_blocked", Code: 403,
+	})
+	sink.Flush()
+
+	counts, source, err := h.abuseCounts(context.Background(), time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatalf("abuseCounts: %v", err)
+	}
+	if source != sourcePostgres {
+		t.Fatalf("source = %q, want %q — the report is still tallying the ring", source, sourcePostgres)
+	}
+	if counts["bola_enumeration"] != 3 {
+		t.Errorf("bola_enumeration = %d, want 3", counts["bola_enumeration"])
+	}
+	if _, unrelated := counts["waf_blocked"]; unrelated {
+		t.Error("a non-access-control reason was counted as abuse")
+	}
+
+	// The window must narrow the count, or "for the period under review" is a
+	// phrase the report cannot honour.
+	counts, _, err = h.abuseCounts(context.Background(), time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), time.Time{})
+	if err != nil {
+		t.Fatalf("windowed abuseCounts: %v", err)
+	}
+	if counts["bola_enumeration"] != 2 {
+		t.Errorf("windowed bola_enumeration = %d, want 2 — the period did not reach the query", counts["bola_enumeration"])
+	}
+}

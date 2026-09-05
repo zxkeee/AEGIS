@@ -1,14 +1,18 @@
 package api
 
 import (
+	"context"
 	"encoding/csv"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"api-gateway/internal/discovery"
+	"api-gateway/internal/forensic"
 	"api-gateway/internal/store"
+	"api-gateway/internal/tenant"
 )
 
 // catalogReady guards catalog endpoints when discovery is disabled (no DSN).
@@ -256,16 +260,85 @@ func (h *handlers) getCompliance(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, _ := flattenFindings(eps)
 
-	// Runtime access-control abuse (BOLA/BFLA) counts, best-effort.
+	from, to, perr := parseTimeWindow(r)
+	if perr != nil {
+		writeError(w, http.StatusBadRequest, perr.Error())
+		return
+	}
+
+	abuse, source, err := h.abuseCounts(r.Context(), from, to)
+	if err != nil {
+		h.writeStoreError(w, "admin: compliance abuse counts failed", "failed to build compliance report", err)
+		return
+	}
+
+	rep := buildCompliance(rows, abuse)
+	// State where the runtime numbers came from and what they cover. A report
+	// that omits this reads as complete whatever its source, and the ring source
+	// is neither complete nor period-scoped.
+	rep.Evidence = evidenceProvenance{
+		Source:   source,
+		Complete: source == sourcePostgres,
+		From:     rfc3339OrNil(from),
+		To:       rfc3339OrNil(to),
+	}
+	if source == sourceRing {
+		rep.Evidence.Note = "runtime counts come from the in-memory ring: recent entries only, " +
+			"not period-scoped, and lost on restart. Set forensic_dsn for the durable record."
+	}
+	writeJSON(w, http.StatusOK, rep)
+}
+
+// Sources a compliance report's runtime numbers can come from.
+const (
+	sourcePostgres = "postgresql"
+	sourceRing     = "redis-ring"
+)
+
+// abuseCounts totals access-control abuse events per reason. It reads the
+// durable record when one is configured — the only source that can answer for a
+// period — and otherwise falls back to the capped in-memory ring, reporting
+// which it used so the caller never has to assume.
+func (h *handlers) abuseCounts(ctx context.Context, from, to time.Time) (map[string]int, string, error) {
 	abuse := map[string]int{}
-	if entries, ferr := h.store.GetForensicLog(r.Context(), 300); ferr == nil {
-		for _, e := range entries {
-			if abuseOWASP(e.Reason) != "" {
-				abuse[e.Reason]++
+
+	if h.forensic != nil {
+		byReason, err := h.forensic.CountByReason(ctx, forensic.LogFilter{
+			TenantID: tenant.From(ctx), From: from, To: to,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		for reason, n := range byReason {
+			if abuseOWASP(reason) != "" {
+				abuse[reason] = n
 			}
 		}
+		return abuse, sourcePostgres, nil
 	}
-	writeJSON(w, http.StatusOK, buildCompliance(rows, abuse))
+
+	// No durable record. The ring holds only recent entries, so this is a
+	// lower bound on what happened, not a count of it.
+	entries, ferr := h.store.GetForensicLog(ctx, ringComplianceScan)
+	if ferr != nil {
+		return abuse, sourceRing, nil // best-effort, as before
+	}
+	for _, e := range entries {
+		if abuseOWASP(e.Reason) != "" {
+			abuse[e.Reason]++
+		}
+	}
+	return abuse, sourceRing, nil
+}
+
+// ringComplianceScan bounds the fallback scan of the in-memory ring.
+const ringComplianceScan = 300
+
+func rfc3339OrNil(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // findingRow is one endpoint↔finding pair in the findings view.
