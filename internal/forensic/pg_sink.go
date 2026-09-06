@@ -307,6 +307,61 @@ type LogFilter struct {
 	To       time.Time
 }
 
+// CountByReason totals recorded events per reason over the filter's window.
+//
+// Separate from QueryLogs because a compliance report needs the total, not the
+// rows: counting by pulling a page of entries and tallying them — which is what
+// the report used to do against a capped in-memory ring — reports whatever
+// happened to fit rather than what happened.
+func (s *PGSink) CountByReason(ctx context.Context, f LogFilter) (map[string]int, error) {
+	tenantID := f.TenantID
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("SELECT reason, count(*) FROM forensic_logs WHERE tenant_id = $1")
+	// Placeholder numbers are derived from the argument list rather than a
+	// counter kept alongside it, so the two cannot drift as clauses are added.
+	args := []any{tenantID}
+	if !f.From.IsZero() {
+		fmt.Fprintf(&sb, " AND ts >= $%d", len(args)+1)
+		args = append(args, f.From.UTC())
+	}
+	if !f.To.IsZero() {
+		fmt.Fprintf(&sb, " AND ts <= $%d", len(args)+1)
+		args = append(args, f.To.UTC())
+	}
+	sb.WriteString(" GROUP BY reason")
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenantID); err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, sb.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := map[string]int{}
+	for rows.Next() {
+		var reason string
+		var count int
+		if err := rows.Scan(&reason, &count); err != nil {
+			return nil, err
+		}
+		out[reason] = count
+	}
+	return out, rows.Err()
+}
+
 // QueryLogs retrieves forensic logs from PostgreSQL, newest first.
 func (s *PGSink) QueryLogs(ctx context.Context, f LogFilter) ([]store.ForensicEntry, error) {
 	tenantID := f.TenantID

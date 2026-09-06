@@ -331,3 +331,89 @@ func TestPGSink_QueryLogs_DefaultsTheLimit(t *testing.T) {
 		t.Fatalf("unbounded query returned %d entries, want the %d default", len(got), defaultLogLimit)
 	}
 }
+
+// CountByReason exists so a compliance report can state how often something
+// happened over a period. The report used to tally a page of recent entries
+// instead, which answers "how many fit in the buffer", not "how many occurred".
+func TestPGSink_CountByReason(t *testing.T) {
+	s, _ := testSink(t)
+	june := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	august := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+
+	push := func(tenant, reason string, ts time.Time) {
+		s.Push(store.ForensicEntry{
+			Tenant: tenant, Timestamp: ts, IP: "1.1.1.1",
+			Path: "/orders/42", Method: "GET", Reason: reason, Code: 200,
+		})
+	}
+	push("acme", "bola_enumeration", june)
+	push("acme", "bola_enumeration", august)
+	push("acme", "bola_enumeration", august)
+	push("acme", "waf_blocked", august)
+	push("globex", "bola_enumeration", august) // another tenant must not leak in
+	s.Flush()
+
+	count := func(f LogFilter) map[string]int {
+		t.Helper()
+		got, err := s.CountByReason(context.Background(), f)
+		if err != nil {
+			t.Fatalf("CountByReason: %v", err)
+		}
+		return got
+	}
+
+	all := count(LogFilter{TenantID: "acme"})
+	if all["bola_enumeration"] != 3 || all["waf_blocked"] != 1 {
+		t.Fatalf("unbounded counts = %v, want 3 enumerations and 1 waf block", all)
+	}
+
+	// The window is what makes the number answer "for the period under review".
+	windowed := count(LogFilter{TenantID: "acme", From: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)})
+	if windowed["bola_enumeration"] != 2 {
+		t.Fatalf("windowed = %v, want 2 enumerations from July onward", windowed)
+	}
+	if got := count(LogFilter{TenantID: "acme", To: july(june)}); got["bola_enumeration"] != 1 {
+		t.Fatalf("up-to-June = %v, want 1", got)
+	}
+	// A period with nothing in it counts nothing, rather than falling back to
+	// everything — the failure that would quietly widen an audited window.
+	if got := count(LogFilter{TenantID: "acme", From: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)}); len(got) != 0 {
+		t.Fatalf("empty window = %v, want no counts", got)
+	}
+
+	// Tenant scoping holds: globex's event is not in acme's totals, and acme's
+	// are not in globex's.
+	if g := count(LogFilter{TenantID: "globex"}); g["bola_enumeration"] != 1 {
+		t.Fatalf("globex = %v, want exactly its own event", g)
+	}
+
+	// An empty tenant behaves like the default one, matching QueryLogs.
+	if d := count(LogFilter{}); len(d) != 0 {
+		t.Fatalf("default tenant = %v, want none (every event above belongs to a named tenant)", d)
+	}
+}
+
+func july(june time.Time) time.Time { return june.AddDate(0, 0, 15) }
+
+// Flush must persist what the worker holds privately, not merely what is still
+// in the channel — the distinction that made two earlier tests flaky.
+func TestPGSink_FlushPersistsTheWorkersBatch(t *testing.T) {
+	s, _ := testSink(t)
+	const n = 40
+	for i := 0; i < n; i++ {
+		s.Push(store.ForensicEntry{
+			Tenant: "acme", Timestamp: time.Now().UTC(), IP: "1.1.1.1",
+			Path: "/x", Method: "GET", Reason: "flush_probe", Code: 200,
+		})
+	}
+	s.Flush()
+
+	got, err := s.CountByReason(context.Background(), LogFilter{TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("CountByReason: %v", err)
+	}
+	if got["flush_probe"] != n {
+		t.Fatalf("persisted %d of %d entries: Flush returned before the worker's batch was written",
+			got["flush_probe"], n)
+	}
+}
