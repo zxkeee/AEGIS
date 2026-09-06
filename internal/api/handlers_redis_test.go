@@ -440,3 +440,56 @@ func TestReadyz_CachesTheStoreCheck(t *testing.T) {
 		t.Fatalf("readyz after TTL = %d, want 503 — a stale cache hides an outage", rec.Code)
 	}
 }
+
+// Without the durable store the block log can only be the Redis ring: capped,
+// and gone with a Redis restart. A caller must be able to tell that from the
+// record itself, or a truncated view gets mistaken for the whole history.
+func TestBlockLog_RingIsLabelledIncomplete(t *testing.T) {
+	h, _ := redisHandlers(t)
+	h.store.PushForensic(context.Background(), store.ForensicEntry{
+		Timestamp: time.Now().UTC(), IP: "1.1.1.1", Path: "/x", Method: "GET", Reason: "waf_block", Code: 403,
+	})
+
+	rec := httptest.NewRecorder()
+	h.getBlockLog(rec, httptest.NewRequest(http.MethodGet, "/api/block-log", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("X-Evidence-Source"); got != "redis-ring" {
+		t.Errorf("source = %q, want redis-ring", got)
+	}
+	if got := rec.Header().Get("X-Evidence-Complete"); got != "false" {
+		t.Errorf("complete = %q, want false — the ring is not the record", got)
+	}
+}
+
+// Filtering only means something against the durable store. Answering from the
+// ring as if a window had been applied would be the worst outcome: a result
+// that looks period-scoped and is not.
+func TestBlockLog_RefusesFiltersWithoutDurableStore(t *testing.T) {
+	h, _ := redisHandlers(t)
+	for _, q := range []string{"?from=2026-07-01T00:00:00Z", "?to=2026-09-01T00:00:00Z", "?ip=1.2.3.4", "?reason=waf_block"} {
+		rec := httptest.NewRecorder()
+		h.getBlockLog(rec, httptest.NewRequest(http.MethodGet, "/api/block-log"+q, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400 — a ring answer must not pass for a filtered one", q, rec.Code)
+		}
+	}
+}
+
+// A malformed window is rejected rather than silently ignored, which would
+// widen the query to everything while the caller believed it was narrowed.
+func TestBlockLog_RejectsMalformedWindow(t *testing.T) {
+	h, _ := redisHandlers(t)
+	for _, q := range []string{
+		"?from=yesterday",
+		"?to=2026-13-45",
+		"?from=2026-09-01T00:00:00Z&to=2026-07-01T00:00:00Z", // reversed
+	} {
+		rec := httptest.NewRecorder()
+		h.getBlockLog(rec, httptest.NewRequest(http.MethodGet, "/api/block-log"+q, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", q, rec.Code)
+		}
+	}
+}

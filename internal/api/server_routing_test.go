@@ -44,7 +44,7 @@ func newTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
-	return NewServer(st, log, config.GatewayConfig{}, gw, nil, nil, nil, nil, nil)
+	return NewServer(st, log, config.GatewayConfig{}, gw, nil, nil, nil, nil, nil, nil)
 }
 
 func TestServer_HealthAndReadiness(t *testing.T) {

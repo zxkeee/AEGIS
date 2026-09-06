@@ -7,6 +7,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"api-gateway/internal/audit"
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
+	"api-gateway/internal/forensic"
 	"api-gateway/internal/iam"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/middleware"
@@ -35,6 +37,9 @@ type handlers struct {
 	gateway *proxy.Gateway
 	alerts  *alert.Engine
 	catalog *discovery.Catalog
+	// forensic is the durable (PostgreSQL) security-event record. nil when
+	// forensic_dsn is unset, in which case only the Redis ring is available.
+	forensic *forensic.PGSink
 	// specCat is the spec/drift surface of the catalog behind a narrow interface
 	// so the spec handlers are testable with a fake (no PostgreSQL). It is left
 	// nil when discovery is disabled; spec handlers then degrade to 503.
@@ -363,12 +368,90 @@ func (h *handlers) getBlockLog(w http.ResponseWriter, r *http.Request) {
 		limit = min(int64(n), int64(blockLogMaxLimit))
 	}
 
+	// Optional window and filters. They only mean anything against the durable
+	// record; the Redis ring below cannot answer "what happened in Q3".
+	from, to, perr := parseTimeWindow(r)
+	if perr != nil {
+		writeError(w, http.StatusBadRequest, perr.Error())
+		return
+	}
+	ip := r.URL.Query().Get("ip")
+	reason := r.URL.Query().Get("reason")
+
+	// The durable record when PostgreSQL is configured. Until now nothing read
+	// it: events were written to forensic_logs and the API served the Redis ring
+	// instead, so the evidence trail existed and was unreachable.
+	if h.forensic != nil {
+		entries, err := h.forensic.QueryLogs(r.Context(), forensic.LogFilter{
+			TenantID: tenant.From(r.Context()),
+			Limit:    int(limit), IP: ip, Reason: reason, From: from, To: to,
+		})
+		if err != nil {
+			h.writeStoreError(w, "admin: block log query failed", "failed to fetch block log", err)
+			return
+		}
+		// The body stays a bare array: the console reads it that way, and this
+		// change is about reaching the durable record, not reshaping the API.
+		// Which store answered — and therefore whether the result is the record
+		// or a recent slice of it — rides in headers, so a caller can tell them
+		// apart without parsing a new envelope.
+		w.Header().Set("X-Evidence-Source", "postgresql")
+		w.Header().Set("X-Evidence-Complete", "true")
+		if !from.IsZero() {
+			w.Header().Set("X-Evidence-From", from.UTC().Format(time.RFC3339))
+		}
+		if !to.IsZero() {
+			w.Header().Set("X-Evidence-To", to.UTC().Format(time.RFC3339))
+		}
+		writeJSON(w, http.StatusOK, entries)
+		return
+	}
+
+	// No durable store. The ring holds only the most recent entries and is lost
+	// with Redis, so say which store answered rather than let a caller mistake a
+	// truncated view for the record.
+	if !from.IsZero() || !to.IsZero() || ip != "" || reason != "" {
+		writeError(w, http.StatusBadRequest,
+			"filtering the block log needs the durable store; set forensic_dsn (the Redis ring cannot be queried)")
+		return
+	}
 	entries, err := h.store.GetForensicLog(r.Context(), limit)
 	if err != nil {
 		h.writeStoreError(w, "admin: block log fetch failed", "failed to fetch block log", err)
 		return
 	}
+	// Explicitly not complete: the ring is capped and does not survive a Redis
+	// restart. A caller that mistakes it for the record draws conclusions from a
+	// truncated view.
+	w.Header().Set("X-Evidence-Source", "redis-ring")
+	w.Header().Set("X-Evidence-Complete", "false")
 	writeJSON(w, http.StatusOK, entries)
+}
+
+// parseTimeWindow reads the optional from/to query parameters as RFC 3339.
+// Both are inclusive; either may be omitted to leave that bound open.
+func parseTimeWindow(r *http.Request) (from, to time.Time, err error) {
+	parse := func(name string) (time.Time, error) {
+		v := r.URL.Query().Get(name)
+		if v == "" {
+			return time.Time{}, nil
+		}
+		t, perr := time.Parse(time.RFC3339, v)
+		if perr != nil {
+			return time.Time{}, fmt.Errorf("%s must be an RFC 3339 timestamp, e.g. 2026-07-01T00:00:00Z", name)
+		}
+		return t, nil
+	}
+	if from, err = parse("from"); err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	if to, err = parse("to"); err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	if !from.IsZero() && !to.IsZero() && to.Before(from) {
+		return time.Time{}, time.Time{}, errors.New("to must not be earlier than from")
+	}
+	return from, to, nil
 }
 
 // ── API Inventory ─────────────────────────────────────────────────────────────

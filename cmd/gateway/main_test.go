@@ -296,7 +296,7 @@ license_path: "` + licPath + `"
 // updates the Server's published license status on its own, without any
 // config file ever changing.
 func TestRunLicenseRecheck_UpdatesStatusIndependentlyOfConfigReload(t *testing.T) {
-	adminSrv := api.NewServer(nil, logger.New("error"), config.GatewayConfig{}, nil, nil, nil, nil, nil, nil)
+	adminSrv := api.NewServer(nil, logger.New("error"), config.GatewayConfig{}, nil, nil, nil, nil, nil, nil, nil)
 
 	var currentLicensePath atomic.Value
 	currentLicensePath.Store("") // nothing configured yet -> reports invalid
