@@ -313,7 +313,7 @@ PostgreSQL (`upsert*` с `ON CONFLICT`-аккумуляцией).
 - Конфиг — YAML (`config/gateway.yaml`), горячо перечитывается.
 - **Секреты — только из окружения**, никогда из файла
   (`applyEnvOverrides`): `AEGIS_ADMIN_SECRET`, `AEGIS_JWT_SECRET`,
-  `AEGIS_PROPAGATION_SECRET`, `AEGIS_REDIS_PASSWORD`, `AEGIS_FORENSIC_DSN`,
+  `AEGIS_PROPAGATION_SECRET`, `AEGIS_REPORT_SIGNING_KEY`, `AEGIS_REDIS_PASSWORD`, `AEGIS_FORENSIC_DSN`,
   `AEGIS_ALERT_WEBHOOK_URL`, `AEGIS_OIDC_CLIENT_ID`, `AEGIS_OIDC_CLIENT_SECRET`,
   `AEGIS_LICENSE_PATH`. Каждое такое поле обязано быть force-blanked в Helm
   ConfigMap (не течь в открытом виде, если оператор впишет его напрямую в

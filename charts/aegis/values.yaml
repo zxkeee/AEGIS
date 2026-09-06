@@ -85,6 +85,13 @@ secrets:
   # optional for a single-gateway deployment but should be set explicitly once
   # backends verify the signature independently of the JWT secret.
   propagationSecret: ""
+  # reportSigningKey is the Ed25519 key that attests compliance reports
+  # (AEGIS_REPORT_SIGNING_KEY, see docs/compliance-evidence.md). Generate it with
+  # `reportverify -genkey`. It MUST NOT be the license key or any other secret
+  # here — config.Validate rejects reuse, because a shared key would let whoever
+  # holds the other secret forge an audit report. Empty (the default) means
+  # /api/report?sign=1 refuses rather than answering unsigned.
+  reportSigningKey: ""
   # sentinelPassword authenticates to Redis Sentinel when redis.sentinel is in
   # use (AEGIS_REDIS_SENTINEL_PASSWORD). Leave empty for a standalone Redis
   # (the default — see the redis sub-chart below).

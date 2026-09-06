@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 
 	"api-gateway/internal/alert"
+	"api-gateway/internal/attest"
 	"api-gateway/internal/audit"
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
@@ -78,6 +79,20 @@ func (s *Server) registerRoutes() {
 		h.specCat = s.catalog
 	}
 
+	// config.Validate has already proved this key parses, so a failure here can
+	// only be a programming error — but the report path must never be handed a
+	// half-built signer, so it stays nil and says so rather than panicking on
+	// the first audit request.
+	if s.cfg.ReportSigningKey != "" {
+		signer, err := attest.NewSigner(s.cfg.ReportSigningKey)
+		if err != nil {
+			s.log.Error("admin: report signing key rejected; signed reports are unavailable",
+				map[string]any{"error": err.Error()})
+		} else {
+			h.reportSigner = signer
+		}
+	}
+
 	// Console SPA shell (unauthenticated shell; the data APIs below are guarded).
 	s.mux.HandleFunc("GET /", h.serveDashboard)
 	// Hashed bundle assets (JS/CSS/svg).
@@ -117,6 +132,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/findings", h.getFindings)
 	s.mux.HandleFunc("GET /api/compliance", h.getCompliance)
 	s.mux.HandleFunc("GET /api/report", h.getReport)
+	s.mux.HandleFunc("GET /api/report/signing-key", h.getSigningKey)
 
 	// OpenAPI spec import + documented-vs-observed drift (per-tenant).
 	s.mux.HandleFunc("GET /api/discovery/spec", h.getSpec)

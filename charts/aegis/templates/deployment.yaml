@@ -77,6 +77,14 @@ spec:
                   key: propagation-secret
                   optional: true
             {{- end }}
+            {{- if or .Values.secrets.reportSigningKey .Values.secrets.existingSecret }}
+            - name: AEGIS_REPORT_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: report-signing-key
+                  optional: true
+            {{- end }}
             {{- if or .Values.secrets.sentinelPassword .Values.secrets.existingSecret }}
             - name: AEGIS_REDIS_SENTINEL_PASSWORD
               valueFrom:

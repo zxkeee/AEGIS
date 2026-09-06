@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"api-gateway/internal/alert"
+	"api-gateway/internal/attest"
 	"api-gateway/internal/audit"
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
@@ -55,6 +56,10 @@ type handlers struct {
 	draining *atomic.Bool
 	// ready caches the readiness Redis check — see readinessTTL.
 	ready readinessCache
+	// reportSigner attests compliance reports (see internal/attest). nil when
+	// AEGIS_REPORT_SIGNING_KEY is unset, in which case a request for a signed
+	// report is refused rather than answered unsigned.
+	reportSigner *attest.Signer
 	// licenseStatus points at the Server's atomic.Value holding the current
 	// license.Status (set via Server.SetLicenseStatus on boot/hot-reload). May
 	// be nil in unit tests that construct handlers directly; getLicense treats
