@@ -30,6 +30,7 @@ api-gateway/internal/gateway 82
 api-gateway/internal/sso 85
 api-gateway/internal/retention 80
 api-gateway/internal/license 90
+api-gateway/internal/attest 100
 api-gateway/internal/gql 90
 api-gateway/internal/forensic 80
 api-gateway/sdk/gatewayverify 90
