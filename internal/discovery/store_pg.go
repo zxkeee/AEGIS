@@ -291,22 +291,32 @@ func (s *pgStore) listEndpoints(ctx context.Context, tenantID string, f Endpoint
 		error_count, auth_present_count, anon_count, pii_count, latency_ms_sum,
 		latency_samples, posture, risk_score, route_path, pii_types
 		FROM api_endpoints WHERE tenant_id = $1`
+	// Placeholder numbers are derived from the argument list rather than a
+	// counter kept alongside it. A counter has to be advanced by every clause
+	// that appends, and a clause added later that forgets leaves a later
+	// placeholder pointing at the wrong argument — which is exactly what
+	// happened when the period filter below was first added: LIMIT ended up
+	// addressing a timestamp.
 	args := []any{tenantOr(tenantID)}
-	n := 2
 	if f.Posture != "" {
-		q += fmt.Sprintf(" AND posture = $%d", n)
+		q += fmt.Sprintf(" AND posture = $%d", len(args)+1)
 		args = append(args, f.Posture)
-		n++
 	}
 	if f.Search != "" {
-		q += fmt.Sprintf(" AND path_template ILIKE $%d", n)
+		q += fmt.Sprintf(" AND path_template ILIKE $%d", len(args)+1)
 		args = append(args, "%"+f.Search+"%")
-		n++
 	}
 	if f.MinRisk > 0 {
-		q += fmt.Sprintf(" AND risk_score >= $%d", n)
+		q += fmt.Sprintf(" AND risk_score >= $%d", len(args)+1)
 		args = append(args, f.MinRisk)
-		n++
+	}
+	if !f.SeenFrom.IsZero() {
+		q += fmt.Sprintf(" AND last_seen >= $%d", len(args)+1)
+		args = append(args, f.SeenFrom.UTC())
+	}
+	if !f.SeenTo.IsZero() {
+		q += fmt.Sprintf(" AND first_seen <= $%d", len(args)+1)
+		args = append(args, f.SeenTo.UTC())
 	}
 	q += " ORDER BY risk_score DESC, request_count DESC"
 	limit := f.Limit
@@ -315,7 +325,7 @@ func (s *pgStore) listEndpoints(ctx context.Context, tenantID string, f Endpoint
 	}
 	// Only constant fragments and $N placeholders are concatenated; every
 	// user-supplied value is passed via args and parameterized by the driver.
-	q += fmt.Sprintf(" LIMIT $%d", n) // #nosec G202 -- parameterized query, no value concatenation
+	q += fmt.Sprintf(" LIMIT $%d", len(args)+1) // #nosec G202 -- parameterized query, no value concatenation
 	args = append(args, limit)
 
 	var out []Endpoint
