@@ -15,8 +15,12 @@ name: Dynamic Security Scan
 on:
   push:
     branches: [main, develop]
+  # No `branches:` filter here, deliberately. This key filters on the PR's BASE
+  # branch, so a stacked PR — one opened against another feature branch rather
+  # than main — matched nothing and ran zero checks. The first CI a stacked
+  # change saw was the moment it was rebased onto main, which is the worst time
+  # to discover it fails. Every PR is checked, whatever it targets.
   pull_request:
-    branches: [main, develop]
   workflow_dispatch:
 
 permissions:
