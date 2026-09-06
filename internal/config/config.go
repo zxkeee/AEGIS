@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"api-gateway/internal/attest"
 )
 
 // tenantIDPattern constrains tenant ids to a safe charset. This is a hard
@@ -124,6 +126,18 @@ type GatewayConfig struct {
 	// hot-reload is rejected and the previous config keeps serving. There is
 	// no degraded free-run mode; see docs/licensing.md.
 	LicensePath string `yaml:"license_path"`
+	// ReportSigningKey is the base64 Ed25519 key that attests compliance reports
+	// (see internal/attest). Environment only — `yaml:"-"`, so it cannot be put
+	// in a config file even by accident: a key that signs audit evidence is a
+	// secret, and this one is new enough to have no legacy YAML deployments to
+	// keep working. Set AEGIS_REPORT_SIGNING_KEY.
+	//
+	// It MUST NOT be the license key. The license key proves a deployment may
+	// run; this one asserts what a deployment observed. One key for both means
+	// whoever issues licences can also forge an audit report.
+	//
+	// Unset means /api/report?sign=1 refuses rather than answering unsigned.
+	ReportSigningKey string `yaml:"-"`
 	// LicenseMaxRPS is set by cmd/gateway/main.go from the active license's
 	// Claims.MaxRPS after verification (loadValidatedConfig) — NOT an operator
 	// field (`yaml:"-"`), the same pattern as WAFConfig.Observe etc. 0 means
@@ -860,6 +874,9 @@ func applyEnvOverrides(cfg *GatewayConfig) {
 	if v := os.Getenv("AEGIS_PROPAGATION_SECRET"); v != "" {
 		cfg.Security.Auth.PropagationSecret = v
 	}
+	if v := os.Getenv("AEGIS_REPORT_SIGNING_KEY"); v != "" {
+		cfg.ReportSigningKey = v
+	}
 	if v := os.Getenv("AEGIS_REDIS_PASSWORD"); v != "" {
 		cfg.Redis.Password = v
 	}
@@ -906,6 +923,9 @@ func Validate(cfg GatewayConfig) error {
 			return fmt.Errorf("behavior.auto_ban_ttl (%s) must be >= behavior.window_seconds (%s), or an auto-ban can never actually expire under sustained traffic",
 				cfg.Security.Behavior.AutoBanTTL, window)
 		}
+	}
+	if err := validateReportSigningKey(cfg); err != nil {
+		return err
 	}
 	if err := validateAdminSecret(cfg); err != nil {
 		return err
@@ -1221,6 +1241,34 @@ func looksLowEntropy(s string) bool {
 		entropy -= p * math.Log2(p)
 	}
 	return entropy < 3.0
+}
+
+// validateReportSigningKey rejects a report signing key the gateway could not
+// actually sign with.
+//
+// The alternative is discovering it at the moment an auditor asks for a signed
+// report, which is the worst possible time. There is exactly one rule for what
+// a valid key looks like and it lives in attest.NewSigner; this calls it rather
+// than restating it, because two copies of a key-format rule drift and the
+// drift shows up as a config that boots and then cannot sign.
+//
+// This is the only internal import in this package. attest depends on nothing
+// but the standard library, and must stay that way — config is imported by
+// every layer, so a dependency here propagates everywhere.
+func validateReportSigningKey(cfg GatewayConfig) error {
+	if cfg.ReportSigningKey == "" {
+		return nil
+	}
+	if _, err := attest.NewSigner(cfg.ReportSigningKey); err != nil {
+		return fmt.Errorf("AEGIS_REPORT_SIGNING_KEY is not a usable Ed25519 key: %w", err)
+	}
+	if cfg.ReportSigningKey == cfg.Security.Auth.PropagationSecret ||
+		cfg.ReportSigningKey == cfg.AdminSecret ||
+		cfg.ReportSigningKey == cfg.Security.Auth.Secret {
+		return errors.New("AEGIS_REPORT_SIGNING_KEY must not reuse another secret: " +
+			"it signs audit evidence, so anyone holding the other secret could forge a report")
+	}
+	return nil
 }
 
 func validateAdminSecret(cfg GatewayConfig) error {
