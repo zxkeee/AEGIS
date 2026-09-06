@@ -226,9 +226,16 @@ export interface ComplianceControl {
   count: number;
   issues: string[];
 }
+export interface UncoveredControl {
+  control: string;
+  title: string;
+  reason: string;
+}
 export interface ComplianceFramework {
   framework: string;
   controls: ComplianceControl[];
+  /** Controls of this framework AEGIS structurally cannot evidence, with the reason. */
+  not_evidenced?: UncoveredControl[];
 }
 export interface ComplianceReport {
   frameworks: ComplianceFramework[];
