@@ -448,3 +448,84 @@ func TestRetemplatePath(t *testing.T) {
 		}
 	}
 }
+
+// An audit covers a period, so the endpoint list has to be answerable for one.
+// The filter matches on OVERLAP, not containment: an endpoint that existed
+// before the period and went on existing after it was live throughout and
+// belongs in the report — excluding it would understate the surface under
+// review, which is the more dangerous direction of the two.
+func TestPG_ListEndpoints_FiltersByPeriodOverlap(t *testing.T) {
+	s := freshStore(t)
+	ctx := context.Background()
+
+	// Three endpoints with distinct observed lifetimes.
+	seed := func(id string, first, last time.Time) {
+		t.Helper()
+		a := &epAgg{
+			tenant: "acme", id: id, method: "GET", pathTemplate: "/" + id,
+			requestCount: 1, posture: "protected", riskScore: 10,
+			statusDist: map[int]int64{200: 1},
+		}
+		if err := s.upsertEndpoint(ctx, a); err != nil {
+			t.Fatalf("upsertEndpoint %s: %v", id, err)
+		}
+		if _, err := s.db.Exec(
+			`UPDATE api_endpoints SET first_seen = $1, last_seen = $2 WHERE tenant_id = 'acme' AND id = $3`,
+			first.UTC(), last.UTC(), id); err != nil {
+			t.Fatalf("set lifetime %s: %v", id, err)
+		}
+	}
+	jan := time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC)
+	jul := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	sep := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	dec := time.Date(2026, 12, 10, 0, 0, 0, 0, time.UTC)
+
+	seed("before", jan, jan.AddDate(0, 1, 0)) // ended before the period
+	seed("during", jul, sep)                  // inside the period
+	seed("spanning", jan, dec)                // live throughout and beyond
+	seed("after", dec, dec.AddDate(0, 0, 5))  // began after the period
+
+	ids := func(f EndpointFilter) map[string]bool {
+		t.Helper()
+		eps, err := s.listEndpoints(ctx, "acme", f)
+		if err != nil {
+			t.Fatalf("listEndpoints: %v", err)
+		}
+		out := map[string]bool{}
+		for _, e := range eps {
+			out[e.ID] = true
+		}
+		return out
+	}
+
+	q3 := EndpointFilter{
+		Limit:    50,
+		SeenFrom: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+		SeenTo:   time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC),
+	}
+	got := ids(q3)
+	for _, want := range []string{"during", "spanning"} {
+		if !got[want] {
+			t.Errorf("%q missing from the period: an endpoint live during it was left out", want)
+		}
+	}
+	for _, unwanted := range []string{"before", "after"} {
+		if got[unwanted] {
+			t.Errorf("%q included: its lifetime does not overlap the period", unwanted)
+		}
+	}
+
+	// No window means no filtering — the previous behaviour, unchanged.
+	if all := ids(EndpointFilter{Limit: 50}); len(all) != 4 {
+		t.Fatalf("unbounded = %d endpoints, want all 4", len(all))
+	}
+	// An empty period returns nothing rather than falling back to everything.
+	empty := ids(EndpointFilter{
+		Limit:    50,
+		SeenFrom: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+		SeenTo:   time.Date(2030, 2, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if len(empty) != 0 {
+		t.Fatalf("empty period = %d endpoints, want 0 — a narrow question returned a broad answer", len(empty))
+	}
+}

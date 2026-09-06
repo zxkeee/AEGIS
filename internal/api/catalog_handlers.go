@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/csv"
+	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -198,7 +200,15 @@ func (h *handlers) getReport(w http.ResponseWriter, r *http.Request) {
 	if !h.catalogReady(w) {
 		return
 	}
-	eps, err := h.catalog.ListEndpoints(r.Context(), discovery.EndpointFilter{Limit: 1000})
+	from, to, perr := parseTimeWindow(r)
+	if perr != nil {
+		writeError(w, http.StatusBadRequest, perr.Error())
+		return
+	}
+
+	eps, err := h.catalog.ListEndpoints(r.Context(), discovery.EndpointFilter{
+		Limit: reportEndpointLimit, SeenFrom: from, SeenTo: to,
+	})
 	if err != nil {
 		h.writeStoreError(w, "admin: report failed", "failed to build report", err)
 		return
@@ -211,11 +221,103 @@ func (h *handlers) getReport(w http.ResponseWriter, r *http.Request) {
 
 	sum, _ := h.catalog.PostureSummary(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"posture":   sum,
-		"endpoints": eps,
-		"count":     len(eps),
+		"generated_at": time.Now().UTC().Format(time.RFC3339),
+		"window":       map[string]any{"from": rfc3339OrNil(from), "to": rfc3339OrNil(to)},
+		"coverage":     h.reportCoverage(r.Context(), len(eps), eps),
+		"posture":      sum,
+		"endpoints":    eps,
+		"count":        len(eps),
 	})
 }
+
+// reportEndpointLimit caps a single report. Reaching it is itself a coverage
+// fact, so the limit is stated in the coverage section rather than silently
+// truncating.
+const reportEndpointLimit = 1000
+
+// reportCoverage states what this report could NOT see.
+//
+// A report that lists only what it found reads as complete, and this one is not:
+// it sees the traffic that passed through the gateway, findings whose individual
+// occurrences were never retained, and — under load — a record with gaps in it.
+// An auditor who discovers any of that unaided stops trusting the whole
+// document, so the document says it first.
+func (h *handlers) reportCoverage(ctx context.Context, shown int, eps []discovery.Endpoint) map[string]any {
+	var limits []string
+
+	limits = append(limits, "covers API traffic routed through this gateway; endpoints reached by another path are not visible here")
+
+	if shown >= reportEndpointLimit {
+		limits = append(limits, fmt.Sprintf("endpoint list truncated at %d; narrow the period or filter to see the rest", reportEndpointLimit))
+	}
+
+	// How much of the finding set can be evidenced request by request.
+	var withEvents, counterOnly int
+	for _, e := range eps {
+		for _, f := range e.Findings {
+			if f.Evidence.Kind == discovery.EvidenceEvents {
+				withEvents++
+			} else {
+				counterOnly++
+			}
+		}
+	}
+	if counterOnly > 0 {
+		limits = append(limits, fmt.Sprintf(
+			"%d of %d findings are derived from counters; the individual requests behind them are not retained and cannot be produced on request",
+			counterOnly, counterOnly+withEvents))
+	}
+
+	cov := map[string]any{
+		"findings_with_event_evidence": withEvents,
+		"findings_from_counters_only":  counterOnly,
+	}
+
+	if h.forensic == nil {
+		limits = append(limits, "no durable event store configured (forensic_dsn): security events survive only in a capped in-memory ring")
+		cov["evidence_store"] = sourceRing
+	} else {
+		cov["evidence_store"] = sourcePostgres
+		if n := h.forensic.Dropped(); n > 0 {
+			limits = append(limits, fmt.Sprintf("%d security events were dropped under load and are absent from the record", n))
+			cov["events_dropped"] = n
+		}
+	}
+	if h.audit != nil {
+		if n := h.audit.Dropped(); n > 0 {
+			limits = append(limits, fmt.Sprintf("%d admin actions were dropped under load and are absent from the audit trail", n))
+			cov["audit_entries_dropped"] = n
+		}
+	}
+
+	// Responses too large for the data-classification buffer were passed through
+	// unscanned, so "no sensitive data found" does not cover them.
+	// Guarded: a coverage section that panics costs the whole report, which is a
+	// worse outcome than a missing caveat.
+	if m, err := h.metricsOrNil(ctx); err == nil {
+		if n := m["dlp_skipped_oversized"]; n > 0 {
+			limits = append(limits, fmt.Sprintf("%d responses exceeded the inspection buffer and were not scanned for sensitive data", n))
+			cov["responses_not_scanned"] = n
+		}
+		if n := m["abuse_consumer_ip_only"]; n > 0 {
+			limits = append(limits, fmt.Sprintf("%d requests could only be attributed by network address; authorization abuse by such callers is under-counted", n))
+			cov["requests_identified_by_address_only"] = n
+		}
+	}
+
+	cov["limits"] = limits
+	return cov
+}
+
+// metricsOrNil reads the metric counters, tolerating an unwired store.
+func (h *handlers) metricsOrNil(ctx context.Context) (map[string]int64, error) {
+	if h.store == nil {
+		return nil, errNoStore
+	}
+	return h.store.GetMetrics(ctx)
+}
+
+var errNoStore = errors.New("no metrics store configured")
 
 // GET /api/findings — the security-issues view. Flattens every endpoint's
 // derived findings (e.g. "PII exposed to unauthenticated callers") into one

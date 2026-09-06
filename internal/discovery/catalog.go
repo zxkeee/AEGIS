@@ -131,6 +131,15 @@ type EndpointFilter struct {
 	Search  string
 	MinRisk int
 	Limit   int
+	// SeenFrom/SeenTo bound the reporting period: an endpoint is included when
+	// its observed lifetime overlaps the window, i.e. it was still being seen at
+	// or after SeenFrom and had already appeared at or before SeenTo. A zero
+	// value leaves that bound open.
+	//
+	// Overlap, not containment: an endpoint that existed before the period and
+	// went on existing after it was live throughout and belongs in the report.
+	SeenFrom time.Time
+	SeenTo   time.Time
 }
 
 // ── Aggregation state (per flush window) ────────────────────────────────────
