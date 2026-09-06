@@ -215,12 +215,20 @@ func (h *handlers) getReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if strings.EqualFold(r.URL.Query().Get("format"), "csv") {
+		// CSV has nowhere to carry an attestation, and answering an unsigned CSV
+		// to a request that asked for a signature is the silent-downgrade this
+		// whole path refuses. Say so instead.
+		if sign, _ := wantsSignature(r); sign {
+			writeError(w, http.StatusBadRequest,
+				"format=csv cannot carry a signature; request the JSON report to have it attested")
+			return
+		}
 		writeCatalogCSV(w, eps)
 		return
 	}
 
 	sum, _ := h.catalog.PostureSummary(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{
+	h.writeSignable(w, r, map[string]any{
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
 		"window":       map[string]any{"from": rfc3339OrNil(from), "to": rfc3339OrNil(to)},
 		"coverage":     h.reportCoverage(r.Context(), len(eps), eps),
@@ -388,7 +396,7 @@ func (h *handlers) getCompliance(w http.ResponseWriter, r *http.Request) {
 		rep.Evidence.Note = "runtime counts come from the in-memory ring: recent entries only, " +
 			"not period-scoped, and lost on restart. Set forensic_dsn for the durable record."
 	}
-	writeJSON(w, http.StatusOK, rep)
+	h.writeSignable(w, r, rep)
 }
 
 // Sources a compliance report's runtime numbers can come from.
