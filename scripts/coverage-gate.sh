@@ -13,9 +13,16 @@ set -euo pipefail
 # "package floor" — minimum percent (integer) per critical package. Ratchet
 # these up as real coverage rises; never down. Portable (no assoc arrays, so it
 # runs on macOS bash 3.2 as well as CI).
+#
+# SET A FLOOR FROM CI'S NUMBER, NOT FROM A LOCAL RUN. Local coverage reads
+# consistently HIGHER than CI — on 2026-09-06 internal/config measured 94.7%
+# locally and 93.0% in CI, and internal/api 88.2% against 81.6%. A floor
+# ratcheted to a local figure fails on push, which is how this comment got
+# written. Read the number off a CI run of this script and leave a point or two
+# of headroom.
 FLOORS="
 api-gateway/internal/middleware 80
-api-gateway/internal/config 94
+api-gateway/internal/config 92
 api-gateway/internal/alert 75
 api-gateway/internal/tlsfp 95
 api-gateway/internal/tenant 100
