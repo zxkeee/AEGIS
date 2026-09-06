@@ -15,7 +15,7 @@ set -euo pipefail
 # runs on macOS bash 3.2 as well as CI).
 FLOORS="
 api-gateway/internal/middleware 80
-api-gateway/internal/config 86
+api-gateway/internal/config 94
 api-gateway/internal/alert 75
 api-gateway/internal/tlsfp 95
 api-gateway/internal/tenant 100
