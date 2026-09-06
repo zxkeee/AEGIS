@@ -11,6 +11,9 @@
 #   - Only the root Go module was linted. CI lints web/ as a second module.
 #   - npm audit was never run at all. CI audits two separate lockfiles, and a
 #     fix applied to one of them left the other failing.
+#   - security.yml was never run at all, while the header below claimed this
+#     script mirrored it. gosec and govulncheck are that workflow's entire
+#     content, so "preflight: OK" was asserting something it had not checked.
 #
 # Mirrors .github/workflows/{lint,test,security}.yml. When those change, change
 # this — a preflight that has drifted from CI is worse than none, because it
@@ -22,6 +25,8 @@ cd "$ROOT"
 
 # Pinned to match .github/workflows/lint.yml exactly.
 GOLANGCI_VERSION=v2.12.2
+GOSEC_VERSION=v2.28.0
+GOVULNCHECK_VERSION=v1.6.0
 
 fail=0
 step() { printf '\n\033[1m── %s\033[0m\n' "$*"; }
@@ -53,6 +58,43 @@ go test ./... -race -timeout 180s > /tmp/preflight-test.log 2>&1 \
 step "coverage gate"
 ./scripts/coverage-gate.sh > /tmp/preflight-cov.log 2>&1 \
   && ok "floors held" || { bad "a package dropped below its floor"; grep BELOW /tmp/preflight-cov.log; }
+
+# ── gosec / govulncheck ───────────────────────────────────────────────────────
+# These are the whole of security.yml, and this script claimed to mirror it
+# while running neither. A preflight that silently omits a CI job is the exact
+# failure this file was written to prevent, so it now runs both — and installs
+# them with the CURRENT toolchain rather than trusting whatever is on PATH.
+#
+# A govulncheck binary built by an older Go cannot parse a module whose sources
+# use newer language features; it fails with "file requires newer Go version"
+# and an exit code that is easy to read as "no vulnerabilities". Reinstalling
+# pins the build to the toolchain in go.mod, the same thing CI does and for the
+# same reason.
+step "gosec $GOSEC_VERSION"
+go install "github.com/securego/gosec/v2/cmd/gosec@$GOSEC_VERSION" >/dev/null 2>&1 || bad "gosec install"
+gosec -quiet -severity medium ./... >/tmp/preflight-gosec.log 2>&1 \
+  && ok "root module" || { bad "root module"; grep -E '^\[|Severity' /tmp/preflight-gosec.log | head -12; }
+(cd web && gosec -quiet -severity medium ./... >/tmp/preflight-gosec-web.log 2>&1) \
+  && ok "web module" || { bad "web module"; tail -12 /tmp/preflight-gosec-web.log; }
+
+step "govulncheck $GOVULNCHECK_VERSION"
+go install "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION" >/dev/null 2>&1 || bad "govulncheck install"
+for mod in . web; do
+  out=$( (cd "$mod" && govulncheck ./... 2>&1) )
+  rc=$?
+  name=$([ "$mod" = "." ] && echo "root module" || echo "web module")
+  # "requires newer Go version" means the scanner could not read the sources at
+  # all. That is not a clean result and must never be reported as one.
+  if printf '%s' "$out" | grep -q 'requires newer Go version'; then
+    bad "$name — govulncheck could not parse the sources (toolchain mismatch); it scanned nothing"
+    printf '%s\n' "$out" | grep 'requires newer Go version' | head -3
+  elif [ "$rc" -ne 0 ]; then
+    bad "$name"
+    printf '%s\n' "$out" | tail -15
+  else
+    ok "$name"
+  fi
+done
 
 step "npm audit (both lockfiles)"
 for dir in web/console web/v3; do

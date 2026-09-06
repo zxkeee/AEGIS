@@ -88,3 +88,7 @@ demo/sample-report/out/
 # Raw exports from the false-positive assessment (regenerate with run.sh). These
 # are responses from a live third-party API and are not ours to commit.
 demo/fp-assessment/out/
+
+# Local pentest stand (scripts/pentest-stand.sh): throwaway keys, logs and a
+# PostgreSQL data directory. Never anything that should be committed.
+.stand/

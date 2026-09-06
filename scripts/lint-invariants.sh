@@ -162,6 +162,63 @@ if [ -n "$hits" ]; then
   fail=1
 fi
 
+# ── Invariant 5: every evidence document can be signed ───────────────────────
+#
+# A posture or compliance report is handed to an auditor and treated as
+# evidence, which is only true if the recipient can prove it was not edited
+# afterwards (internal/attest, docs/compliance-evidence.md). Signing is opt-in
+# per request and lives in ONE place — handlers.writeSignable — which also
+# holds every refusal that keeps a request for a signature from being answered
+# with an unsigned document.
+#
+# The failure this prevents is silent: someone adds /api/dora-report next
+# quarter, ends it with writeJSON like every other handler in the file, and
+# nothing anywhere says the new report is the one document that cannot be
+# attested. Nobody notices until an auditor asks.
+#
+# So: any handler whose name says it serves a report or a compliance document
+# must route its response through writeSignable. A handler that genuinely is
+# not evidence opts out explicitly with a `// not-evidence:` comment and a
+# reason, which makes that a decision someone made rather than one nobody saw.
+echo "invariant: every report/compliance handler can be signed"
+while IFS= read -r hit; do
+  echo "ERROR: $hit"
+  fail=1
+done < <(
+  awk '
+    # Start of a handler method on *handlers taking (w, r).
+    /^func \(h \*handlers\) [A-Za-z0-9_]+\(w http\.ResponseWriter, r \*http\.Request\)/ {
+      name = $0
+      sub(/^func \(h \*handlers\) /, "", name)
+      sub(/\(.*$/, "", name)
+      lower = tolower(name)
+      if (lower ~ /report|compliance/) {
+        inFn = 1; fn = name; line = FNR; signable = 0; optout = 0
+      }
+      next
+    }
+    inFn && /writeSignable/      { signable = 1 }
+    inFn && /\/\/ not-evidence:/ { optout = 1 }
+    # A closing brace in column 0 ends the function body.
+    inFn && /^}/ {
+      if (!signable && !optout)
+        printf "%s:%d: handler %s serves an evidence document but never calls writeSignable — an auditor cannot verify it. Route the response through writeSignable, or state why not with a \"// not-evidence:\" comment.\n", FILENAME, line, fn
+      inFn = 0
+    }
+  ' $(ls internal/api/*.go | grep -v '_test\.go$')
+)
+
+# The signing path itself must stay the only one, or the refusals in
+# writeSignable (no key configured, unparseable ?sign, CSV) can be bypassed by
+# a handler that reaches for attest directly.
+echo "invariant: reports are attested only through writeSignable"
+if hits=$(grep -rn --include='*.go' 'reportSigner\.Attest(' internal/api \
+          | grep -v '_test\.go:' | grep -v '^internal/api/sign\.go:'); then
+  echo "ERROR: a handler signs a document outside writeSignable, bypassing its refusals:"
+  echo "$hits"
+  fail=1
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo
   echo "lint-invariants: FAILED — a security invariant regressed (see above)."

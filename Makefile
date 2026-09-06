@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker loadgen check-binaries check-secrets check-image-pins lint-invariants hooks console console-dev sample-report render-pdf preflight
+.PHONY: build run test clean docker loadgen check-binaries check-secrets check-image-pins lint-invariants hooks console console-dev sample-report render-pdf preflight stand stand-down stand-test
 
 build:
 	go build -ldflags="-s -w" -o bin/gateway ./cmd/gateway
@@ -85,6 +85,19 @@ render-pdf:
 # before pushing; `make lint` alone has missed real failures three times.
 preflight:
 	./scripts/preflight.sh
+
+# A complete, disposable AEGIS on this machine: PostgreSQL, Redis, a throwaway
+# license, an upstream and the gateway itself — the stand the dynamic security
+# scan builds in CI out of Docker containers. `make stand-test` goes from
+# nothing to a full WAF/auth pentest result in a few seconds.
+stand:
+	./scripts/pentest-stand.sh up
+
+stand-test:
+	./scripts/pentest-stand.sh test
+
+stand-down:
+	./scripts/pentest-stand.sh down
 
 lint:
 	golangci-lint run ./...
