@@ -18,7 +18,7 @@ func TestBuildCompliance(t *testing.T) {
 	}
 	abuse := map[string]int{"bola_object_ownership": 3, "bfla_privileged_access": 1, "waf_blocked": 9}
 
-	rep := buildCompliance(rows, abuse)
+	rep := buildCompliance(rows, abuse, incidentEvidence{})
 
 	// Frameworks present and ordered OWASP → NIS2 → DORA → ISO.
 	if len(rep.Frameworks) != 4 {
@@ -83,7 +83,7 @@ func TestBuildCompliance_DORAArticles(t *testing.T) {
 	}
 	abuse := map[string]int{"bola_object_ownership": 3, "bfla_privileged_access": 1}
 
-	dora := frameworkByName(t, buildCompliance(rows, abuse), fwDORA)
+	dora := frameworkByName(t, buildCompliance(rows, abuse, incidentEvidence{}), fwDORA)
 	for _, want := range []string{
 		"Art. 8(1)",    // asset identification ← shadow endpoint
 		"Art. 9(3)",    // data confidentiality ← PII exposure
@@ -110,7 +110,7 @@ func TestBuildCompliance_DetectionControlNeedsAnObservedEvent(t *testing.T) {
 	}
 
 	t.Run("static findings alone", func(t *testing.T) {
-		dora := frameworkByName(t, buildCompliance(static, nil), fwDORA)
+		dora := frameworkByName(t, buildCompliance(static, nil, incidentEvidence{}), fwDORA)
 		if c, ok := controlByID(dora, "Art. 10(1)"); ok {
 			t.Fatalf("a static finding evidenced the detection control: %+v", c)
 		}
@@ -121,7 +121,7 @@ func TestBuildCompliance_DetectionControlNeedsAnObservedEvent(t *testing.T) {
 	})
 
 	t.Run("with an observed event", func(t *testing.T) {
-		dora := frameworkByName(t, buildCompliance(static, map[string]int{"bola_object_ownership": 2}), fwDORA)
+		dora := frameworkByName(t, buildCompliance(static, map[string]int{"bola_object_ownership": 2}, incidentEvidence{}), fwDORA)
 		c, ok := controlByID(dora, "Art. 10(1)")
 		if !ok {
 			t.Fatal("an observed abuse event did not evidence the detection control")
@@ -143,7 +143,7 @@ func TestBuildCompliance_DetectionControlNeedsAnObservedEvent(t *testing.T) {
 func TestBuildCompliance_NamesTheArticlesItCannotEvidence(t *testing.T) {
 	rep := buildCompliance([]findingRow{
 		fr("API3:2023", "critical", "Sensitive data exposed to unauthenticated callers", "GET", "/users/{id}"),
-	}, map[string]int{"bola_object_ownership": 1})
+	}, map[string]int{"bola_object_ownership": 1}, incidentEvidence{})
 
 	for _, tc := range []struct {
 		framework string
@@ -177,5 +177,164 @@ func TestBuildCompliance_NamesTheArticlesItCannotEvidence(t *testing.T) {
 				t.Errorf("%s %s is listed both as evidenced (%+v) and as not evidenced", tc.framework, u.Control, c)
 			}
 		}
+	}
+}
+
+// The incident articles must move out of "not evidenced" only when the record
+// actually supports them — and each one has its own bar. Recording incidents is
+// not classifying them, and classifying them is not reporting them.
+func TestBuildCompliance_IncidentArticlesEarnTheirPlace(t *testing.T) {
+	rows := []findingRow{fr("API3:2023", "critical", "PII exposed", "GET", "/users/{id}")}
+
+	cases := []struct {
+		name          string
+		ev            incidentEvidence
+		wantEvidenced []string
+		wantGaps      []string
+	}{
+		{
+			name:     "nothing recorded",
+			ev:       incidentEvidence{},
+			wantGaps: []string{"Art. 17", "Art. 18", "Art. 19"},
+		},
+		{
+			name:          "incidents tracked but never classified or reported",
+			ev:            incidentEvidence{Total: 4, Open: 3, Closed: 1},
+			wantEvidenced: []string{"Art. 17"},
+			wantGaps:      []string{"Art. 18", "Art. 19"},
+		},
+		{
+			name:          "classified but not reported",
+			ev:            incidentEvidence{Total: 4, Closed: 4, Classified: 2},
+			wantEvidenced: []string{"Art. 17", "Art. 18"},
+			wantGaps:      []string{"Art. 19"},
+		},
+		{
+			name:          "reported",
+			ev:            incidentEvidence{Total: 4, Closed: 4, Classified: 4, Notified: 3},
+			wantEvidenced: []string{"Art. 17", "Art. 18", "Art. 19"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dora := frameworkByName(t, buildCompliance(rows, nil, tc.ev), fwDORA)
+			for _, art := range tc.wantEvidenced {
+				c, ok := controlByID(dora, art)
+				if !ok {
+					t.Errorf("%s is not evidenced", art)
+					continue
+				}
+				if len(c.Issues) == 0 {
+					t.Errorf("%s is evidenced but cites nothing", art)
+				}
+			}
+			for _, art := range tc.wantGaps {
+				if c, ok := controlByID(dora, art); ok {
+					t.Errorf("%s is claimed as evidenced by %+v", art, c)
+				}
+				var admitted bool
+				for _, u := range dora.NotEvidenced {
+					if u.Control == art {
+						admitted = true
+						if u.Reason == "" {
+							t.Errorf("%s is listed as a gap with no reason", art)
+						}
+					}
+				}
+				if !admitted {
+					t.Errorf("%s is neither evidenced nor admitted as a gap", art)
+				}
+			}
+		})
+	}
+}
+
+// NIS2 Art. 23 is the same obligation in the other regulation, and it turns on
+// the same fact: something was actually submitted.
+func TestBuildCompliance_NIS2ReportingFollowsSubmissions(t *testing.T) {
+	rows := []findingRow{fr("API3:2023", "critical", "PII exposed", "GET", "/users/{id}")}
+
+	tracked := frameworkByName(t, buildCompliance(rows, nil, incidentEvidence{Total: 2, Classified: 2}), fwNIS2)
+	if _, ok := controlByID(tracked, "Art. 23"); ok {
+		t.Error("Art. 23 claimed as evidenced with no submission recorded — tracking is not reporting")
+	}
+
+	reported := frameworkByName(t, buildCompliance(rows, nil, incidentEvidence{Total: 2, Notified: 2}), fwNIS2)
+	if _, ok := controlByID(reported, "Art. 23"); !ok {
+		t.Error("Art. 23 is not evidenced despite a recorded submission")
+	}
+}
+
+// A missed deadline is a breach of the obligation itself, whatever the incident
+// turned out to be. It must be reported as critical, not buried.
+func TestBuildCompliance_AnUnmetDeadlineIsCritical(t *testing.T) {
+	rows := []findingRow{fr("API3:2023", "warning", "PII exposed", "GET", "/users/{id}")}
+	ev := incidentEvidence{Total: 5, Classified: 5, Notified: 5, Overdue: 2}
+
+	rep := buildCompliance(rows, nil, ev)
+	c, ok := controlByID(frameworkByName(t, rep, fwDORA), "Art. 17")
+	if !ok {
+		t.Fatal("Art. 17 missing")
+	}
+	if c.Severity != "critical" {
+		t.Errorf("severity = %s, want critical when a reporting deadline passed unmet", c.Severity)
+	}
+	var mentioned bool
+	for _, iss := range c.Issues {
+		if strings.Contains(iss, "deadline") {
+			mentioned = true
+		}
+	}
+	if !mentioned {
+		t.Errorf("the overdue deadlines are not stated in the issues: %v", c.Issues)
+	}
+	if rep.Summary.Critical < ev.Overdue {
+		t.Errorf("summary critical = %d, want at least the %d overdue obligations counted",
+			rep.Summary.Critical, ev.Overdue)
+	}
+}
+
+// With no findings at all there are no frameworks — except the ones that exist
+// only to admit a gap. Dropping them would make the admission vanish exactly
+// when there is nothing else to balance it.
+func TestBuildCompliance_GapsSurviveAnEmptyReport(t *testing.T) {
+	rep := buildCompliance(nil, nil, incidentEvidence{})
+
+	dora := frameworkByName(t, rep, fwDORA)
+	if len(dora.Controls) != 0 {
+		t.Errorf("DORA has %d controls in an empty report", len(dora.Controls))
+	}
+	if len(dora.NotEvidenced) != 3 {
+		t.Fatalf("DORA admits %d gaps in an empty report, want 3", len(dora.NotEvidenced))
+	}
+	if len(frameworkByName(t, rep, fwNIS2).NotEvidenced) != 1 {
+		t.Error("NIS2 does not admit its reporting gap in an empty report")
+	}
+}
+
+// A compliance report is judged partly on how carefully it was made. "1
+// incidents" in a document going to a regulator undermines the rest of it.
+func TestBuildCompliance_IncidentEvidenceReadsAsEnglish(t *testing.T) {
+	rep := buildCompliance(nil, nil, incidentEvidence{Total: 1, Open: 1, Notified: 1, Classified: 1})
+	dora := frameworkByName(t, rep, fwDORA)
+	for _, art := range []string{"Art. 17", "Art. 18", "Art. 19"} {
+		c, ok := controlByID(dora, art)
+		if !ok {
+			t.Fatalf("%s missing", art)
+		}
+		for _, iss := range c.Issues {
+			if strings.Contains(iss, "1 incidents") {
+				t.Errorf("%s: %q", art, iss)
+			}
+		}
+	}
+
+	// And the lifecycle counts must distinguish contained from open, because
+	// that distinction is what Art. 17 is actually about.
+	c, _ := controlByID(frameworkByName(t,
+		buildCompliance(nil, nil, incidentEvidence{Total: 3, Open: 1, Contained: 1, Closed: 1}), fwDORA), "Art. 17")
+	if !strings.Contains(c.Issues[0], "1 open, 1 contained, 1 closed") {
+		t.Errorf("lifecycle counts = %q, want open/contained/closed stated separately", c.Issues[0])
 	}
 }

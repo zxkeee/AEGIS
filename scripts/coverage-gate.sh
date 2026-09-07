@@ -20,6 +20,13 @@ set -euo pipefail
 # ratcheted to a local figure fails on push, which is how this comment got
 # written. Read the number off a CI run of this script and leave a point or two
 # of headroom.
+#
+# internal/incident is deliberately floored at 80 while measuring 92.6% locally:
+# it is new and has no CI figure yet. Ratchet it once one exists.
+#
+# NOTE: the block below is parsed as "package floor" pairs. A comment line
+# inside it is read as a package named "#", which fails the gate with a
+# confusing "no coverage reported for #". Put notes here, not in there.
 FLOORS="
 api-gateway/internal/middleware 80
 api-gateway/internal/config 92
@@ -38,6 +45,7 @@ api-gateway/internal/sso 85
 api-gateway/internal/retention 80
 api-gateway/internal/license 90
 api-gateway/internal/attest 100
+api-gateway/internal/incident 80
 api-gateway/internal/gql 90
 api-gateway/internal/forensic 80
 api-gateway/sdk/gatewayverify 90

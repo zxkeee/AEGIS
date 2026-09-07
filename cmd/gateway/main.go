@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"api-gateway/internal/forensic"
 	"api-gateway/internal/gateway"
 	"api-gateway/internal/iam"
+	"api-gateway/internal/incident"
 	"api-gateway/internal/license"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/middleware"
@@ -122,6 +124,36 @@ func main() {
 			defer fSink.Close()
 			st.SetForensicSink(fSink)
 			log.Info("forensic log persistence enabled", map[string]any{"backend": "postgresql"})
+		}
+	}
+
+	// ── Incident correlation (NIS2 Art. 23, DORA Art. 17-19) ────────────────
+	// Groups security events into incidents with a lifecycle and reporting
+	// deadlines. Installed as a WRAPPER around the forensic sink rather than
+	// beside it: the durable record is written first and whatever happens here,
+	// because the log is what happened and an incident is an interpretation of
+	// it. Without a DSN there is nowhere to keep an incident, so this stays off
+	// and the compliance report keeps saying the articles are not evidenced.
+	var incidents *incident.PGStore
+	var correlator *incident.Correlator
+	if cfg.ForensicDSN != "" && fSink != nil {
+		db, dberr := sql.Open("pgx", cfg.ForensicDSN)
+		if dberr != nil {
+			log.Error("incident store init failed (incident tracking disabled)",
+				map[string]any{"error": dberr.Error()})
+		} else if incidents, dberr = incident.NewPGStore(db, log); dberr != nil {
+			log.Error("incident store init failed (incident tracking disabled)",
+				map[string]any{"error": dberr.Error()})
+			_ = db.Close()
+			incidents = nil
+		} else {
+			defer func() { _ = db.Close() }()
+			correlator = incident.New(incidents, log)
+			defer func() { _ = correlator.Close() }()
+			st.SetForensicSink(incident.NewSink(correlator, fSink, discovery.NormalizePath))
+			log.Info("incident correlation enabled", map[string]any{
+				"window": incident.DefaultWindow.String(),
+			})
 		}
 	}
 
@@ -282,6 +314,7 @@ func main() {
 		ssoIface = ssoAuth
 	}
 	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog, fSink, iamStore, auditStore, ssoIface)
+	adminSrv.SetIncidents(incidents)
 	adminSrv.SetLicenseStatus(licStatus) // GET /api/license + console banner reflect this boot's outcome
 
 	if !cfg.AdminAuth {

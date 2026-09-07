@@ -86,7 +86,8 @@ features return `passthrough`.
   scores, JA3 sets, BOLA counters, challenges, JTI revocations, admin sessions,
   metrics, and a recent forensic ring buffer. Most keys carry TTLs.
 - **PostgreSQL** (`internal/forensic` = forensic logs; `internal/discovery` =
-  the API catalog) — enabled only when `forensic_dsn` is set; the catalog and
+  the API catalog; `internal/incident` = correlated incidents with NIS2/DORA
+  reporting deadlines) — enabled only when `forensic_dsn` is set; the catalog and
   forensic sink share that one database. Without a DSN the catalog is nil and
   the Discovery middleware degrades to passthrough.
 
