@@ -68,19 +68,33 @@ func ThreatFeed(cfg config.ThreatFeedConfig, log Logger, st DenySink) Middleware
 	}
 }
 
-// checkFeedRedirect is the redirect policy for feed fetches: only follow HTTPS
-// redirects to non-private hosts, and cap the hop count. This preserves the
-// config-enforced HTTPS-only guarantee (a redirect to http:// or an internal
-// address such as cloud metadata would otherwise be a blind SSRF).
+// checkFeedRedirect is the redirect policy for feed fetches. See safeRedirect.
 func checkFeedRedirect(req *http.Request, via []*http.Request) error {
+	return safeRedirect("threat_feed", req, via)
+}
+
+// safeRedirect is the redirect policy for EVERY outbound fetch whose
+// destination is operator-configured and required to be HTTPS: follow only
+// HTTPS redirects to non-private hosts, and cap the hop count.
+//
+// Config validation pins the URL an operator wrote; without this, a redirect
+// from that host silently unpins it — to http://, or to an internal address
+// such as 169.254.169.254. Enforcing the scheme at config time and then letting
+// the client follow anything is a guarantee that only holds until the first
+// 302.
+//
+// Shared rather than duplicated because the gateway has several such fetches
+// (the threat feed, the JWKS document) and the one that was missing this
+// policy was the one authenticating production traffic.
+func safeRedirect(what string, req *http.Request, via []*http.Request) error {
 	if len(via) >= 5 {
-		return fmt.Errorf("threat_feed: too many redirects")
+		return fmt.Errorf("%s: too many redirects", what)
 	}
 	if req.URL.Scheme != "https" {
-		return fmt.Errorf("threat_feed: refusing non-https redirect to %q", req.URL.Redacted())
+		return fmt.Errorf("%s: refusing non-https redirect to %q", what, req.URL.Redacted())
 	}
 	if host := req.URL.Hostname(); isPrivateOrLocalHost(host) {
-		return fmt.Errorf("threat_feed: refusing redirect to private/loopback host %q", host)
+		return fmt.Errorf("%s: refusing redirect to private/loopback host %q", what, host)
 	}
 	return nil
 }

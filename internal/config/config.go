@@ -1316,7 +1316,25 @@ func validateJWT(cfg GatewayConfig) error {
 		return nil
 	}
 	// JWKS URL takes priority over shared secret — no secret needed.
-	if cfg.Security.Auth.JWKSURL != "" {
+	//
+	// But it must be HTTPS. The JWKS document IS the trust root for every
+	// RSA/ECDSA token the gateway accepts: an on-path attacker who substitutes
+	// it supplies their own public key and mints tokens for any subject with
+	// any roles, which the gateway then signs into X-Gateway-Signature and
+	// hands to backends as authenticated identity. Fetched over http:// that
+	// takes no more than being on the network path.
+	//
+	// This was the only unvalidated URL of the three in this config — the
+	// threat feed and both OIDC URLs already require https — and it was the one
+	// that authenticates production traffic (2026-09-07 audit). The dev escape
+	// hatch is the same admin_cookie_insecure flag OIDC uses, so a developer
+	// can point at a local IdP without weakening the production default.
+	if u := cfg.Security.Auth.JWKSURL; u != "" {
+		jwksHTTPSDev := cfg.AdminCookieInsecure && strings.HasPrefix(u, "http://")
+		if !strings.HasPrefix(u, "https://") && !jwksHTTPSDev {
+			return fmt.Errorf("auth.jwks_url must be an https URL, got %q "+
+				"(it is the trust root for every token the gateway accepts)", u)
+		}
 		return nil
 	}
 	if cfg.Security.Auth.Secret == "" {
