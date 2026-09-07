@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -112,27 +113,100 @@ type uncoveredControl struct {
 	Reason  string `json:"reason"`
 }
 
-// frameworkGaps is the honest half of the mapping.
+// incidentControls are the articles the incident record evidences.
 //
-// Every entry here is incident LIFECYCLE, and that is not an accident: AEGIS
-// detects and records security events, but it has no incident entity. Events
-// are never grouped into an incident, tracked through a lifecycle, classified
-// against a regulator's criteria, or driven to a notification deadline. Those
-// obligations are real and a buyer will ask about them, so the report names
-// them as gaps rather than letting the mapped controls imply coverage.
-var frameworkGaps = map[string][]uncoveredControl{
-	fwDORA: {
-		{"Art. 17", "ICT-related incident management process",
-			"AEGIS records security events but has no incident entity: events are not grouped, tracked through a lifecycle, or assigned an owner."},
-		{"Art. 18", "Classification of ICT-related incidents",
-			"classification needs clients affected, duration, geographical spread, data losses and economic impact — none of which the gateway observes."},
-		{"Art. 19", "Reporting of major incidents to the competent authority",
-			"there is no notification workflow and no initial / intermediate / final report timeline."},
+// They are kept apart from owaspControls because nothing about a FINDING can
+// evidence them. An incident-management obligation is discharged by managing
+// incidents; a list of vulnerable endpoints, however long, says nothing about
+// whether the entity has a process. So these are driven by the incident record
+// itself — and each one states what it takes, because "we have a process" and
+// "we have a process that produced a classification and met a deadline" are
+// different claims and only the second is evidence.
+var incidentControls = []struct {
+	ref controlRef
+	// need reports whether the incident record supports this control, and the
+	// sentence to show as its evidence.
+	need func(incidentEvidence) (bool, string)
+}{
+	{
+		controlRef{framework: fwDORA, control: "Art. 17", title: "ICT-related incident management process"},
+		func(e incidentEvidence) (bool, string) {
+			if e.Total == 0 {
+				return false, ""
+			}
+			return true, fmt.Sprintf("%s tracked through a lifecycle (%d open, %d contained, %d closed)",
+				plural(e.Total, "incident"), e.Open, e.Contained, e.Closed)
+		},
 	},
-	fwNIS2: {
-		{"Art. 23", "Reporting obligations",
-			"the 24h early warning / 72h notification / 1 month final report timeline is not tracked. AEGIS produces evidence such a report would cite, not the report itself."},
+	{
+		controlRef{framework: fwDORA, control: "Art. 18", title: "Classification of ICT-related incidents"},
+		func(e incidentEvidence) (bool, string) {
+			if e.Classified == 0 {
+				return false, ""
+			}
+			return true, fmt.Sprintf("%d of %s classified against the Art. 18 criteria",
+				e.Classified, plural(e.Total, "incident"))
+		},
 	},
+	{
+		controlRef{framework: fwDORA, control: "Art. 19", title: "Reporting of major incidents to the competent authority"},
+		func(e incidentEvidence) (bool, string) {
+			if e.Notified == 0 {
+				return false, ""
+			}
+			return true, fmt.Sprintf("%s with a submission recorded", plural(e.Notified, "incident"))
+		},
+	},
+	{
+		controlRef{framework: fwNIS2, control: "Art. 23", title: "Reporting obligations"},
+		func(e incidentEvidence) (bool, string) {
+			if e.Notified == 0 {
+				return false, ""
+			}
+			return true, fmt.Sprintf("%s with a submission recorded against the 24h / 72h / 1 month timetable",
+				plural(e.Notified, "incident"))
+		},
+	},
+}
+
+// unevidencedIncidentControl is what to say when an incident control is not
+// supported yet — indexed by control id.
+var unevidencedIncidentControl = map[string]string{
+	"Art. 17": "no incidents have been recorded, so there is nothing to show a lifecycle for. Set forensic_dsn to enable incident tracking.",
+	"Art. 18": "no incident carries a complete Art. 18 classification: clients affected, geographical spread and economic impact are not observable from traffic and must be supplied per incident.",
+	"Art. 19": "no submission to a competent authority has been recorded against any incident. AEGIS tracks the deadlines and holds the evidence; filing the report remains a human act.",
+	"Art. 23": "no submission has been recorded against the 24h early warning / 72h notification / 1 month final report timetable.",
+}
+
+// incidentEvidence is what the compliance mapping needs to know about the
+// incident record. A struct rather than the incident package's own type so this
+// file stays free of that dependency and testable with a literal.
+type incidentEvidence struct {
+	Total      int
+	Open       int
+	Contained  int
+	Closed     int
+	Classified int
+	Notified   int
+	Overdue    int
+}
+
+// overdueWarning is appended to the report when an obligation has passed unmet.
+//
+// It is not a finding about the API; it is a finding about the operator, and it
+// belongs in a compliance report more than anything else here does. A missed
+// 24-hour early warning is a breach of the obligation itself, whatever the
+// incident turned out to be.
+const overdueWarning = "%s with a reporting deadline that passed and nothing submitted"
+
+// plural writes "1 incident" rather than "1 incidents". A compliance report is
+// read by people who will judge the whole document by how carefully it was
+// made; the grammar is not a detail there.
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // evidenceProvenance states where a report's runtime numbers came from and what
@@ -172,7 +246,7 @@ func severityRank(s string) int {
 // buildCompliance maps catalog findings and runtime abuse counts onto the
 // framework controls they evidence, grouped by framework. Pure function so the
 // mapping is unit-testable without a database.
-func buildCompliance(rows []findingRow, abuse map[string]int) complianceReport {
+func buildCompliance(rows []findingRow, abuse map[string]int, ev incidentEvidence) complianceReport {
 	type key struct{ framework, control string }
 	agg := map[key]*complianceControl{}
 	var rep complianceReport
@@ -226,7 +300,33 @@ func buildCompliance(rows []findingRow, abuse map[string]int) complianceReport {
 		rep.Summary.Critical += n
 	}
 
-	// Group controls by framework, ordered OWASP → NIS2 → ISO, controls by
+	// The incident controls, driven by the incident record rather than by any
+	// finding. An unmet deadline is reported as critical: it is a breach of the
+	// obligation itself, independent of what the incident turned out to be.
+	gaps := map[string][]uncoveredControl{}
+	for _, ic := range incidentControls {
+		ok, evidence := ic.need(ev)
+		if !ok {
+			gaps[ic.ref.framework] = append(gaps[ic.ref.framework], uncoveredControl{
+				Control: ic.ref.control, Title: ic.ref.title,
+				Reason: unevidencedIncidentControl[ic.ref.control],
+			})
+			continue
+		}
+		sev := "warning"
+		issues := []string{evidence}
+		if ev.Overdue > 0 {
+			sev = "critical"
+			issues = append(issues, fmt.Sprintf(overdueWarning, plural(ev.Overdue, "incident")))
+			rep.Summary.Critical += ev.Overdue
+		}
+		agg[key{ic.ref.framework, ic.ref.control}] = &complianceControl{
+			Framework: ic.ref.framework, Control: ic.ref.control, Title: ic.ref.title,
+			Severity: sev, Count: ev.Total, Issues: issues,
+		}
+	}
+
+	// Group controls by framework, ordered OWASP → NIS2 → DORA → ISO, controls by
 	// severity then id.
 	byFw := map[string][]complianceControl{}
 	for _, c := range agg {
@@ -238,7 +338,10 @@ func buildCompliance(rows []findingRow, abuse map[string]int) complianceReport {
 	// produced the finding and before the standard.
 	for _, fw := range []string{fwOWASP, fwNIS2, fwDORA, fwISO} {
 		cs := byFw[fw]
-		if len(cs) == 0 {
+		// A framework with nothing but gaps is still included. Dropping it would
+		// make the admission vanish exactly when there is nothing else to
+		// balance it — which is when a reader most needs to see it.
+		if len(cs) == 0 && len(gaps[fw]) == 0 {
 			continue
 		}
 		sort.SliceStable(cs, func(i, j int) bool {
@@ -248,7 +351,7 @@ func buildCompliance(rows []findingRow, abuse map[string]int) complianceReport {
 			return cs[i].Control < cs[j].Control
 		})
 		rep.Frameworks = append(rep.Frameworks, complianceFramework{
-			Framework: fw, Controls: cs, NotEvidenced: frameworkGaps[fw],
+			Framework: fw, Controls: cs, NotEvidenced: gaps[fw],
 		})
 	}
 	return rep

@@ -382,7 +382,7 @@ func (h *handlers) getCompliance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rep := buildCompliance(rows, abuse)
+	rep := buildCompliance(rows, abuse, h.incidentEvidence(r.Context()))
 	// State where the runtime numbers came from and what they cover. A report
 	// that omits this reads as complete whatever its source, and the ring source
 	// is neither complete nor period-scoped.
