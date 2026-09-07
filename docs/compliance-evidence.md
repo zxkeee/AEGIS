@@ -124,3 +124,26 @@ that can be produced to a supervisory authority. Integrity of that evidence is
 the part a spreadsheet export cannot provide: a report is only useful to a
 regulator if the operator cannot silently revise it after the fact. That is what
 this signature is for.
+
+`GET /api/compliance` maps findings and detected abuse onto specific articles:
+
+| DORA article | evidenced by |
+| --- | --- |
+| Art. 8(1) — identification and documentation of ICT assets | the passive API catalog, including shadow endpoints |
+| Art. 9(3) — confidentiality and integrity of data | PII exposure findings |
+| Art. 9(4)(c) — logical access limited to what is required | BOLA / BFLA findings and events |
+| Art. 9(4)(d) — strong authentication mechanisms | broken-authentication findings |
+| Art. 10(1) — prompt detection of anomalous activities | **detected events only** |
+
+Art. 10 is deliberately different. It is about detection mechanisms actually
+working, so only an observed event evidences it — a catalog finding says an
+endpoint *could* be abused, which is not the same claim and would be false if
+counted. The distinction is enforced in the mapping, not left to the reader.
+
+**What is not covered.** DORA Art. 17–19 and NIS2 Art. 23 are incident
+lifecycle: grouping events into an incident, classifying it against a
+regulator's criteria, and driving it to a notification deadline. AEGIS has no
+incident entity, so it evidences none of them. The report says so itself, in a
+`not_evidenced` list on each framework, and the console and the sample report
+both show it beside the mapped controls. A document that lists only what it
+mapped reads as covering the framework.

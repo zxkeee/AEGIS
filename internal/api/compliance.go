@@ -16,38 +16,56 @@ import (
 const (
 	fwOWASP = "OWASP API Top 10"
 	fwNIS2  = "NIS2"
+	fwDORA  = "DORA"
 	fwISO   = "ISO 27001:2022"
 )
 
-type controlRef struct{ framework, control, title string }
+type controlRef struct {
+	framework, control, title string
+	// runtimeOnly marks a control that only an OBSERVED event can evidence.
+	//
+	// The distinction is the difference between a true and a false claim. A
+	// catalog finding says "this endpoint could be abused"; a runtime abuse
+	// event says "an attempt was detected and handled". DORA Art. 10 is about
+	// detection mechanisms actually working — a static finding is evidence of
+	// the opposite, if anything, and must not be counted toward it.
+	runtimeOnly bool
+}
 
 // owaspControls maps an OWASP API category (e.g. "API1") to the framework
 // controls it evidences. Keyed by the bare category (the ":2023" suffix stripped).
 var owaspControls = map[string][]controlRef{
 	"API1": { // Broken Object Level Authorization (BOLA / IDOR)
-		{fwOWASP, "API1:2023", "Broken Object Level Authorization"},
-		{fwNIS2, "Art. 21(2)(i)", "Access control policies"},
-		{fwISO, "A.8.3", "Information access restriction"},
+		{framework: fwOWASP, control: "API1:2023", title: "Broken Object Level Authorization"},
+		{framework: fwNIS2, control: "Art. 21(2)(i)", title: "Access control policies"},
+		{framework: fwDORA, control: "Art. 9(4)(c)", title: "Logical access limited to what is required"},
+		{framework: fwDORA, control: "Art. 10(1)", title: "Prompt detection of anomalous activities", runtimeOnly: true},
+		{framework: fwISO, control: "A.8.3", title: "Information access restriction"},
 	},
 	"API2": { // Broken Authentication
-		{fwOWASP, "API2:2023", "Broken Authentication"},
-		{fwNIS2, "Art. 21(2)(j)", "Multi-factor / continuous authentication"},
-		{fwISO, "A.5.17", "Authentication information"},
+		{framework: fwOWASP, control: "API2:2023", title: "Broken Authentication"},
+		{framework: fwNIS2, control: "Art. 21(2)(j)", title: "Multi-factor / continuous authentication"},
+		{framework: fwDORA, control: "Art. 9(4)(d)", title: "Strong authentication mechanisms"},
+		{framework: fwISO, control: "A.5.17", title: "Authentication information"},
 	},
 	"API3": { // Broken Object Property Level Authorization / excessive data exposure
-		{fwOWASP, "API3:2023", "Excessive data exposure"},
-		{fwNIS2, "Art. 21(2)(h)", "Cryptography and encryption of data"},
-		{fwISO, "A.5.34", "Privacy and protection of PII"},
+		{framework: fwOWASP, control: "API3:2023", title: "Excessive data exposure"},
+		{framework: fwNIS2, control: "Art. 21(2)(h)", title: "Cryptography and encryption of data"},
+		{framework: fwDORA, control: "Art. 9(3)", title: "Confidentiality and integrity of data in transit"},
+		{framework: fwISO, control: "A.5.34", title: "Privacy and protection of PII"},
 	},
 	"API5": { // Broken Function Level Authorization (BFLA)
-		{fwOWASP, "API5:2023", "Broken Function Level Authorization"},
-		{fwNIS2, "Art. 21(2)(i)", "Access control policies"},
-		{fwISO, "A.8.2", "Privileged access rights"},
+		{framework: fwOWASP, control: "API5:2023", title: "Broken Function Level Authorization"},
+		{framework: fwNIS2, control: "Art. 21(2)(i)", title: "Access control policies"},
+		{framework: fwDORA, control: "Art. 9(4)(c)", title: "Logical access limited to what is required"},
+		{framework: fwDORA, control: "Art. 10(1)", title: "Prompt detection of anomalous activities", runtimeOnly: true},
+		{framework: fwISO, control: "A.8.2", title: "Privileged access rights"},
 	},
 	"API9": { // Improper Inventory Management (shadow / undocumented APIs)
-		{fwOWASP, "API9:2023", "Improper Inventory Management"},
-		{fwNIS2, "Art. 21(2)(i)", "Asset management"},
-		{fwISO, "A.5.9", "Inventory of information and associated assets"},
+		{framework: fwOWASP, control: "API9:2023", title: "Improper Inventory Management"},
+		{framework: fwNIS2, control: "Art. 21(2)(i)", title: "Asset management"},
+		{framework: fwDORA, control: "Art. 8(1)", title: "Identification and documentation of ICT assets"},
+		{framework: fwISO, control: "A.5.9", title: "Inventory of information and associated assets"},
 	},
 }
 
@@ -75,6 +93,46 @@ type complianceControl struct {
 type complianceFramework struct {
 	Framework string              `json:"framework"`
 	Controls  []complianceControl `json:"controls"`
+	// NotEvidenced names controls of this framework that AEGIS structurally
+	// cannot speak to, with the reason. A report that lists only what it mapped
+	// reads as covering the framework; these are the parts it does not.
+	NotEvidenced []uncoveredControl `json:"not_evidenced,omitempty"`
+}
+
+// uncoveredControl is a control this product does not evidence, and why.
+//
+// It is deliberately a permanent, static statement rather than something
+// derived from the data: the gap is in what the gateway observes, so it is
+// there whether or not this particular report found anything. An auditor who
+// discovers such a gap unaided stops trusting the whole document, so the
+// document says it first.
+type uncoveredControl struct {
+	Control string `json:"control"`
+	Title   string `json:"title"`
+	Reason  string `json:"reason"`
+}
+
+// frameworkGaps is the honest half of the mapping.
+//
+// Every entry here is incident LIFECYCLE, and that is not an accident: AEGIS
+// detects and records security events, but it has no incident entity. Events
+// are never grouped into an incident, tracked through a lifecycle, classified
+// against a regulator's criteria, or driven to a notification deadline. Those
+// obligations are real and a buyer will ask about them, so the report names
+// them as gaps rather than letting the mapped controls imply coverage.
+var frameworkGaps = map[string][]uncoveredControl{
+	fwDORA: {
+		{"Art. 17", "ICT-related incident management process",
+			"AEGIS records security events but has no incident entity: events are not grouped, tracked through a lifecycle, or assigned an owner."},
+		{"Art. 18", "Classification of ICT-related incidents",
+			"classification needs clients affected, duration, geographical spread, data losses and economic impact — none of which the gateway observes."},
+		{"Art. 19", "Reporting of major incidents to the competent authority",
+			"there is no notification workflow and no initial / intermediate / final report timeline."},
+	},
+	fwNIS2: {
+		{"Art. 23", "Reporting obligations",
+			"the 24h early warning / 72h notification / 1 month final report timeline is not tracked. AEGIS produces evidence such a report would cite, not the report itself."},
+	},
 }
 
 // evidenceProvenance states where a report's runtime numbers came from and what
@@ -119,8 +177,13 @@ func buildCompliance(rows []findingRow, abuse map[string]int) complianceReport {
 	agg := map[key]*complianceControl{}
 	var rep complianceReport
 
-	add := func(cat, severity, issue string) {
+	// observed says the evidence is a detected event rather than a static
+	// finding. Controls marked runtimeOnly accept nothing else.
+	add := func(cat, severity, issue string, observed bool) {
 		for _, cr := range owaspControls[cat] {
+			if cr.runtimeOnly && !observed {
+				continue
+			}
 			k := key{cr.framework, cr.control}
 			c := agg[k]
 			if c == nil {
@@ -142,7 +205,7 @@ func buildCompliance(rows []findingRow, abuse map[string]int) complianceReport {
 		if _, ok := owaspControls[cat]; !ok {
 			continue
 		}
-		add(cat, r.Finding.Severity, r.Finding.Title+" — "+r.Method+" "+r.PathTemplate)
+		add(cat, r.Finding.Severity, r.Finding.Title+" — "+r.Method+" "+r.PathTemplate, false)
 		switch r.Finding.Severity {
 		case "critical":
 			rep.Summary.Critical++
@@ -159,7 +222,7 @@ func buildCompliance(rows []findingRow, abuse map[string]int) complianceReport {
 		if cat == "" {
 			continue
 		}
-		add(cat, "critical", "runtime: "+strings.ReplaceAll(reason, "_", " ")+" ("+strconv.Itoa(n)+" events)")
+		add(cat, "critical", "runtime: "+strings.ReplaceAll(reason, "_", " ")+" ("+strconv.Itoa(n)+" events)", true)
 		rep.Summary.Critical += n
 	}
 
@@ -171,7 +234,9 @@ func buildCompliance(rows []findingRow, abuse map[string]int) complianceReport {
 	}
 	rep.Summary.ControlsAffected = len(agg)
 	rep.Frameworks = []complianceFramework{}
-	for _, fw := range []string{fwOWASP, fwNIS2, fwISO} {
+	// The two EU regulations sit together, after the technical taxonomy that
+	// produced the finding and before the standard.
+	for _, fw := range []string{fwOWASP, fwNIS2, fwDORA, fwISO} {
 		cs := byFw[fw]
 		if len(cs) == 0 {
 			continue
@@ -182,7 +247,9 @@ func buildCompliance(rows []findingRow, abuse map[string]int) complianceReport {
 			}
 			return cs[i].Control < cs[j].Control
 		})
-		rep.Frameworks = append(rep.Frameworks, complianceFramework{Framework: fw, Controls: cs})
+		rep.Frameworks = append(rep.Frameworks, complianceFramework{
+			Framework: fw, Controls: cs, NotEvidenced: frameworkGaps[fw],
+		})
 	}
 	return rep
 }

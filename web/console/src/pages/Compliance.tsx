@@ -2,7 +2,7 @@ import { motion } from "framer-motion";
 import { ShieldCheck } from "@phosphor-icons/react";
 import { ErrorNote, PageHeader, StatCard } from "@/components/PageBits";
 import { Card, EmptyState, Skeleton } from "@/components/ui";
-import { api, type ComplianceReport } from "@/lib/api";
+import { api, type ComplianceFramework, type ComplianceReport } from "@/lib/api";
 import { useData } from "@/lib/hooks";
 import { fmt } from "@/lib/utils";
 
@@ -14,7 +14,7 @@ export function Compliance() {
     <div>
       <PageHeader
         title="Compliance"
-        desc="Findings and runtime abuse mapped to NIS2 and ISO 27001 controls — the auditor's language."
+        desc="Findings and runtime abuse mapped to NIS2, DORA and ISO 27001 controls — the auditor's language."
       />
 
       {error ? (
@@ -55,15 +55,40 @@ export function Compliance() {
                     <ControlRow key={c.control} c={c} i={i} />
                   ))}
                 </Card>
+                {fw.not_evidenced?.length ? <NotEvidenced items={fw.not_evidenced} /> : null}
               </section>
             ))}
             <p className="text-xs text-muted/70">
-              Mapping aid across OWASP API Top 10, NIS2 (Art. 21(2)) and ISO/IEC 27001:2022 Annex A — not a legal
-              certification.
+              Mapping aid across OWASP API Top 10, NIS2 (Art. 21(2)), DORA (Art. 8–10) and ISO/IEC 27001:2022 Annex A —
+              not a legal certification.
             </p>
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The articles a framework requires that AEGIS cannot speak to.
+ *
+ * Shown next to the mapped controls, not hidden behind a link: a page listing
+ * only what it mapped reads as covering the framework, and an auditor who finds
+ * the gap unaided stops trusting the rest of the page.
+ */
+function NotEvidenced({ items }: { items: NonNullable<ComplianceFramework["not_evidenced"]> }) {
+  return (
+    <div className="mt-2 rounded-lg border border-dashed border-border/70 px-4 py-3">
+      <p className="text-[11.5px] font-medium uppercase tracking-wide text-muted">Not evidenced by AEGIS</p>
+      <ul className="mt-2 space-y-1.5">
+        {items.map((u) => (
+          <li key={u.control} className="text-xs text-muted">
+            <span className="font-mono text-muted">{u.control}</span>{" "}
+            <span className="text-fg/80">{u.title}</span>
+            <span className="block text-muted/80">{u.reason}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

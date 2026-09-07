@@ -387,7 +387,7 @@ threat-models — OWASP tracks it as API9 for that reason.</p>""")
     a("<h2>Regulatory mapping</h2>")
     s = compliance.get("summary", {})
     a(f"<p>The findings above map onto {esc(s.get('controls_affected', 0))} controls across "
-      "OWASP API Top 10, NIS2 and ISO/IEC 27001:2022. This is a mapping aid for an "
+      "OWASP API Top 10, NIS2, DORA and ISO/IEC 27001:2022. This is a mapping aid for an "
       "audit conversation, not a certification.</p>")
     a("<table><tr><th>Framework</th><th>Control</th><th>Title</th><th>Severity</th><th>Issues</th></tr>")
     for fw in compliance.get("frameworks", []):
@@ -397,6 +397,23 @@ threat-models — OWASP tracks it as API9 for that reason.</p>""")
 <td>{esc(c.get('title'))}</td><td><span class="tag {cls}">{esc(c.get('severity'))}</span></td>
 <td>{esc(c.get('count'))}</td></tr>""")
     a("</table>")
+
+    # What the mapping does NOT cover. A table listing only mapped controls
+    # reads as covering the framework, and a reader who finds the gap unaided
+    # stops trusting the rest of the document — so it is stated here, in the
+    # same place, rather than left to a footnote or a sales conversation.
+    gaps = [(fw.get("framework"), u)
+            for fw in compliance.get("frameworks", [])
+            for u in fw.get("not_evidenced", [])]
+    if gaps:
+        a("<h3>What this mapping does not cover</h3>")
+        a("<p>These obligations are real and AEGIS does not evidence them. They are "
+          "listed so the gap is visible before an auditor finds it.</p>")
+        a("<table><tr><th>Framework</th><th>Control</th><th>Title</th><th>Why not</th></tr>")
+        for framework, u in gaps:
+            a(f"""<tr><td>{esc(framework)}</td><td><code>{esc(u.get('control'))}</code></td>
+<td>{esc(u.get('title'))}</td><td>{esc(u.get('reason'))}</td></tr>""")
+        a("</table>")
 
     # ── Method ───────────────────────────────────────────────────────────────
     a("<h2>How this report was produced</h2>")
