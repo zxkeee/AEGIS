@@ -1,6 +1,7 @@
 package attest
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -259,5 +260,94 @@ func TestVerify_DigestIsTheDocumentsPublishedIdentity(t *testing.T) {
 	}
 	if !errors.Is(err, ErrTampered) {
 		t.Errorf("error should wrap ErrTampered, got %v", err)
+	}
+}
+
+// The finding this construction exists to close.
+//
+// Algorithm, digest, public_key and key_id are all recomputed or cross-checked
+// during verification, so tampering with them is caught. signed_at was checked
+// by nothing: an operator could take a genuinely signed clean report, edit that
+// one field, and reportverify would print the attacker's date on the single
+// line an auditor actually reads. The document body carries no date of its own,
+// so there was no second source to catch the substitution.
+func TestVerify_SignedAtCannotBeEdited(t *testing.T) {
+	s := testSigner(t, 20)
+	env, err := s.Attest(sample)
+	if err != nil {
+		t.Fatalf("Attest: %v", err)
+	}
+	original := env.Attestation.SignedAt
+
+	for _, forged := range []string{
+		"2030-12-01T00:00:00Z",           // forward-dated: "this audit is current"
+		"2020-01-01T00:00:00Z",           // back-dated: "we had this control back then"
+		original[:len(original)-1] + "1", // a single character
+	} {
+		if forged == original {
+			continue
+		}
+		tampered := env
+		tampered.Attestation.SignedAt = forged
+		if err := Verify(tampered, pubOf(t, s)); err == nil {
+			t.Errorf("signed_at edited to %s and the attestation still verified", forged)
+		}
+	}
+
+	// Untouched, it still verifies — the check must not reject honest documents.
+	if err := Verify(env, pubOf(t, s)); err != nil {
+		t.Fatalf("an unmodified envelope stopped verifying: %v", err)
+	}
+}
+
+// A signature is only meaningful for the purpose it was made for. Without
+// domain separation, bytes signed elsewhere under the same key could be
+// replayed as an attestation.
+func TestVerify_SignatureIsDomainSeparated(t *testing.T) {
+	s := testSigner(t, 21)
+	env, _ := s.Attest(sample)
+
+	// A signature over the bare document — the pre-fix construction — must not
+	// be accepted.
+	bare := ed25519.Sign(s.priv, []byte(env.Document))
+	env.Attestation.Signature = hex.EncodeToString(bare)
+	if err := Verify(env, pubOf(t, s)); err == nil {
+		t.Fatal("a signature over the document alone was accepted; the metadata is not bound")
+	}
+
+	// And the context string must be load-bearing, not decoration. This is the
+	// cross-protocol case: another component signing an otherwise
+	// identically-shaped message under the same key must not produce something
+	// this package accepts as an attestation.
+	fresh, _ := s.Attest(sample)
+	otherProtocol := []byte("some-other-purpose-v1\n" + fresh.Attestation.SignedAt + "\n" + fresh.Document)
+	fresh.Attestation.Signature = hex.EncodeToString(ed25519.Sign(s.priv, otherProtocol))
+	if err := Verify(fresh, pubOf(t, s)); err == nil {
+		t.Fatal("a signature made for another purpose verified as an attestation; " +
+			"the domain-separation prefix is not being signed")
+	}
+
+	// The prefix is versioned so a future change to the construction is a
+	// visible break rather than a silent reinterpretation.
+	if !bytes.HasPrefix(signedMessage("2026-01-01T00:00:00Z", []byte("{}")), []byte(sigContext+"\n")) {
+		t.Error("the signed message does not begin with the versioned context")
+	}
+}
+
+// signed_at is printed to a human as a date. A value that is not one must be
+// refused rather than displayed.
+func TestVerify_RejectsAMalformedSignedAt(t *testing.T) {
+	s := testSigner(t, 22)
+	for _, bad := range []string{"", "yesterday", "2026-13-45T99:99:99Z", "not a date at all"} {
+		env, _ := s.Attest(sample)
+		env.Attestation.SignedAt = bad
+		err := Verify(env, pubOf(t, s))
+		if err == nil {
+			t.Errorf("signed_at %q was accepted", bad)
+			continue
+		}
+		if !strings.Contains(err.Error(), "signed_at") {
+			t.Errorf("signed_at %q: the error should name the field, got %v", bad, err)
+		}
 	}
 }

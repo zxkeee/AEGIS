@@ -77,6 +77,19 @@ reports and, worse, make two different documents indistinguishable.
 `digest` is a convenience, not a control: it lets a reader identify the document
 with `sha256sum` and no crypto tooling. The signature is what protects it.
 
+**`signed_at` is covered by the signature.** It has to be. Everything else in
+the attestation is recomputed or cross-checked during verification, so tampering
+with it is caught — but a field that nothing checks is a field an operator can
+edit on a genuinely signed report, and this one is printed on the single line an
+auditor reads. Editing it now invalidates the attestation. The signature is made
+over `aegis-attest-v1\n<signed_at>\n<document>`; the version prefix domain-
+separates it, so a signature made for any other purpose under the same key is
+not an attestation.
+
+The compliance report also carries `generated_at` and `tenant` **inside** the
+signed body, so the document says for itself when it was produced and whom it is
+about, rather than relying on the envelope around it.
+
 `format=csv` cannot carry an attestation, so `?format=csv&sign=1` is refused
 rather than answered with an unsigned spreadsheet. Likewise, a request for a
 signature on a gateway with no key configured is a `400`, never a quietly
