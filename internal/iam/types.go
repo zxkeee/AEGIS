@@ -19,6 +19,19 @@ const (
 // admin operations (block IP, revoke JWT, etc.).
 func (r Role) CanMutate() bool { return r == RoleAdmin }
 
+// Valid reports whether r is a role this package recognises.
+//
+// It exists so a role arriving as a string from an API body has one place to be
+// checked. The alternative — an inline comparison at each call site — shipped
+// as a privilege escalation: a createUser handler compared against both roles
+// and, on no match, assigned RoleAdmin as a "sensible default", so an empty,
+// misspelled or differently-cased role produced a full mutator.
+//
+// Every other enum crossing this codebase's API boundary rejects what it does
+// not recognise, and FromContext deliberately falls back to RoleViewer. An
+// unrecognised role must never resolve upward.
+func (r Role) Valid() bool { return r == RoleAdmin || r == RoleViewer }
+
 // Session is the authenticated console session stored server-side in Redis.
 // Tenant + Role are propagated into request context by the AdminAuth middleware
 // so every admin handler is automatically scoped.
