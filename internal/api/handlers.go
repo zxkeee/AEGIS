@@ -56,6 +56,10 @@ type handlers struct {
 	draining *atomic.Bool
 	// ready caches the readiness Redis check — see readinessTTL.
 	ready readinessCache
+	// incidents is the incident record (NIS2 Art. 23, DORA Art. 17-19). nil
+	// when forensic_dsn is unset, in which case the routes report 503 and the
+	// compliance report keeps listing those articles as not evidenced.
+	incidents incidentOps
 	// reportSigner attests compliance reports (see internal/attest). nil when
 	// AEGIS_REPORT_SIGNING_KEY is unset, in which case a request for a signed
 	// report is refused rather than answered unsigned.

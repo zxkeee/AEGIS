@@ -11,6 +11,7 @@ import (
 	"api-gateway/internal/discovery"
 	"api-gateway/internal/forensic"
 	"api-gateway/internal/iam"
+	"api-gateway/internal/incident"
 	"api-gateway/internal/license"
 	"api-gateway/internal/logger"
 	"api-gateway/internal/proxy"
@@ -37,6 +38,9 @@ type Server struct {
 	// loadValidatedConfig (boot, and every hot-reload — see SetLicenseStatus).
 	// atomic.Value so a concurrent GET /api/license never races a reload.
 	licenseStatus atomic.Value
+	// h is the handler set the routes close over, kept so a dependency that
+	// only exists later (see SetIncidents) can be attached to it.
+	h *handlers
 }
 
 // SetDraining flips the readiness state. When true, /readyz returns 503 so a
@@ -48,6 +52,23 @@ func (s *Server) SetDraining(v bool) { s.draining.Store(v) }
 // hot-reload, so GET /api/license and the console banner reflect it without
 // reading gateway logs. Called from cmd/gateway/main.go.
 func (s *Server) SetLicenseStatus(st license.Status) { s.licenseStatus.Store(st) }
+
+// SetIncidents attaches the incident record. A separate setter rather than an
+// eleventh constructor parameter — NewServer already takes ten, and a caller
+// getting two of them the wrong way round is a bug the compiler cannot see.
+// Called from cmd/gateway/main.go; nil leaves the incident routes reporting 503.
+//
+// It must be called before the server starts serving: it writes a field the
+// request path reads, with no synchronisation, exactly like the wiring done
+// inside NewServer.
+func (s *Server) SetIncidents(store *incident.PGStore) {
+	// A typed nil inside an interface is not nil, and every guard in the
+	// handlers tests the interface — so an absent store must stay a true nil.
+	if store == nil || s.h == nil {
+		return
+	}
+	s.h.incidents = store
+}
 
 // NewServer creates a new admin API server. users / auditStore may be nil if
 // forensic_dsn is unset — in that case only the legacy bearer/secret login is
@@ -73,6 +94,7 @@ func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw
 
 func (s *Server) registerRoutes() {
 	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog, forensic: s.forensic, users: s.users, audit: s.audit, oidc: s.oidc, draining: &s.draining, licenseStatus: &s.licenseStatus}
+	s.h = h
 	// Assign the spec interface only for a real catalog, so a nil *discovery.
 	// Catalog does not become a non-nil interface holding a typed-nil pointer.
 	if s.catalog != nil {
@@ -133,6 +155,14 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/compliance", h.getCompliance)
 	s.mux.HandleFunc("GET /api/report", h.getReport)
 	s.mux.HandleFunc("GET /api/report/signing-key", h.getSigningKey)
+
+	// Incident record (NIS2 Art. 23, DORA Art. 17-19). Registered whatever the
+	// store's state: without one they answer 503, which tells an operator the
+	// feature exists and is switched off — a 404 would say it does not exist.
+	s.mux.HandleFunc("GET /api/incidents", h.getIncidents)
+	s.mux.HandleFunc("GET /api/incidents/{id}", h.getIncident)
+	s.mux.HandleFunc("PATCH /api/incidents/{id}", h.patchIncident)
+	s.mux.HandleFunc("POST /api/incidents/{id}/notifications", h.postIncidentNotification)
 
 	// OpenAPI spec import + documented-vs-observed drift (per-tenant).
 	s.mux.HandleFunc("GET /api/discovery/spec", h.getSpec)
