@@ -56,6 +56,11 @@ type handlers struct {
 	draining *atomic.Bool
 	// ready caches the readiness Redis check — see readinessTTL.
 	ready readinessCache
+	// endpoints is the catalog read the incident view needs, behind a narrow
+	// interface so the read-once property is testable. nil when discovery is
+	// disabled — the classification's endpoint half then stays empty rather
+	// than false-by-default.
+	endpoints endpointLister
 	// incidents is the incident record (NIS2 Art. 23, DORA Art. 17-19). nil
 	// when forensic_dsn is unset, in which case the routes report 503 and the
 	// compliance report keeps listing those articles as not evidenced.

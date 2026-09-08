@@ -1,10 +1,12 @@
 package api
 
 import (
+	"api-gateway/internal/discovery"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -378,4 +380,81 @@ func TestIncidents_ViewerCannotMutate(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("viewer GET = %d, want 200", rec.Code)
 	}
+}
+
+// Classification.Complete() counts a present value as answered, so a nonsense
+// one is worse than a missing one: it satisfies the completeness check and then
+// travels into a DORA Art. 18 report for a regulator.
+func TestPatchIncident_BoundsTheClassification(t *testing.T) {
+	h, f := incidentHandlers(incident.Incident{ID: "i1", DetectedAt: incT0, Status: incident.StatusOpen})
+
+	bad := []string{
+		`{"clients_affected":-5}`,
+		`{"economic_impact_eur":-1000}`,
+		`{"geographic_spread":"` + strings.Repeat("x", maxGeographicSpread+1) + `"}`,
+		`{"notes":"` + strings.Repeat("y", maxNotes+1) + `"}`,
+		// A typo'd field used to be discarded silently, so an operator could
+		// believe they had recorded something they had not.
+		`{"clients_affcted":3}`,
+		`{"severity":"major","unknown_field":1}`,
+	}
+	for _, body := range bad {
+		rec, _ := call(t, h.patchIncident, http.MethodPatch, "/api/incidents/i1", body)
+		if rec.Code != http.StatusBadRequest {
+			label := body
+			if len(label) > 60 {
+				label = label[:60] + "…"
+			}
+			t.Errorf("%s: status = %d, want 400", label, rec.Code)
+		}
+	}
+	if f.applied.ClientsAffected != nil || f.applied.Notes != nil {
+		t.Error("a rejected patch still reached the store")
+	}
+
+	// Zero is still a real answer, and the ordinary case still works.
+	rec, _ := call(t, h.patchIncident, http.MethodPatch, "/api/incidents/i1",
+		`{"clients_affected":0,"economic_impact_eur":0,"geographic_spread":"DE, FR"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a valid patch was rejected: %d", rec.Code)
+	}
+}
+
+// The listing used to issue one identical full-catalog query per incident. The
+// query carries no per-incident predicate, so the work was pure duplication —
+// and `?limit=1000` turned one request from a viewer into a thousand
+// transactions against the shared database.
+func TestGetIncidents_ReadsTheCatalogOnce(t *testing.T) {
+	items := make([]incident.Incident, 0, 25)
+	for i := 0; i < 25; i++ {
+		items = append(items, incident.Incident{
+			ID: "i" + strconv.Itoa(i), DetectedAt: incT0, Status: incident.StatusOpen,
+			Endpoints: []string{"GET /orders/{id}"},
+		})
+	}
+	h, _ := incidentHandlers(items...)
+	counting := &countingLister{}
+	h.endpoints = counting
+
+	rec, body := call(t, h.getIncidents, http.MethodGet, "/api/incidents", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if n, _ := body["count"].(float64); int(n) != len(items) {
+		t.Fatalf("count = %v, want %d", body["count"], len(items))
+	}
+	if counting.calls > 1 {
+		t.Errorf("the catalog was queried %d times for %d incidents; it must be read once",
+			counting.calls, len(items))
+	}
+}
+
+// countingLister records how many times the catalog was read.
+type countingLister struct{ calls int }
+
+func (c *countingLister) ListEndpoints(context.Context, discovery.EndpointFilter) ([]discovery.Endpoint, error) {
+	c.calls++
+	return []discovery.Endpoint{{
+		Method: "GET", PathTemplate: "/orders/{id}", RiskScore: 90, PIITypes: []string{"email"},
+	}}, nil
 }

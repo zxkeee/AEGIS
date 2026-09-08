@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -52,15 +53,60 @@ type incidentView struct {
 	ProposedSeverity incident.Severity `json:"proposed_severity,omitempty"`
 }
 
+// endpointLister is the slice of the catalog the incident view needs, behind an
+// interface for the same reason specOps exists: so the "read the catalog once"
+// property is testable without PostgreSQL. A regression here is invisible to a
+// correctness test — the output is identical either way, only the query count
+// changes — so it has to be asserted directly.
+type endpointLister interface {
+	ListEndpoints(ctx context.Context, f discovery.EndpointFilter) ([]discovery.Endpoint, error)
+}
+
+// endpointFacts is the catalog's view of one endpoint, reduced to the two
+// things a DORA Art. 18 classification needs from it.
+type endpointFacts struct {
+	critical bool
+	piiTypes []string
+}
+
+// catalogFacts reads the catalog ONCE and indexes it by "METHOD /path/{id}".
+//
+// This used to be a per-incident call. The query carries no per-incident
+// predicate, so a listing of N incidents issued N identical transactions, each
+// returning up to 1000 rows and running every one through posture scoring and
+// finding detection. `GET /api/incidents?limit=1000` therefore turned one HTTP
+// request into a thousand catalog transactions against the same PostgreSQL that
+// backs the forensic sink and the incident correlator — reachable by a VIEWER,
+// the lowest-privilege credential there is.
+//
+// Absent a catalog it returns nil, and the classification's endpoint-derived
+// half stays empty rather than false-by-default: "not critical" and "we could
+// not check" are different statements.
+func (h *handlers) catalogFacts(ctx context.Context) map[string]endpointFacts {
+	if h.endpoints == nil {
+		return nil
+	}
+	eps, err := h.endpoints.ListEndpoints(ctx, discovery.EndpointFilter{Limit: reportEndpointLimit})
+	if err != nil {
+		return nil
+	}
+	facts := make(map[string]endpointFacts, len(eps))
+	for _, e := range eps {
+		facts[e.Method+" "+e.PathTemplate] = endpointFacts{
+			critical: e.RiskScore >= criticalRiskScore || e.Posture == "unprotected",
+			piiTypes: e.PIITypes,
+		}
+	}
+	return facts
+}
+
 // view enriches one incident for the API.
 //
 // The catalog supplies the two Art. 18 criteria that depend on knowing what an
 // endpoint is rather than what happened to it: whether any affected endpoint is
-// critical, and what classes of data it returns. Absent a catalog they stay
-// empty rather than false-by-default, because "not critical" and "we could not
-// check" are different statements.
-func (h *handlers) view(ctx context.Context, inc incident.Incident, now time.Time) incidentView {
-	h.enrichFromCatalog(ctx, &inc)
+// critical, and what classes of data it returns.
+func (h *handlers) view(inc incident.Incident, now time.Time, facts map[string]endpointFacts) incidentView {
+	enrich(&inc, facts)
 	v := incidentView{
 		Incident:         inc,
 		Deadlines:        inc.Deadlines(incident.DefaultSchedule, now),
@@ -77,35 +123,26 @@ func (h *handlers) view(ctx context.Context, inc incident.Incident, now time.Tim
 	return v
 }
 
-// enrichFromCatalog fills the endpoint-derived half of the classification.
-func (h *handlers) enrichFromCatalog(ctx context.Context, inc *incident.Incident) {
-	if h.catalog == nil || len(inc.Endpoints) == 0 {
+// enrich fills the endpoint-derived half of the classification from a prepared
+// index. Pure, so it needs no database and no context.
+func enrich(inc *incident.Incident, facts map[string]endpointFacts) {
+	if len(facts) == 0 || len(inc.Endpoints) == 0 {
 		return
-	}
-	eps, err := h.catalog.ListEndpoints(ctx, discovery.EndpointFilter{Limit: reportEndpointLimit})
-	if err != nil {
-		// A classification missing its catalog half is worse than useless only
-		// if it pretends to be complete; it does not, so degrade quietly rather
-		// than fail the whole read.
-		return
-	}
-	affected := map[string]bool{}
-	for _, e := range inc.Endpoints {
-		affected[e] = true
 	}
 	seen := map[string]bool{}
 	var types []string
-	for _, e := range eps {
-		if !affected[e.Method+" "+e.PathTemplate] {
+	for _, ep := range inc.Endpoints {
+		f, ok := facts[ep]
+		if !ok {
 			continue
 		}
-		if e.RiskScore >= criticalRiskScore || e.Posture == "unprotected" {
+		if f.critical {
 			inc.Classification.CriticalService = true
 		}
-		for _, tpe := range e.PIITypes {
-			if !seen[tpe] {
-				seen[tpe] = true
-				types = append(types, tpe)
+		for _, t := range f.piiTypes {
+			if !seen[t] {
+				seen[t] = true
+				types = append(types, t)
 			}
 		}
 	}
@@ -157,10 +194,11 @@ func (h *handlers) getIncidents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	facts := h.catalogFacts(ctx)
 	views := make([]incidentView, 0, len(list))
 	var overdue int
 	for _, inc := range list {
-		v := h.view(ctx, inc, now)
+		v := h.view(inc, now, facts)
 		if v.Overdue {
 			overdue++
 		}
@@ -191,7 +229,7 @@ func (h *handlers) getIncident(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "incident not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, h.view(ctx, *inc, time.Now().UTC()))
+	writeJSON(w, http.StatusOK, h.view(*inc, time.Now().UTC(), h.catalogFacts(ctx)))
 }
 
 // incidentPatch is the operator-owned half of an incident.
@@ -208,14 +246,52 @@ type incidentPatch struct {
 	Notes             *string  `json:"notes"`
 }
 
+// validate bounds the operator-supplied half of a classification.
+//
+// Classification.Complete() counts a present value as answered, so a nonsense
+// one is worse than a missing one: it satisfies the completeness check and then
+// travels into a report for a regulator. "-5 clients affected" is not an
+// assessment.
+func (p incidentPatch) validate() error {
+	if p.ClientsAffected != nil && *p.ClientsAffected < 0 {
+		return errors.New("clients_affected cannot be negative")
+	}
+	if p.EconomicImpactEUR != nil && *p.EconomicImpactEUR < 0 {
+		return errors.New("economic_impact_eur cannot be negative")
+	}
+	// Bounded so a free-text field cannot be used to store an arbitrary blob in
+	// a row that is read back into every listing.
+	if p.GeographicSpread != nil && len(*p.GeographicSpread) > maxGeographicSpread {
+		return fmt.Errorf("geographic_spread must be at most %d characters", maxGeographicSpread)
+	}
+	if p.Notes != nil && len(*p.Notes) > maxNotes {
+		return fmt.Errorf("notes must be at most %d characters", maxNotes)
+	}
+	return nil
+}
+
+const (
+	maxGeographicSpread = 200
+	maxNotes            = 4000
+)
+
 // PATCH /api/incidents/{id}
 func (h *handlers) patchIncident(w http.ResponseWriter, r *http.Request) {
 	if !h.requireMutator(w, r) || !h.incidentsReady(w) {
 		return
 	}
 	var p incidentPatch
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&p); err != nil {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	// A typo'd field name used to be discarded silently, so an operator could
+	// believe they had recorded a classification they had not — and these values
+	// go into a DORA Art. 18 report.
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if err := p.validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -258,7 +334,7 @@ func (h *handlers) patchIncident(w http.ResponseWriter, r *http.Request) {
 		h.writeStoreError(w, "admin: incident reload failed", "failed to update incident", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, h.view(ctx, *inc, time.Now().UTC()))
+	writeJSON(w, http.StatusOK, h.view(*inc, time.Now().UTC(), h.catalogFacts(ctx)))
 }
 
 // notificationBody records a report submitted to a competent authority.
@@ -323,7 +399,7 @@ func (h *handlers) postIncidentNotification(w http.ResponseWriter, r *http.Reque
 		h.writeStoreError(w, "admin: incident reload failed", "failed to record notification", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, h.view(ctx, *inc, time.Now().UTC()))
+	writeJSON(w, http.StatusOK, h.view(*inc, time.Now().UTC(), h.catalogFacts(ctx)))
 }
 
 // incidentEvidence summarises the incident record for the compliance mapping.

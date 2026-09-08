@@ -32,10 +32,6 @@ func (h *handlers) specReady(w http.ResponseWriter) bool {
 	return true
 }
 
-// PUT /api/discovery/spec
-// Body is the raw OpenAPI 3.x / Swagger 2.0 document (YAML or JSON). It is
-// parsed and validated before storage; a malformed document is rejected with
-// 400 and never replaces the current spec. Scoped to the request's tenant.
 func (h *handlers) putSpec(w http.ResponseWriter, r *http.Request) {
 	if !h.requireMutator(w, r) {
 		return

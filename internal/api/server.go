@@ -99,6 +99,7 @@ func (s *Server) registerRoutes() {
 	// Catalog does not become a non-nil interface holding a typed-nil pointer.
 	if s.catalog != nil {
 		h.specCat = s.catalog
+		h.endpoints = s.catalog
 	}
 
 	// config.Validate has already proved this key parses, so a failure here can
