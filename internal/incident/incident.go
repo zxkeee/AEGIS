@@ -192,10 +192,21 @@ var DefaultSchedule = Schedule{
 
 // Notification records that a report was submitted to a competent authority.
 type Notification struct {
-	Kind      DeadlineKind `json:"kind"`
-	SentAt    time.Time    `json:"sent_at"`
-	Authority string       `json:"authority,omitempty"`
-	Reference string       `json:"reference,omitempty"`
+	Kind DeadlineKind `json:"kind"`
+	// SentAt is the operator's CLAIM about when they filed. AEGIS cannot
+	// observe a submission to a regulator, so this is testimony, not evidence.
+	SentAt time.Time `json:"sent_at"`
+	// RecordedAt is when the gateway was told — set server-side, never by the
+	// caller. It is the witness to the claim above.
+	//
+	// Without it, "append-only" was not the guarantee its own comment claimed.
+	// Editing a submission time was blocked, but APPENDING a backdated entry
+	// achieved the same outcome, and the earliest-wins reduction made the new
+	// entry authoritative. An operator could clear a missed NIS2 Art. 23
+	// deadline after the fact and the record showed nothing.
+	RecordedAt time.Time `json:"recorded_at"`
+	Authority  string    `json:"authority,omitempty"`
+	Reference  string    `json:"reference,omitempty"`
 }
 
 // Deadline is one obligation with its due time and current state.
@@ -203,8 +214,19 @@ type Deadline struct {
 	Kind   DeadlineKind `json:"kind"`
 	Due    time.Time    `json:"due"`
 	SentAt *time.Time   `json:"sent_at,omitempty"`
-	// Overdue is true when the deadline has passed and nothing was submitted.
+	// Overdue means the obligation was NOT met on time — either nothing was
+	// submitted and the deadline has passed, or something was submitted after
+	// it.
+	//
+	// The second case used to be missing: any recorded submission cleared the
+	// flag without ever comparing its time to the due time, so an early warning
+	// filed at hour 100 against a 24-hour obligation reported clean. That is a
+	// breach of the obligation being presented to a regulator as compliance.
 	Overdue bool `json:"overdue"`
+	// Late is true when a submission was made, but after the deadline. It is
+	// separate from Overdue so a report can distinguish "filed, 76h late" from
+	// "never filed" — both are failures, and they are not the same failure.
+	Late bool `json:"late,omitempty"`
 	// Article names the obligation, so a reader does not have to look it up.
 	Article string `json:"article"`
 }
@@ -252,11 +274,27 @@ type Incident struct {
 // does not stop having been missed because the incident was later closed, and a
 // report that hid that would be the most dangerous kind of wrong.
 func (i *Incident) Deadlines(s Schedule, now time.Time) []Deadline {
-	sent := map[DeadlineKind]time.Time{}
+	// Resolved by earliest RECORDED time, not earliest claimed time: the first
+	// submission the gateway witnessed is the authoritative one. Taking the
+	// earliest claim instead let a later, backdated entry rewrite history —
+	// which is precisely the forgery an append-only log is supposed to prevent.
+	//
+	// Rows written before recorded_at existed have a zero value; they fall back
+	// to the claim so an upgrade does not silently reorder old history.
+	type record struct{ sent, recorded time.Time }
+	first := map[DeadlineKind]record{}
 	for _, n := range i.Notifications {
-		if prev, ok := sent[n.Kind]; !ok || n.SentAt.Before(prev) {
-			sent[n.Kind] = n.SentAt
+		rec := n.RecordedAt
+		if rec.IsZero() {
+			rec = n.SentAt
 		}
+		if prev, ok := first[n.Kind]; !ok || rec.Before(prev.recorded) {
+			first[n.Kind] = record{sent: n.SentAt, recorded: rec}
+		}
+	}
+	sent := map[DeadlineKind]time.Time{}
+	for k, r := range first {
+		sent[k] = r.sent
 	}
 
 	mk := func(kind DeadlineKind, due time.Time) Deadline {
@@ -264,6 +302,11 @@ func (i *Incident) Deadlines(s Schedule, now time.Time) []Deadline {
 		if t, ok := sent[kind]; ok {
 			tt := t
 			d.SentAt = &tt
+			// A submission does not by itself discharge the obligation — it has
+			// to have been on time. Returning here without this comparison, as
+			// this used to, reported a deadline missed by four days as met.
+			d.Late = t.After(due)
+			d.Overdue = d.Late
 			return d
 		}
 		d.Overdue = now.After(due)

@@ -348,6 +348,11 @@ type Update struct {
 // ErrNotFound is returned when the incident does not exist for the tenant.
 var ErrNotFound = errors.New("incident: not found")
 
+// ErrInvalid marks a caller mistake, as opposed to a store failure. The two
+// used to be indistinguishable at the API boundary, so a database outage was
+// reported to the client as a 400 with the raw driver error attached.
+var ErrInvalid = errors.New("incident: invalid request")
+
 // Apply writes an operator's changes.
 //
 // One static statement rather than a SET clause assembled from the fields that
@@ -423,39 +428,78 @@ func nullable[T any](p *T) any {
 
 // RecordNotification appends a submitted report to the incident's history.
 //
-// Append-only on purpose. This is the record that a deadline was met, so it must
-// not be possible to move a submission time later to make a missed deadline look
-// met — the only way to change history here is to add to it.
+// Append-only, and now witnessed. The previous version accepted whatever
+// sent_at the caller supplied and recorded nothing about when it was told, so
+// "append-only" stopped a submission time being EDITED while leaving it
+// perfectly possible to append a backdated one — the same outcome by another
+// route. RecordedAt is stamped here, from the database clock, and is what
+// Deadlines resolves on.
+//
+// sent_at is also bounded against the incident's own timeline: a submission
+// cannot predate the incident it reports, and cannot be in the future. Neither
+// is a defence against a determined operator — the honest limit of this record
+// is that AEGIS cannot witness a filing to a regulator, only that it was told
+// about one — but both reject the mistakes and the crude forgeries, and the
+// gap between claim and witness is now visible to anyone reading the report.
 func (s *PGStore) RecordNotification(ctx context.Context, tenant, id string, n Notification) error {
-	if n.SentAt.IsZero() {
-		n.SentAt = time.Now().UTC()
-	}
 	switch n.Kind {
 	case KindEarlyWarning, KindNotification, KindFinalReport:
 	default:
-		return fmt.Errorf("incident: unknown notification kind %q", n.Kind)
+		return fmt.Errorf("%w: unknown notification kind %q", ErrInvalid, n.Kind)
 	}
-	raw, err := json.Marshal([]Notification{n})
-	if err != nil {
-		return err
-	}
+
 	return s.withTenantTx(ctx, tenant, func(tx *sql.Tx) error {
+		var detectedAt, dbNow time.Time
+		err := tx.QueryRowContext(ctx,
+			`SELECT detected_at, NOW() FROM incidents WHERE tenant_id = $1 AND id = $2`,
+			tenantOr(tenant), id).Scan(&detectedAt, &dbNow)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+
+		if n.SentAt.IsZero() {
+			n.SentAt = dbNow.UTC()
+		}
+		if n.SentAt.Before(detectedAt) {
+			return fmt.Errorf("%w: sent_at %s precedes the incident's detection at %s",
+				ErrInvalid, n.SentAt.UTC().Format(time.RFC3339), detectedAt.UTC().Format(time.RFC3339))
+		}
+		// A small allowance for clock skew between the operator's system and
+		// the database; beyond that a future submission is not a filing that
+		// happened, and accepting one would let a deadline be met in advance.
+		if n.SentAt.After(dbNow.Add(clockSkewAllowance)) {
+			return fmt.Errorf("%w: sent_at %s is in the future",
+				ErrInvalid, n.SentAt.UTC().Format(time.RFC3339))
+		}
+		n.RecordedAt = dbNow.UTC()
+
+		raw, err := json.Marshal([]Notification{n})
+		if err != nil {
+			return err
+		}
 		res, err := tx.ExecContext(ctx, `
 UPDATE incidents SET notifications = notifications || $3::jsonb
 WHERE tenant_id = $1 AND id = $2`, tenantOr(tenant), id, string(raw))
 		if err != nil {
 			return err
 		}
-		n, err := res.RowsAffected()
+		rows, err := res.RowsAffected()
 		if err != nil {
 			return err
 		}
-		if n == 0 {
+		if rows == 0 {
 			return ErrNotFound
 		}
 		return nil
 	})
 }
+
+// clockSkewAllowance is how far ahead of the database clock a claimed
+// submission time may sit before it is refused.
+const clockSkewAllowance = 5 * time.Minute
 
 // Stats summarises the incident record for the compliance report.
 type Stats struct {

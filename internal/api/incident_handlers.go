@@ -302,12 +302,20 @@ func (h *handlers) postIncidentNotification(w http.ResponseWriter, r *http.Reque
 	tid := tenant.From(ctx)
 	id := r.PathValue("id")
 	if err := h.incidents.RecordNotification(ctx, tid, id, n); err != nil {
-		if errors.Is(err, incident.ErrNotFound) {
+		switch {
+		case errors.Is(err, incident.ErrNotFound):
 			writeError(w, http.StatusNotFound, "incident not found")
-			return
+		case errors.Is(err, incident.ErrInvalid):
+			// Only a caller mistake gets 400 with its reason. This used to be
+			// the default for every non-ErrNotFound error, so a connection
+			// failure or an RLS violation was reported to the client as a bad
+			// request with the raw PostgreSQL text attached — wrong status, and
+			// internal detail leaked from a handler whose own writeError says
+			// "internal error details never leak to clients".
+			writeError(w, http.StatusBadRequest, err.Error())
+		default:
+			h.writeStoreError(w, "admin: record notification failed", "failed to record notification", err)
 		}
-		// An unknown kind is the caller's mistake, not the store's.
-		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	inc, err := h.incidents.Get(ctx, tid, id)

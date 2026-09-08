@@ -196,6 +196,16 @@ report too, but its time limits are set by the regulatory technical standards
 under Art. 20, not by the regulation — so that schedule is configuration.
 Confirm the limits that apply to you; do not assume the NIS2 defaults do.
 
+A submission does not clear a deadline on its own — it has to have been on
+time. A filing made after the due time reports `late` **and** `overdue`, so
+"filed, 76h late" and "never filed" are both failures and are distinguishable.
+
+`sent_at` is the operator's **claim**; AEGIS cannot witness a filing to a
+regulator. `recorded_at` is stamped server-side when the gateway was told, and
+is what deadline resolution uses — so appending a backdated entry cannot rewrite
+history, only add to it. A claim that predates the incident or sits in the
+future is refused outright.
+
 Closing an incident does not clear a deadline that passed unmet. An obligation
 that was missed stays missed, and a report that hid that would be the most
 dangerous kind of wrong this system could produce. `?overdue=true` lists them,

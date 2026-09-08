@@ -3,6 +3,7 @@ package incident
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -219,15 +220,20 @@ func TestPG_ClosedAtIsStampedOnce(t *testing.T) {
 func TestPG_NotificationsAreAppendOnly(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	mergeN(t, s, Delta{Tenant: "acme", Class: "bola", Subject: "u1", First: t0, Last: t0, Count: 1}, DefaultWindow)
+
+	// Anchored to real time, not the package's fixed t0: sent_at is now bounded
+	// against the database clock, so a submission dated from a hardcoded future
+	// day is correctly refused. Everything here must sit in the past.
+	base := time.Now().UTC().Add(-200 * time.Hour)
+	mergeN(t, s, Delta{Tenant: "acme", Class: "bola", Subject: "u1", First: base, Last: base, Count: 1}, DefaultWindow)
 	id := listAll(t, s, "acme")[0].ID
 
-	first := Notification{Kind: KindEarlyWarning, SentAt: t0.Add(time.Hour), Authority: "NCSC", Reference: "EW-1"}
+	first := Notification{Kind: KindEarlyWarning, SentAt: base.Add(time.Hour), Authority: "NCSC", Reference: "EW-1"}
 	if err := s.RecordNotification(ctx, "acme", id, first); err != nil {
 		t.Fatalf("RecordNotification: %v", err)
 	}
-	if err := s.RecordNotification(ctx, "acme", id,
-		Notification{Kind: KindNotification, SentAt: t0.Add(50 * time.Hour), Reference: "N-1"}); err != nil {
+	second := Notification{Kind: KindNotification, SentAt: base.Add(50 * time.Hour), Reference: "N-1"}
+	if err := s.RecordNotification(ctx, "acme", id, second); err != nil {
 		t.Fatalf("RecordNotification 2: %v", err)
 	}
 
@@ -238,13 +244,23 @@ func TestPG_NotificationsAreAppendOnly(t *testing.T) {
 	if got.Notifications[0].Reference != "EW-1" || got.Notifications[0].Authority != "NCSC" {
 		t.Errorf("first notification lost its detail: %+v", got.Notifications[0])
 	}
+	// The witness is stamped server-side and is not the operator's claim.
+	for i, n := range got.Notifications {
+		if n.RecordedAt.IsZero() {
+			t.Errorf("notification %d has no recorded_at; the claim has no witness", i)
+		}
+		if !n.RecordedAt.After(n.SentAt) {
+			t.Errorf("notification %d: recorded_at %s is not after the claimed sent_at %s",
+				i, n.RecordedAt, n.SentAt)
+		}
+	}
 
 	// And the deadlines reflect it.
-	ds := got.Deadlines(DefaultSchedule, t0.Add(200*time.Hour))
+	ds := got.Deadlines(DefaultSchedule, time.Now().UTC())
 	if d := deadline(t, ds, KindEarlyWarning); d.Overdue || d.SentAt == nil {
-		t.Errorf("early warning still overdue after submission: %+v", d)
+		t.Errorf("early warning still overdue after an on-time submission: %+v", d)
 	}
-	if d := deadline(t, ds, KindFinalReport); !d.Due.Equal(t0.Add(50 * time.Hour).Add(30 * 24 * time.Hour)) {
+	if d := deadline(t, ds, KindFinalReport); !d.Due.Equal(base.Add(50 * time.Hour).Add(30 * 24 * time.Hour)) {
 		t.Errorf("final report due %s, want one month after the notification was submitted", d.Due)
 	}
 
@@ -253,6 +269,82 @@ func TestPG_NotificationsAreAppendOnly(t *testing.T) {
 	}
 	if err := s.RecordNotification(ctx, "acme", "nope", first); err != ErrNotFound {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// sent_at is a claim AEGIS cannot witness, so the bounds it CAN check are
+// checked: a filing cannot predate the incident it reports, and cannot be in
+// the future — the latter would let a deadline be met in advance.
+func TestPG_RecordNotification_BoundsTheClaimedTime(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-10 * time.Hour)
+	mergeN(t, s, Delta{Tenant: "acme", Class: "bola", Subject: "u1", First: base, Last: base, Count: 1}, DefaultWindow)
+	id := listAll(t, s, "acme")[0].ID
+
+	cases := map[string]time.Time{
+		"before the incident existed": base.Add(-time.Hour),
+		"in the future":               time.Now().UTC().Add(48 * time.Hour),
+	}
+	for name, when := range cases {
+		err := s.RecordNotification(ctx, "acme", id, Notification{Kind: KindEarlyWarning, SentAt: when})
+		if err == nil {
+			t.Errorf("%s: sent_at %s was accepted", name, when.Format(time.RFC3339))
+			continue
+		}
+		if !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: err = %v, want ErrInvalid so the API can answer 400 rather than 500", name, err)
+		}
+	}
+
+	// A plausible time is accepted, and an omitted one defaults to now.
+	if err := s.RecordNotification(ctx, "acme", id,
+		Notification{Kind: KindEarlyWarning, SentAt: base.Add(time.Hour)}); err != nil {
+		t.Errorf("a plausible sent_at was refused: %v", err)
+	}
+	if err := s.RecordNotification(ctx, "acme", id, Notification{Kind: KindNotification}); err != nil {
+		t.Errorf("an omitted sent_at was refused: %v", err)
+	}
+}
+
+// The forgery the append-only comment claimed to prevent and did not: file
+// nothing until after the deadline, then append an entry BACKDATED to before
+// it. Editing was blocked; appending achieved the same outcome, and the
+// earliest-CLAIM reduction made the new entry authoritative.
+func TestPG_BackdatedNotificationCannotRewriteHistory(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-200 * time.Hour)
+	mergeN(t, s, Delta{Tenant: "acme", Class: "bola", Subject: "u1", First: base, Last: base, Count: 1}, DefaultWindow)
+	id := listAll(t, s, "acme")[0].ID
+
+	// Filed 100 hours after detection, against a 24-hour obligation.
+	if err := s.RecordNotification(ctx, "acme", id,
+		Notification{Kind: KindEarlyWarning, SentAt: base.Add(100 * time.Hour), Reference: "honest"}); err != nil {
+		t.Fatalf("RecordNotification: %v", err)
+	}
+	got, _ := s.Get(ctx, "acme", id)
+	d := deadline(t, got.Deadlines(DefaultSchedule, time.Now().UTC()), KindEarlyWarning)
+	if !d.Overdue || !d.Late {
+		t.Fatalf("a submission 76 hours past the deadline reports overdue=%v late=%v", d.Overdue, d.Late)
+	}
+
+	// Now append a backdated one claiming it was filed within the window.
+	if err := s.RecordNotification(ctx, "acme", id,
+		Notification{Kind: KindEarlyWarning, SentAt: base.Add(2 * time.Hour), Reference: "backdated"}); err != nil {
+		t.Fatalf("RecordNotification (backdated): %v", err)
+	}
+	got, _ = s.Get(ctx, "acme", id)
+	d = deadline(t, got.Deadlines(DefaultSchedule, time.Now().UTC()), KindEarlyWarning)
+	if !d.Overdue {
+		t.Fatal("a backdated entry cleared a missed deadline — the record was rewritten after the fact")
+	}
+	if d.SentAt == nil || !d.SentAt.Equal(base.Add(100*time.Hour)) {
+		t.Errorf("sent_at = %v, want the FIRST submission the gateway witnessed", d.SentAt)
+	}
+	// Both entries survive: the attempt itself is part of the record.
+	if len(got.Notifications) != 2 {
+		t.Errorf("%d notifications, want both retained", len(got.Notifications))
 	}
 }
 
