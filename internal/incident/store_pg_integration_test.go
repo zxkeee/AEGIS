@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -439,5 +440,46 @@ func TestPG_ListFilters(t *testing.T) {
 	none, _ := s.List(ctx, "acme", Filter{OverdueOnly: true}, DefaultSchedule, t0)
 	if len(none) != 0 {
 		t.Errorf("%d incidents overdue at the moment of detection", len(none))
+	}
+}
+
+// The eviction attack, end to end against PostgreSQL: touch the real target,
+// then flood values that sort before it. Evidence already in the row must not
+// be displaced by anything sent afterwards.
+func TestPG_RecordedEvidenceIsNotEvictedByLaterDecoys(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-time.Hour)
+
+	mergeN(t, s, Delta{
+		Tenant: "acme", Class: "bola", Subject: "u1", First: base, Last: base, Count: 1,
+		Endpoints: []string{"GET /admin/keys"},
+	}, DefaultWindow)
+
+	decoys := make([]string, 0, 60)
+	for i := 0; i < 60; i++ {
+		decoys = append(decoys, fmt.Sprintf("GET /AAA%02d", i))
+	}
+	mergeN(t, s, Delta{
+		Tenant: "acme", Class: "bola", Subject: "u1",
+		First: base.Add(time.Minute), Last: base.Add(time.Minute), Count: 60,
+		Endpoints: decoys, Truncated: true,
+	}, DefaultWindow)
+
+	got, err := s.Get(ctx, "acme", listAll(t, s, "acme")[0].ID)
+	if err != nil || got == nil {
+		t.Fatalf("Get: %v", err)
+	}
+	var found bool
+	for _, e := range got.Endpoints {
+		if e == "GET /admin/keys" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the real target was evicted by later decoys: %v", got.Endpoints)
+	}
+	if !got.EvidenceTruncated {
+		t.Error("the endpoint list is capped but the row does not say it is partial")
 	}
 }

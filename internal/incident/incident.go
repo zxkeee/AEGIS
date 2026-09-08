@@ -20,7 +20,6 @@ package incident
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 )
@@ -263,6 +262,10 @@ type Incident struct {
 	Endpoints  []string `json:"endpoints,omitempty"`
 	Sources    []string `json:"sources,omitempty"`
 	Reasons    []string `json:"reasons,omitempty"`
+	// EvidenceTruncated marks that the lists above hit their cap and are
+	// partial. A partial list shown as if it were whole is the kind of quiet
+	// omission this product exists to stop producing.
+	EvidenceTruncated bool `json:"evidence_truncated,omitempty"`
 
 	Classification Classification `json:"classification"`
 	Notifications  []Notification `json:"notifications,omitempty"`
@@ -377,13 +380,26 @@ var classTitles = map[string]string{
 	"ratelimit": "Sustained request flooding",
 }
 
-// sortedUnique returns the distinct values of in, ordered, capped at max.
+// boundedUnique returns the distinct values of in, in FIRST-SEEN order, capped
+// at max, and reports whether anything was dropped.
 //
-// The cap is not cosmetic: these lists are grown from attacker-controlled input
-// (source addresses, paths), and an unbounded one is a memory-growth lever an
-// attacker pulls by rotating them.
-func sortedUnique(in []string, max int) []string {
-	seen := map[string]struct{}{}
+// It used to sort and keep the lexicographically smallest, which handed an
+// attacker an eviction primitive: these lists are grown from attacker-supplied
+// values (request paths, source addresses), so after hitting the real target at
+// `GET /admin/keys` you issue fifty requests to paths that sort before it and
+// the real one is gone from the incident row. The catalog enrichment then
+// derives criticality and data-at-risk from the decoys, which feeds the
+// proposed severity.
+//
+// First-seen is not a perfect defence — an attacker who knows the target in
+// advance can pre-fill the list — but it is strictly better: evidence already
+// recorded is never displaced by anything sent afterwards.
+//
+// The cap itself stays. An unbounded list is a memory-growth lever an attacker
+// pulls by rotating values, which is a worse problem than a partial list. The
+// dropped flag is what keeps the partial list honest.
+func boundedUnique(in []string, max int) ([]string, bool) {
+	seen := make(map[string]struct{}, len(in))
 	out := make([]string, 0, len(in))
 	for _, v := range in {
 		if v == "" {
@@ -393,11 +409,10 @@ func sortedUnique(in []string, max int) []string {
 			continue
 		}
 		seen[v] = struct{}{}
+		if len(out) >= max {
+			return out, true
+		}
 		out = append(out, v)
 	}
-	sort.Strings(out)
-	if len(out) > max {
-		out = out[:max]
-	}
-	return out
+	return out, false
 }

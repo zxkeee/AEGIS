@@ -2,7 +2,9 @@ package incident
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +36,7 @@ CREATE TABLE IF NOT EXISTS incidents (
 	endpoints           TEXT[] NOT NULL DEFAULT '{}',
 	sources             TEXT[] NOT NULL DEFAULT '{}',
 	reasons             TEXT[] NOT NULL DEFAULT '{}',
+	evidence_truncated  BOOLEAN NOT NULL DEFAULT FALSE,
 	clients_affected    INT,
 	geographic_spread   TEXT,
 	economic_impact_eur DOUBLE PRECISION,
@@ -41,6 +44,8 @@ CREATE TABLE IF NOT EXISTS incidents (
 	notifications       JSONB NOT NULL DEFAULT '[]'::jsonb,
 	PRIMARY KEY (tenant_id, id)
 );
+
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS evidence_truncated BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS idx_incidents_detected ON incidents (tenant_id, detected_at DESC);
 CREATE INDEX IF NOT EXISTS idx_incidents_status   ON incidents (tenant_id, status);
@@ -147,44 +152,64 @@ func (s *PGStore) insert(ctx context.Context, tx *sql.Tx, d Delta) error {
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO incidents
 	(tenant_id, id, title, class, subject, status, severity, detected_at,
-	 last_event_at, event_count, endpoints, sources, reasons)
-VALUES ($1,$2,$3,$4,$5,'open','minor',$6,$7,$8,$9,$10,$11)`,
+	 last_event_at, event_count, endpoints, sources, reasons, evidence_truncated)
+VALUES ($1,$2,$3,$4,$5,'open','minor',$6,$7,$8,$9,$10,$11,$12)`,
 		tenantOr(d.Tenant), newID(d), Title(d.Class, d.Subject), d.Class, d.Subject,
 		d.First, d.Last, d.Count,
-		arr(d.Endpoints), arr(d.Sources), arr(d.Reasons))
+		arr(d.Endpoints), arr(d.Sources), arr(d.Reasons), d.Truncated)
 	return err
 }
 
 func (s *PGStore) update(ctx context.Context, tx *sql.Tx, id string, d Delta) error {
-	// The array columns are unioned and re-capped in SQL so two gateways
-	// merging concurrently cannot lose each other's values, and so an attacker
-	// rotating source addresses cannot grow a row without bound.
+	// The array columns are unioned and re-capped in SQL so two gateways merging
+	// concurrently cannot lose each other's values, and so an attacker rotating
+	// source addresses cannot grow a row without bound.
+	//
+	// EXISTING values are kept ahead of new ones (pri 0 before pri 1) rather
+	// than taking the lexicographically smallest. Ordering by value handed an
+	// attacker an eviction primitive: after touching the real target, fifty
+	// requests to paths sorting before it displaced the real evidence from the
+	// row, and the catalog enrichment then derived criticality from the decoys.
+	// Evidence already recorded is no longer displaced by anything sent later.
 	_, err := tx.ExecContext(ctx, `
 UPDATE incidents SET
 	last_event_at = GREATEST(last_event_at, $3),
 	detected_at   = LEAST(detected_at, $4),
 	event_count   = event_count + $5,
-	endpoints     = (SELECT ARRAY(SELECT DISTINCT unnest(endpoints || $6::text[]) ORDER BY 1 LIMIT 50)),
-	sources       = (SELECT ARRAY(SELECT DISTINCT unnest(sources   || $7::text[]) ORDER BY 1 LIMIT 50)),
-	reasons       = (SELECT ARRAY(SELECT DISTINCT unnest(reasons   || $8::text[]) ORDER BY 1 LIMIT 50))
+	endpoints     = (SELECT ARRAY(SELECT v FROM (
+	                   SELECT unnest(endpoints) AS v, 0 AS pri
+	                   UNION ALL SELECT unnest($6::text[]), 1) t
+	                 GROUP BY v ORDER BY min(pri), v LIMIT 50)),
+	sources       = (SELECT ARRAY(SELECT v FROM (
+	                   SELECT unnest(sources) AS v, 0 AS pri
+	                   UNION ALL SELECT unnest($7::text[]), 1) t
+	                 GROUP BY v ORDER BY min(pri), v LIMIT 50)),
+	reasons       = (SELECT ARRAY(SELECT v FROM (
+	                   SELECT unnest(reasons) AS v, 0 AS pri
+	                   UNION ALL SELECT unnest($8::text[]), 1) t
+	                 GROUP BY v ORDER BY min(pri), v LIMIT 50)),
+	evidence_truncated = evidence_truncated OR $9
+	                     OR cardinality(endpoints) >= 50 OR cardinality(sources) >= 50
 WHERE tenant_id = $1 AND id = $2`,
 		tenantOr(d.Tenant), id, d.Last, d.First, d.Count,
-		arr(d.Endpoints), arr(d.Sources), arr(d.Reasons))
+		arr(d.Endpoints), arr(d.Sources), arr(d.Reasons), d.Truncated)
 	return err
 }
 
 // newID is deterministic in the incident's identity and its start, so a retried
 // merge cannot produce two incidents for the same activity.
+//
+// The subject is HASHED rather than character-substituted. The previous version
+// mapped ':' to '_' and truncated at 80 characters, which is lossy: two
+// subjects differing only in ':' versus '_', or only past character 80,
+// produced the same id. The correlation lookup uses the exact subject, so the
+// second one found no open incident, its INSERT hit the primary key, and the
+// whole Merge transaction failed — that flush's incident was not recorded at
+// all. An attacker holding two identities shaped to collide could suppress
+// recording. A hash is injective enough that the case cannot arise.
 func newID(d Delta) string {
-	return fmt.Sprintf("%s:%s:%d", d.Class, sanitiseID(d.Subject), d.First.UTC().Unix())
-}
-
-func sanitiseID(s string) string {
-	s = strings.ReplaceAll(s, ":", "_")
-	if len(s) > 80 {
-		s = s[:80]
-	}
-	return s
+	sum := sha256.Sum256([]byte(d.Subject))
+	return fmt.Sprintf("%s:%s:%d", d.Class, hex.EncodeToString(sum[:])[:16], d.First.UTC().Unix())
 }
 
 // Filter selects incidents for a listing.
@@ -209,7 +234,7 @@ func (s *PGStore) List(ctx context.Context, tenant string, f Filter, sched Sched
 SELECT id, title, class, subject, status, severity, severity_confirmed,
        detected_at, last_event_at, closed_at, event_count, endpoints, sources,
        reasons, clients_affected, geographic_spread, economic_impact_eur, notes,
-       notifications
+       notifications, evidence_truncated
 FROM incidents WHERE tenant_id = $1`)
 	args := []any{tenantOr(tenant)}
 
@@ -270,7 +295,7 @@ func (s *PGStore) Get(ctx context.Context, tenant, id string) (*Incident, error)
 SELECT id, title, class, subject, status, severity, severity_confirmed,
        detected_at, last_event_at, closed_at, event_count, endpoints, sources,
        reasons, clients_affected, geographic_spread, economic_impact_eur, notes,
-       notifications
+       notifications, evidence_truncated
 FROM incidents WHERE tenant_id = $1 AND id = $2`, tenantOr(tenant), id)
 		got, err := scanIncident(row)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -302,7 +327,7 @@ func scanIncident(sc scanner) (Incident, error) {
 		&inc.Severity, &inc.SeverityConfirmed, &inc.DetectedAt, &inc.LastEventAt,
 		&closedAt, &inc.EventCount, pgTypeMap.SQLScanner(&inc.Endpoints), pgTypeMap.SQLScanner(&inc.Sources),
 		pgTypeMap.SQLScanner(&inc.Reasons), &clients, &geo, &economic, &inc.Classification.Notes,
-		&notifRaw)
+		&notifRaw, &inc.EvidenceTruncated)
 	if err != nil {
 		return Incident{}, err
 	}
