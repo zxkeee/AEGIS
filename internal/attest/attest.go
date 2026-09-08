@@ -16,6 +16,7 @@ package attest
 import (
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -99,7 +100,20 @@ func NewSigner(b64 string) (*Signer, error) {
 		priv := ed25519.NewKeyFromSeed(raw)
 		return &Signer{priv: priv, pub: priv.Public().(ed25519.PublicKey)}, nil
 	case ed25519.PrivateKeySize:
+		// A 64-byte Ed25519 key is seed || public. Nothing forced the two halves
+		// to agree, and Go's Sign derives the scalar from the seed while folding
+		// priv[32:] into the challenge hash — so a corrupted key produces
+		// signatures that verify under NO key at all. Startup succeeded,
+		// config.Validate passed, reports were served with an attestation block,
+		// and the failure surfaced only when an auditor ran the verifier months
+		// later. Turn it into a boot error, which is what this function's own
+		// documentation promises.
 		priv := ed25519.PrivateKey(raw)
+		derived := ed25519.NewKeyFromSeed(raw[:ed25519.SeedSize])
+		if subtle.ConstantTimeCompare(derived[ed25519.SeedSize:], raw[ed25519.SeedSize:]) != 1 {
+			return nil, errors.New("attest: signing key is internally inconsistent " +
+				"(its public half does not match its seed); it would produce signatures nobody can verify")
+		}
 		return &Signer{priv: priv, pub: priv.Public().(ed25519.PublicKey)}, nil
 	default:
 		return nil, fmt.Errorf("attest: signing key is %d bytes; want %d (seed) or %d (private key)",
@@ -202,10 +216,22 @@ func Verify(env Envelope, pub ed25519.PublicKey) error {
 	return nil
 }
 
+// keyIDHexLen is how much of the SHA-256 a key id keeps: 32 hex characters,
+// 128 bits.
+//
+// It was 16 (64 bits), and the doc comment asserted "a forger cannot produce a
+// different key with the same id". That holds only at 64-bit second-preimage
+// strength, and Ed25519 keypairs can be enumerated cheaply — roughly one point
+// addition and one hash per candidate. Not a threat today, but this identifier
+// is pinned by an auditor and has to stay trustworthy for years, so the claim
+// should be true by construction rather than by cost. 32 characters is still
+// short enough to paste into a ticket.
+const keyIDHexLen = 32
+
 // KeyIDOf derives the short identifier of a verifying key. It is a hash of the
 // key, so an id a reader trusts authenticates the key that arrives with a
 // document — which is what lets a verifier pin an id instead of a whole key.
 func KeyIDOf(pub ed25519.PublicKey) string {
 	sum := sha256.Sum256(pub)
-	return hex.EncodeToString(sum[:])[:16]
+	return hex.EncodeToString(sum[:])[:keyIDHexLen]
 }

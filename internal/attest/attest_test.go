@@ -351,3 +351,39 @@ func TestVerify_RejectsAMalformedSignedAt(t *testing.T) {
 		}
 	}
 }
+
+// A 64-byte Ed25519 key is seed || public. If the halves disagree, Go signs
+// with the seed's scalar but folds the stored public half into the challenge —
+// producing signatures that verify under no key at all. That used to pass
+// startup and surface only when an auditor ran the verifier months later.
+func TestNewSigner_RejectsAnInconsistentPrivateKey(t *testing.T) {
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = 0x11
+	}
+	good := ed25519.NewKeyFromSeed(seed)
+
+	corrupt := make([]byte, len(good))
+	copy(corrupt, good)
+	corrupt[ed25519.SeedSize] ^= 0x01 // one bit of the public half
+
+	if _, err := NewSigner(base64.StdEncoding.EncodeToString(corrupt)); err == nil {
+		t.Fatal("a key whose halves disagree was accepted; it would sign documents nobody can verify")
+	}
+	if _, err := NewSigner(base64.StdEncoding.EncodeToString(good)); err != nil {
+		t.Fatalf("a well-formed private key was rejected: %v", err)
+	}
+}
+
+// The key id is what an auditor pins, and it has to stay trustworthy for years.
+func TestKeyID_Is128Bits(t *testing.T) {
+	s := testSigner(t, 30)
+	if got := len(s.KeyID()); got != 32 {
+		t.Errorf("key id is %d hex chars (%d bits); want 32 (128 bits) — at 64 bits "+
+			"the claim that a forger cannot produce a colliding key is a cost argument, not a guarantee",
+			got, got*4)
+	}
+	if s.KeyID() == testSigner(t, 31).KeyID() {
+		t.Error("distinct keys produced the same id")
+	}
+}
