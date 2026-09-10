@@ -1,7 +1,9 @@
 package api
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -15,9 +17,9 @@ var consoleAssets, _ = fs.Sub(consoleFS, "console_dist")
 
 // consoleCSP is the Content-Security-Policy for the single-page console.
 //
-// script-src stays strict 'self': the Vite production bundle is a hashed,
-// self-hosted module with no inline scripts and no eval, so XSS cannot execute
-// injected script. style-src allows 'unsafe-inline' because the animation layer
+// script-src stays strict 'self': the Vite production bundle is a self-hosted
+// module with no inline scripts and no eval, so XSS cannot execute injected
+// script. style-src allows 'unsafe-inline' because the animation layer
 // (Framer Motion) and React set inline styles at runtime; style injection cannot
 // execute code, so this is a deliberate, bounded relaxation — the important
 // anti-XSS control (script-src) remains locked down.
@@ -48,8 +50,27 @@ func (h *handlers) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
-// serveConsoleAsset serves the hashed bundle assets (JS/CSS/svg) with a long
-// immutable cache, since Vite fingerprints change the URL on every build.
+// assetETag is the strong validator for an embedded console asset: the SHA-256
+// of the bytes compiled into this binary, so it changes exactly when the asset
+// does and is identical across replicas.
+func assetETag(data []byte) string {
+	sum := sha256.Sum256(data)
+	return `"` + hex.EncodeToString(sum[:16]) + `"`
+}
+
+// serveConsoleAsset serves the bundle assets (JS/CSS/svg), revalidated by ETag.
+//
+// This previously sent `max-age=31536000, immutable`, justified by a comment
+// claiming Vite fingerprints the filenames. It does not: vite.config.ts pins
+// `entryFileNames: "assets/console.js"` so the bundle is served under one
+// constant URL — deliberately, because the built bundle is committed and a
+// hashed name would churn the diff on every build.
+//
+// A constant URL and an immutable year-long cache together mean an upgraded
+// gateway keeps serving the old console out of the browser cache, with no
+// request that could ever discover the new one. That is not a caching nuisance:
+// it is how a fixed console never reaches the operator who needs it. The ETag
+// keeps the cheap 304 without pinning a stale bundle.
 func (h *handlers) serveConsoleAsset(w http.ResponseWriter, r *http.Request) {
 	// Path is "/assets/console.js" etc.; strip the leading slash for the sub-FS.
 	name := strings.TrimPrefix(r.URL.Path, "/")
@@ -58,9 +79,15 @@ func (h *handlers) serveConsoleAsset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	etag := assetETag(data)
 	hdr := w.Header()
+	hdr.Set("ETag", etag)
+	hdr.Set("Cache-Control", "no-cache")
+	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	hdr.Set("Content-Type", contentType(name))
-	hdr.Set("Cache-Control", "public, max-age=31536000, immutable")
 	hdr.Set("X-Content-Type-Options", "nosniff")
 	// #nosec G705 -- data is a compiled-in embedded asset (our own build output),
 	// not user input; the URL only selects which embedded file. Served with an

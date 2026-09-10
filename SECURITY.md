@@ -1,245 +1,213 @@
-# 🔐 Политика безопасности
+# Security Policy
 
-## Отчет об уязвимостях
+## Reporting a vulnerability
 
-Если вы обнаружили уязвимость безопасности в AEGIS, **пожалуйста, НЕ создавайте public issue**. Вместо этого используйте:
+**Do not open a public issue.**
 
-### GitHub Security Advisory
+Use a [GitHub Security Advisory](https://github.com/zxkeee/AEGIS/security/advisories)
+— "Report a vulnerability". It notifies the maintainer privately and gives us a
+place to work on a fix without disclosing it first.
 
-Самый безопасный способ отправить отчет:
+There is no security email address. One will be listed here when it exists;
+until then the advisory form is the only reporting channel, and claiming a
+second one would be claiming a process that does not run.
 
-1. Перейдите на страницу [Security](https://github.com/zxkeee/AEGIS/security/advisories)
-2. Нажмите **"Report a vulnerability"**
-3. Заполните форму с деталями уязвимости
-4. GitHub уведомит maintainers приватно
+### What to expect
 
-### Email (когда будет опубликован)
+AEGIS is maintained by a single engineer, so these are honest commitments
+rather than an enterprise SLA:
 
-Альтернативный способ для экстренных ситуаций:
-- 📧 security@aegis-gateway.io _(будет добавлено позже)_
+| | |
+|---|---|
+| Acknowledgement | Within a few working days |
+| Assessment | We will tell you whether we consider it a vulnerability, and why |
+| Fix | Prioritised by severity; no fixed calendar promise |
+| Disclosure | Coordinated with you, default 90 days after a fix ships |
+| Credit | In the CHANGELOG, if you want it |
 
----
+If a report is not a vulnerability we will say so plainly and explain the
+reasoning, rather than leaving it open.
 
-## Ответ и разрешение
+## What is actually run against this codebase
 
-Мы обещаем:
-- ✅ **Быстрый ответ** — В течение 24 часов рабочего дня
-- ✅ **Справедливая оценка** — Детальный анализ уязвимости
-- ✅ **Координация** — Вместе найти решение
-- ✅ **Кредит** — Упомянем вас в patch release (если хотите)
-- ✅ **90 дней** — Обычный срок для патча (или ранее, если возможно)
+Three CI workflows gate every push. They are the whole of the automated
+security process — there is no Dependabot, no Snyk and no nancy in this
+repository, and previous versions of this file described all three.
 
-**Процесс разрешения:**
-1. **Day 0** — Получение отчета и acknowledgement
-2. **Day 1-7** — Анализ и разработка патча
-3. **Day 8-14** — Тестирование и подготовка к release
-4. **Day 15** — Release patch с благодарностью в CHANGELOG
-5. **Day 90** — Публичное раскрытие уязвимости (если вы согласны)
+| Check | Where | What it does |
+|---|---|---|
+| `gosec` | `.github/workflows/security.yml` | Static analysis for insecure Go constructs |
+| `govulncheck` | `.github/workflows/security.yml` | Known CVEs in dependencies, reachability-aware |
+| `golangci-lint` | `.github/workflows/lint.yml` | Both Go modules (root and `web/`) |
+| `go test -race` | `.github/workflows/test.yml` | Full suite under the race detector |
+| Coverage gate | `.github/workflows/test.yml` | Per-package floors that only ratchet up |
+| `npm audit` | preflight | Both lockfiles (`web/console`, `web/v3`) |
+| Repo invariants | `scripts/lint-invariants.sh` | Secrets that must never render into a ConfigMap, pinned image digests, no committed binaries |
 
----
-
-## Известные уязвимости в зависимостях
-
-Мы используем `go mod` для управления зависимостями. Проверить уязвимости можно:
-
-```bash
-# Встроенная проверка безопасности Go 1.22+
-go list -json -m all | nancy sleuth
-
-# Или используйте Dependabot (автоматически на GitHub)
-# Или запустите локально: snyk test
-```
-
-Если вы нашли уязвимость в зависимости AEGIS:
-- ✅ Мы немедленно обновим зависимость
-- ✅ Выпустим patch version
-
----
-
-## Рекомендации по безопасности при использовании
-
-### 1. Конфигурация
-
-- 🔒 **Admin Secret** — используйте сильный пароль (минимум 32 символа):
-  ```yaml
-  admin_secret: "super-long-random-secret-with-special-chars-!@#$%"
-  ```
-
-- 🔒 **Redis Password** — если Redis доступен по сети:
-  ```yaml
-  redis:
-    addr: "redis-host:6379"
-    password: "strong-redis-password"
-  ```
-
-- 🔒 **PostgreSQL Connection** — используйте SSL:
-  ```yaml
-  forensic_dsn: "postgres://user:pass@host:5432/aegis?sslmode=require"
-  ```
-
-### 2. Развертывание
-
-- 🔒 **TLS/HTTPS** — всегда используйте HTTPS в production:
-  ```bash
-  # Используйте reverse proxy (nginx, Envoy) с TLS
-  # или добавьте TLS поддержку в AEGIS (coming soon)
-  ```
-
-- 🔒 **Network Isolation** — поместите Redis и PostgreSQL в приватную сеть:
-  ```bash
-  # Правильно:
-  Redis: приватная сеть (только AEGIS может подключаться)
-  
-  # Неправильно:
-  Redis на 0.0.0.0 доступен для всех
-  ```
-
-- 🔒 **Firewall Rules** — ограничьте доступ:
-  ```bash
-  # Только нужные порты открыты
-  :8080 — только внешний трафик (выключить в продакшене)
-  :8081 — только внутри VPN/приватной сети
-  :6379 — только AEGIS pods
-  :5432 — только AEGIS pods
-  ```
-
-### 3. Мониторинг
-
-- 📊 **Логирование** — включите логирование всех атак:
-  ```yaml
-  forensic_dsn: "postgres://..." # для Compliance
-  ```
-
-- 📊 **Alerts** — настройте оповещения в Prometheus/Grafana:
-  ```
-  - alert: HighWAFBlockRate
-    expr: rate(aegis_waf_blocks_total[5m]) > 100
-    for: 5m
-  ```
-
-- 📊 **Аудит** — регулярно проверяйте логи атак:
-  ```sql
-  SELECT * FROM aegis_forensic 
-  WHERE timestamp > NOW() - INTERVAL '24 hours' 
-  ORDER BY timestamp DESC;
-  ```
-
-### 4. Обновления
-
-- 🔄 **Регулярные обновления** — проверяйте обновления еженедельно:
-  ```bash
-  git pull origin main  # Или проверьте GitHub releases
-  ```
-
-- 🔄 **Тестирование перед production** — всегда тестируйте патчи:
-  ```bash
-  # В staging environment
-  make test
-  docker-compose -f docker-compose.test.yml up
-  ```
-
----
-
-## Защита собственных backendов
-
-AEGIS защищает ваши backendы, но они тоже должны быть безопасны:
-
-### Backend должен проверять:
-1. ✅ **X-Gateway-Signature** — криптографическую подпись AEGIS:
-   ```go
-   // Пример на Go
-   import "crypto/hmac"
-   import "crypto/sha256"
-   
-   func verifyGatewaySignature(body, signature, secret string) bool {
-       h := hmac.New(sha256.New, []byte(secret))
-       h.Write([]byte(body))
-       expected := h.Sum(nil)
-       return hmac.Equal(expected, []byte(signature))
-   }
-   ```
-
-2. ✅ **X-Gateway-Subject** — информацию о user'е из JWT:
-   ```
-   X-Gateway-Subject: user:12345@example.com
-   ```
-
-3. ✅ **Origin запроса** — Referer/Origin headers не доверять
-
-### Чего НЕ должен делать backend:
-- ❌ Не проверять IP адреса (AEGIS может идти через load balancer)
-- ❌ Не вырезать заголовки X-Gateway-* (их вырезает AEGIS)
-- ❌ Не повторно проверять JWT (AEGIS уже проверил)
-
----
-
-## Уязвимости, которые AEGIS защищает от
-
-| Уязвимость | OWASP | AEGIS защита |
-|-----------|-------|-------------|
-| SQL Injection | A03:2021 | WAF (Coraza CRS) ✅ |
-| Cross-Site Scripting (XSS) | A07:2021 | WAF (Coraza CRS) ✅ |
-| Remote Code Execution (RCE) | A06:2021 | WAF (Coraza CRS) ✅ |
-| Path Traversal / LFI | A01:2021 | WAF (Coraza CRS) ✅ |
-| SSRF | A10:2021 | WAF (Coraza CRS) ✅ |
-| XXE (XML External Entity) | A05:2021 | WAF (Coraza CRS) ✅ |
-| HTTP Request Smuggling | Custom | WAF + Header Validation ✅ |
-| DDoS / Flood | - | Rate Limiting ✅ |
-| Bot Attacks | - | JA3 + Behavioral Scoring ✅ |
-| Brute Force | - | Rate Limiting + Behavioral Scoring ✅ |
-| Data Exfiltration | - | DLP (PII Masking) ✅ |
-| Unauthorized Access | A01:2021 | JWT + JWKS ✅ |
-| Man-in-the-Middle (MITM) | - | TLS (при HTTPS) ✅ |
-
----
-
-## Тестирование безопасности
-
-AEGIS регулярно тестируется на уязвимости:
+Run all of it locally before pushing:
 
 ```bash
-# Static Analysis
-make lint
-
-# Security scanning
-go run github.com/securego/gosec/v2/cmd/gosec ./...
-
-# Dependency vulnerabilities
-go list -json -m all | nancy sleuth
-
-# Integration testing
-go test ./... -v -race
-
-# Load testing (помимо прочего, для DoS resistance)
-# ab -n 100000 -c 100 http://localhost:8080/api/v1/health
+make preflight
 ```
 
----
+It installs the versions CI pins and runs the same checks in the same way. A
+preflight that has drifted from CI is worse than none, so when a workflow
+changes, `scripts/preflight.sh` changes with it.
 
-## PCI-DSS Соответствие
+### What has NOT been done
 
-AEGIS помогает соответствовать требованиям **PCI-DSS** (Payment Card Industry Data Security Standard):
+- **No independent third-party penetration test.** The scope is written up in
+  `docs/security/external-pentest-scope.md`; the engagement has not been
+  commissioned. We do not self-certify.
+- **The internal adversarial audit is incomplete.** 6 of 13 review categories
+  returned; the other 7 are unexamined, not clean.
 
-| Требование PCI | AEGIS функция | Поддержка |
-|---------------|--------------|----------|
-| 6.5.1 SQL Injection | WAF (SQL-инъекции) | ✅ |
-| 6.5.7 XSS | WAF (XSS) | ✅ |
-| 6.5.10 Broken Authentication | JWT JWKS | ✅ |
-| 3.4 Render PAN unreadable | DLP (Card Masking) | ✅ |
-| 6.2 Source code review | Code scanning + logging | ✅ |
-| 6.5.10 Security Testing | Prometheus metrics + Logging | ✅ |
-| 10.1 Audit Trail | PostgreSQL Forensic | ✅ |
-| 10.7 Retain history 1 year | PostgreSQL + архивирование | ✅ |
+## Deploying AEGIS securely
 
----
+### Secrets come from the environment, never from config files
 
-## Контакты и ресурсы
+`config.Validate` rejects placeholder values, short admin secrets and any reuse
+of the report signing key as another secret. Set these in the environment:
 
-- 🐛 **Report vulnerability:** [GitHub Security Advisory](https://github.com/zxkeee/AEGIS/security/advisories)
-- 📚 **OWASP Top 10:** https://owasp.org/www-project-top-ten/
-- 📚 **CWE Top 25:** https://cwe.mitre.org/top25/
-- 📚 **Coraza WAF:** https://coraza.io/docs/
+| Variable | What it protects |
+|---|---|
+| `AEGIS_ADMIN_SECRET` | Admin API / console bearer authentication |
+| `AEGIS_JWT_SECRET` | HMAC JWT verification (unset when using `jwks_url`) |
+| `AEGIS_REDIS_PASSWORD` | Redis, plus `AEGIS_REDIS_SENTINEL_PASSWORD` for Sentinel |
+| `AEGIS_CONSUMER_SALT` | Makes the consumer catalog irreversible |
+| `AEGIS_PROPAGATION_SECRET` | Signs the identity forwarded to your backends |
+| `AEGIS_REPORT_SIGNING_KEY` | **Signs compliance evidence.** Separate key, never reused |
+| `AEGIS_FORENSIC_DSN` | Forensic log and catalog database |
+| `AEGIS_OIDC_CLIENT_ID` / `AEGIS_OIDC_CLIENT_SECRET` | Console SSO |
+| `AEGIS_ALERT_WEBHOOK_URL` | Alert delivery (https only) |
 
----
+Generate the report signing key with `reportverify -genkey`. It prints the
+secret to set, and the `key_id` plus public key to publish — an auditor pins the
+key id and verifies reports against it.
 
-**Спасибо за помощь в защите AEGIS! 🙏**
+### Network placement
+
+- `listen` (default `:8080`) — the data plane. This is the only port that
+  should face untrusted traffic.
+- `admin_listen` (default `:8081`) — the control plane: console, metrics,
+  catalog, incident and report APIs. **Never expose it publicly.** Bind it to a
+  private interface or put it behind a VPN.
+- Redis and PostgreSQL belong on a private network reachable only by the
+  gateway. Use `sslmode=require` (or stronger) in the DSN.
+
+### `trusted_proxies` is load-bearing
+
+`X-Forwarded-For` is honoured only from peers listed in `trusted_proxies`,
+walked right to left. Get this wrong and every per-IP control — rate limiting,
+the IP guard, behavioural scoring, the threat feed — is either bypassable by a
+spoofed header or applied to your own load balancer's address. The same list
+gates `bot.trust_upstream_ja3`.
+
+### TLS
+
+The gateway terminates TLS itself when configured to, which is also what makes
+JA3 fingerprinting real: the fingerprint is computed from the ClientHello and
+bound to the connection. Behind a TLS-terminating upstream there is no
+handshake to fingerprint, and the inbound `X-JA3-Fingerprint` header is always
+stripped — an upstream-supplied one is trusted only from a `trusted_proxies`
+peer with `bot.trust_upstream_ja3` explicitly enabled.
+
+### Fail-closed
+
+`fail_closed` is opt-in per control (rate limit, IP guard): on a Redis outage,
+deny rather than allow. Behavioural scoring stays fail-open deliberately — a
+scoring gap is safer than blocking all traffic on a cache failure. Decide which
+you want per control; the default is not "secure by default" in both
+directions, and pretending otherwise would hide a real trade-off.
+
+## Verifying the identity AEGIS forwards
+
+After JWT authentication the gateway signs the identity it passes to your
+backend. Verify it with the reference SDK — `sdk/gatewayverify` — rather than
+reimplementing it:
+
+```go
+import "api-gateway/sdk/gatewayverify"
+
+v := gatewayverify.New(os.Getenv("AEGIS_PROPAGATION_SECRET"), 60*time.Second, nil)
+
+func handler(w http.ResponseWriter, r *http.Request) {
+    id, err := v.Verify(r) // authenticity + freshness + replay, in that order
+    if err != nil {
+        http.Error(w, "forbidden", http.StatusForbidden)
+        return
+    }
+    // id.Subject, id.Roles, id.Scopes, id.Identity
+}
+```
+
+The signature is `HMAC-SHA256` over the canonical payload
+`subject:roles:scopes:identity:timestamp:nonce`, hex-encoded, in
+`X-Gateway-Signature`. It is **not** a signature over the request body — an
+earlier version of this document showed exactly that, and code copied from it
+would have verified nothing.
+
+`CleanHeaders` strips every inbound `X-Gateway-*` before anything downstream
+sees it, so a client cannot forge these headers through the gateway. That
+guarantee ends at your backend's door: if your backend is reachable without
+going through AEGIS, it must still verify.
+
+### What your backend should still do
+
+- **Verify the signature, the timestamp and the nonce.** All three; the SDK
+  does it in the right order.
+- **Enforce its own authorization.** The gateway tells you *who* the caller is.
+  Whether that caller may touch *this object* is a decision only your
+  application can make. AEGIS detects and can block object-level abuse
+  (BOLA/BFLA) from traffic patterns; that is a safety net, not your access
+  control layer.
+- **Do not rely on client IP for authorization** — requests arrive through the
+  gateway and any load balancer in front of it.
+
+## What AEGIS does and does not stop
+
+Coverage is honest rather than uniformly ticked. `ROADMAP.md` and
+`docs/PRODUCT.md` are the source of truth; this is the summary.
+
+| Class | Control | Status |
+|---|---|---|
+| SQLi, XSS, RCE, traversal, XXE, SSRF payloads | WAF (Coraza, OWASP CRS v4) | Detected and blocked by signature; CRS is not a proof of absence, and paranoia level trades detection against false positives |
+| Object-level abuse (BOLA / BFLA) | Behavioural detection on verified JWT roles | Detected; blocking is opt-in per route |
+| Credential brute force, flooding | Rate limiting, behavioural scoring | Enforced; `fail_closed` opt-in |
+| Bot traffic | JA3 fingerprint + behavioural scoring | Enforced when the gateway terminates TLS |
+| PII / card data in responses | DLP masking | Masked for the classes in `internal/classify` (`credit_card`, `ssn`, `email`, `phone`, `npi`) — not a general PII engine |
+| Shadow and undocumented endpoints | Passive discovery | Surfaced in the catalog with a posture score |
+| Account takeover, credential stuffing | — | **Not implemented** |
+| L7 DDoS, client-side (Magecart) attacks | — | **Not implemented** |
+| Mass assignment (API6), schema enforcement | — | **Not implemented** (drift reporting only) |
+| Request smuggling | Header validation + WAF | Partial; not independently tested |
+
+## Compliance
+
+AEGIS maps findings and runtime abuse onto NIS2 Article 21(2), DORA Articles
+8–10 and 17–19, and ISO/IEC 27001 Annex A, and signs the resulting report so an
+auditor can verify it with `reportverify` without trusting the operator or us.
+
+That is evidence, not certification:
+
+- **AEGIS is not certified against PCI-DSS, and running it does not make you
+  compliant.** It can produce evidence relevant to some requirements — masking
+  card data in responses (3.4), the WAF (6.5.x), an audit trail in PostgreSQL
+  (10.x) — but only a QSA assessment of *your* environment decides compliance.
+  A previous version of this file presented a requirement-by-requirement table
+  of green ticks. It should not have.
+- Every report carries a `not_evidenced` list naming the controls it does not
+  cover. Keeping an incident register is not classifying incidents, and
+  classifying is not filing; each is evidenced at its own threshold or not at
+  all.
+- Controls marked `runtimeOnly` are evidenced only by observed events. A static
+  finding says an endpoint *can* be abused, not that detection fired, and
+  counting the first as the second would be a lie told to an assessor.
+
+## Resources
+
+- OWASP API Security Top 10 — https://owasp.org/API-Security/
+- OWASP Top 10 — https://owasp.org/www-project-top-ten/
+- Coraza — https://coraza.io/docs/
+- NIS2 — Directive (EU) 2022/2555
+- DORA — Regulation (EU) 2022/2554
