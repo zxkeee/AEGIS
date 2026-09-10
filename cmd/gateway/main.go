@@ -190,14 +190,22 @@ func main() {
 			// First-boot bootstrap: if no users exist and AEGIS_ROOT_EMAIL +
 			// AEGIS_ROOT_PASSWORD are set, create a super-admin so the operator
 			// has a real account on day one without ever using the bearer secret.
-			if email := os.Getenv("AEGIS_ROOT_EMAIL"); email != "" {
-				if pw := os.Getenv("AEGIS_ROOT_PASSWORD"); pw != "" {
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					if err := iamStore.BootstrapRoot(ctx, "default", email, pw); err != nil {
-						log.Error("iam root bootstrap failed", map[string]any{"error": err.Error()})
-					}
-					cancel()
+			//
+			// The pair is validated the way every other secret is. It was not
+			// before: config.Validate refuses to start on a weak admin secret,
+			// while a weak root password created the account that owns every
+			// tenant and logged only that it had succeeded.
+			rootEmail, rootPassword := os.Getenv("AEGIS_ROOT_EMAIL"), os.Getenv("AEGIS_ROOT_PASSWORD")
+			if err := config.ValidateRootBootstrap(rootEmail, rootPassword); err != nil {
+				log.Error("root bootstrap refused", map[string]any{"error": err.Error()})
+				os.Exit(1)
+			}
+			if rootEmail != "" {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := iamStore.BootstrapRoot(ctx, "default", rootEmail, rootPassword); err != nil {
+					log.Error("iam root bootstrap failed", map[string]any{"error": err.Error()})
 				}
+				cancel()
 			}
 			log.Info("iam store enabled", map[string]any{"backend": "postgresql"})
 		}

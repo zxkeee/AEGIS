@@ -64,6 +64,49 @@ var insecurePlaceholders = []string{
 	"password",
 }
 
+// ValidateRootBootstrap checks the AEGIS_ROOT_EMAIL / AEGIS_ROOT_PASSWORD pair
+// that first-boot bootstrap turns into a SUPER-ADMIN account.
+//
+// Those two variables sat outside every mechanism this package provides: they
+// are not config fields, so applyEnvOverrides never saw them, Validate never
+// checked them and lint-invariants.sh could not know they existed. The result
+// was that AEGIS_ADMIN_SECRET="password" refused to start, while
+// AEGIS_ROOT_PASSWORD="password" quietly created the account that owns every
+// tenant. The weakest credential in the system was the only one nothing
+// checked.
+//
+// It is a human password, not a machine secret, so the floor is lower than the
+// admin secret's — but a placeholder or a single repeated character is refused
+// on the same grounds, and setting one variable without the other is an error
+// rather than a silent no-op.
+func ValidateRootBootstrap(email, password string) error {
+	if email == "" && password == "" {
+		return nil // bootstrap not requested
+	}
+	if email == "" || password == "" {
+		return errors.New("AEGIS_ROOT_EMAIL and AEGIS_ROOT_PASSWORD must be set together; " +
+			"one without the other creates no account and reports nothing")
+	}
+	if !strings.Contains(email, "@") || strings.ContainsAny(email, " \t\r\n") {
+		return fmt.Errorf("AEGIS_ROOT_EMAIL %q is not an email address", email)
+	}
+	if len([]rune(password)) < rootPasswordMinLen {
+		return fmt.Errorf("AEGIS_ROOT_PASSWORD is %d characters; want at least %d "+
+			"(it is the password of the super-admin that owns every tenant)",
+			len([]rune(password)), rootPasswordMinLen)
+	}
+	if slices.Contains(insecurePlaceholders, password) || looksLowEntropy(password) {
+		return errors.New("AEGIS_ROOT_PASSWORD is a placeholder or too predictable; " +
+			"it is the password of the super-admin that owns every tenant")
+	}
+	return nil
+}
+
+// rootPasswordMinLen is the floor for the bootstrap super-admin password. Lower
+// than the admin secret's floor because a person types this one, high enough
+// that it is not guessed.
+const rootPasswordMinLen = 12
+
 // GatewayConfig is the root configuration.
 type GatewayConfig struct {
 	Listen      string `yaml:"listen"`
