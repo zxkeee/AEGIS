@@ -513,3 +513,78 @@ func TestWAF_EnforcingModeAlsoReportsDetections(t *testing.T) {
 		t.Fatal("enforcing mode recorded no waf_detection")
 	}
 }
+
+// The WAF log is the one place the gateway writes attacker-controlled request
+// content to a pipeline that usually leaves the customer's perimeter. A rule
+// matches on requests that also carry legitimate data, so the fragment and the
+// URI are exactly where a card number or a session token ends up in a SIEM —
+// written there by the component whose job is to stop that happening.
+func TestRedactWAFFragment(t *testing.T) {
+	t.Run("card data is masked", func(t *testing.T) {
+		got := redactWAFFragment("union select 1 from cards where pan='4111111111111111'")
+		if strings.Contains(got, "4111111111111111") {
+			t.Errorf("the card number reached the log: %q", got)
+		}
+		if !strings.Contains(got, "union select") {
+			t.Errorf("the match itself was lost, leaving nothing to tune: %q", got)
+		}
+	})
+	t.Run("email is masked", func(t *testing.T) {
+		got := redactWAFFragment("<script>alert(1)</script> from alice@example.com")
+		if strings.Contains(got, "alice@example.com") {
+			t.Errorf("the address reached the log: %q", got)
+		}
+	})
+	t.Run("a long body cannot be reconstructed", func(t *testing.T) {
+		got := redactWAFFragment(strings.Repeat("A", 5000))
+		if len(got) > wafFragmentMax+len("…(truncated)") {
+			t.Errorf("fragment is %d bytes; the cap did not hold", len(got))
+		}
+	})
+	t.Run("empty stays empty", func(t *testing.T) {
+		if got := redactWAFFragment(""); got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
+}
+
+func TestRedactWAFURI(t *testing.T) {
+	cases := []struct {
+		name, raw string
+		mustNot   []string
+		must      []string
+	}{
+		{
+			name:    "session token in the query",
+			raw:     "/api/orders?session=abc123secret&id=42",
+			mustNot: []string{"abc123secret", "42"},
+			must:    []string{"/api/orders", "session", "id"},
+		},
+		{
+			name:    "reset token and address",
+			raw:     "/reset?token=9f2c4ab1&email=alice@example.com",
+			mustNot: []string{"9f2c4ab1", "alice@example.com"},
+			must:    []string{"/reset", "token", "email"},
+		},
+		{
+			name: "no query is left alone",
+			raw:  "/api/orders",
+			must: []string{"/api/orders"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := redactWAFURI(c.raw)
+			for _, s := range c.mustNot {
+				if strings.Contains(got, s) {
+					t.Errorf("value %q reached the log: %q", s, got)
+				}
+			}
+			for _, s := range c.must {
+				if !strings.Contains(got, s) {
+					t.Errorf("%q should survive redaction, got %q", s, got)
+				}
+			}
+		})
+	}
+}

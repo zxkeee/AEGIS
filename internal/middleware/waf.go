@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"api-gateway/internal/classify"
 	"api-gateway/internal/config"
 	"api-gateway/internal/secevent"
 
@@ -309,6 +310,60 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 	}
 }
 
+// wafFragmentMax caps how much of a matched payload reaches the log. Enough to
+// tune a false positive, short enough that a whole request body cannot be
+// reconstructed from a run of detections.
+const wafFragmentMax = 200
+
+// redactWAFFragment prepares Coraza's matched-payload fragment for the log.
+//
+// The fragment is attacker-controlled request content, and a WAF rule matches
+// on requests that also carry legitimate data: a card number in a checkout
+// body, an email in a login form, a bearer token in a header. Logging it raw
+// wrote that data into the log pipeline — a file, and usually a SIEM outside
+// the customer's perimeter — from the one component whose job is to stop
+// exactly that from leaving. The same classifier DLP uses on responses runs
+// here, and the result is capped.
+func redactWAFFragment(s string) string {
+	if s == "" {
+		return ""
+	}
+	redacted, _ := classify.Redact([]byte(s), []byte("***REDACTED***"))
+	if len(redacted) > wafFragmentMax {
+		return string(redacted[:wafFragmentMax]) + "…(truncated)"
+	}
+	return string(redacted)
+}
+
+// redactWAFURI keeps the path and the NAMES of the query parameters, never
+// their values.
+//
+// The full URI went to the log verbatim, and a query string routinely carries
+// session tokens, API keys, reset tokens and email addresses — for URLs that
+// tripped a rule, which is to say the requests most likely to be pasted into a
+// ticket. The parameter names are what an operator needs to see where a rule
+// fired; the values are what an attacker needs.
+func redactWAFURI(raw string) string {
+	path, query, ok := strings.Cut(raw, "?")
+	if !ok || query == "" {
+		return path
+	}
+	names := make([]string, 0, 8)
+	seen := make(map[string]bool, 8)
+	for _, pair := range strings.Split(query, "&") {
+		name, _, _ := strings.Cut(pair, "=")
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return path
+	}
+	return path + "?" + strings.Join(names, "&") + " (values redacted)"
+}
+
 // ruleMatchLogger surfaces every rule Coraza matches, whether or not it went on
 // to block.
 //
@@ -336,8 +391,8 @@ func ruleMatchLogger(log Logger) func(types.MatchedRule) {
 			"severity": r.Severity().String(),
 			"tags":     r.Tags(),
 			"message":  mr.Message(),
-			"data":     mr.Data(),
-			"uri":      mr.URI(),
+			"data":     redactWAFFragment(mr.Data()),
+			"uri":      redactWAFURI(mr.URI()),
 			"ip":       mr.ClientIPAddress(),
 			// Disruptive reports whether the rule ACTUALLY performed a
 			// disruptive action — so it is true in enforcing mode and false in
