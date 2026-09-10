@@ -3,60 +3,76 @@
 # a local .env or uncommitted key sitting in the working tree gets copied
 # into the image layer history regardless of git status unless it's excluded
 # here too.
+#
+# Every pattern below is anchored with `**/` where it should match at any
+# depth. A bare `*.key` matches ONLY the context root: Docker's exclusion
+# patterns are matched against the path relative to the context, so `*.key`
+# never matched `scripts/local/deploy.key` and `.env` never matched
+# `web/console/.env`. That is the opposite of what a secret exclusion is for,
+# and the bare forms read as if they already covered it.
 
 .git/
 .github/
 
 # Secrets & key material — never bake into an image layer.
-.env
-.env.local
-.env.*.local
-*.pem
-*.key
-*.crt
-*.cer
-*.p12
-*.pfx
+**/.env
+**/.env.local
+**/.env.*.local
+**/*.pem
+**/*.key
+**/*.crt
+**/*.cer
+**/*.p12
+**/*.pfx
+
+# The disposable local stand (scripts/pentest-stand.sh). It holds a generated
+# admin secret, JWT secret, propagation secret and the report SIGNING key —
+# the key that attests audit evidence. It is gitignored, so nothing kept it
+# out of a build context until now.
+.stand/
+
 # Issued license files / hardware-grace state (internal/license,
 # cmd/licensegen) — not key material, but customer-identifying (licensee,
 # hardware fingerprint); no reason to sit in a build-cache layer's history.
-*.lic
-*.hwgrace
+**/*.lic
+**/*.hwgrace
 
 # Build artifacts / local state not needed to compile the gateway binary.
-*.test
-*.out
-coverage.*
-*.coverprofile
-profile.cov
+**/*.test
+**/*.out
+**/coverage.*
+**/*.coverprofile
+**/profile.cov
 /bin/
 /load
-*.rdb
-dump.rdb
+**/*.rdb
 gosec_results.json
 
 # Frontend toolchain output — the gateway build only needs the already-
 # committed internal/api/console_dist, never node_modules or a dev cache.
-node_modules/
-web/console/.vite/
-*.tsbuildinfo
-web/v3/node_modules/
+**/node_modules/
+**/.vite/
+**/*.tsbuildinfo
 web/v3/dist/
 web/pilot-requests.jsonl
+
+# Local working notes and third-party linter scratch state.
+handoff.md
+.aislop/
 
 # Editor / OS junk.
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
-*.log
-*.tmp
-*.bak
-*.orig
-*.rej
+**/*.swp
+**/*.swo
+**/*~
+**/.DS_Store
+**/Thumbs.db
+**/*.log
+**/*.tmp
+**/*.bak
+**/*.orig
+**/*.rej
 
 # Presentation/scratch material that has no business in a build context.
 docs/assets/
