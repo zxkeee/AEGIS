@@ -254,6 +254,25 @@ func TestValidate_Alerting(t *testing.T) {
 			t.Fatal("non-http(s) webhook url must be rejected")
 		}
 	})
+	// The field is documented as the HTTPS endpoint alerts are POSTed to, and
+	// was validated as http-or-https. An alert body names the detection, the
+	// endpoint and often the consumer, so plaintext delivery leaks the finding
+	// itself, not merely that one occurred.
+	t.Run("plaintext webhook is rejected", func(t *testing.T) {
+		c := validBase()
+		c.Alerting.WebhookURL = "http://collector.internal/hook"
+		if err := Validate(c); err == nil {
+			t.Fatal("http:// webhook url must be rejected")
+		}
+	})
+	t.Run("plaintext webhook allowed only under the dev flag", func(t *testing.T) {
+		c := validBase()
+		c.AdminCookieInsecure = true
+		c.Alerting.WebhookURL = "http://localhost:9000/hook"
+		if err := Validate(c); err != nil {
+			t.Fatalf("admin_cookie_insecure should allow a local http collector: %v", err)
+		}
+	})
 }
 
 func TestValidate_RedisSentinel(t *testing.T) {

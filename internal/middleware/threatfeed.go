@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"bufio"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"api-gateway/internal/config"
+	"api-gateway/internal/safefetch"
 )
 
 const (
@@ -68,53 +68,10 @@ func ThreatFeed(cfg config.ThreatFeedConfig, log Logger, st DenySink) Middleware
 	}
 }
 
-// checkFeedRedirect is the redirect policy for feed fetches. See safeRedirect.
+// checkFeedRedirect is the redirect policy for feed fetches.
+// See safefetch.Redirect.
 func checkFeedRedirect(req *http.Request, via []*http.Request) error {
-	return safeRedirect("threat_feed", req, via)
-}
-
-// safeRedirect is the redirect policy for EVERY outbound fetch whose
-// destination is operator-configured and required to be HTTPS: follow only
-// HTTPS redirects to non-private hosts, and cap the hop count.
-//
-// Config validation pins the URL an operator wrote; without this, a redirect
-// from that host silently unpins it — to http://, or to an internal address
-// such as 169.254.169.254. Enforcing the scheme at config time and then letting
-// the client follow anything is a guarantee that only holds until the first
-// 302.
-//
-// Shared rather than duplicated because the gateway has several such fetches
-// (the threat feed, the JWKS document) and the one that was missing this
-// policy was the one authenticating production traffic.
-func safeRedirect(what string, req *http.Request, via []*http.Request) error {
-	if len(via) >= 5 {
-		return fmt.Errorf("%s: too many redirects", what)
-	}
-	if req.URL.Scheme != "https" {
-		return fmt.Errorf("%s: refusing non-https redirect to %q", what, req.URL.Redacted())
-	}
-	if host := req.URL.Hostname(); isPrivateOrLocalHost(host) {
-		return fmt.Errorf("%s: refusing redirect to private/loopback host %q", what, host)
-	}
-	return nil
-}
-
-// isPrivateOrLocalHost reports whether a redirect target host is an internal
-// address a public threat feed must never point us at. It blocks the literal
-// "localhost" and any IP literal that is loopback, private, link-local (covers
-// 169.254.169.254 cloud metadata) or unspecified. A bare DNS name that resolves
-// to a private IP is not caught here (no lookup on the hot path); the scheme +
-// IP-literal checks cover the realistic MITM/SSRF vectors.
-func isPrivateOrLocalHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false // a domain name; allowed (HTTPS + public-name redirect)
-	}
-	return ip.IsLoopback() || ip.IsPrivate() ||
-		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+	return safefetch.Redirect("threat_feed", req, via)
 }
 
 type threatFeed struct {

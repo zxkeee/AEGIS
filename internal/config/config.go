@@ -1203,8 +1203,20 @@ func validateAlerting(cfg GatewayConfig) error {
 	default:
 		return fmt.Errorf("alerting.min_severity must be 'info', 'warning' or 'critical', got %q", cfg.Alerting.MinSeverity)
 	}
-	if u := cfg.Alerting.WebhookURL; u != "" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-		return fmt.Errorf("alerting.webhook_url must be an http(s) URL")
+	// The field's own comment already said "the HTTPS endpoint alerts are
+	// POSTed to", while this check accepted http:// — so the plaintext case was
+	// documented as impossible and permitted anyway. An alert body names the
+	// detection, the endpoint and often the consumer; over http:// that is
+	// readable by anyone on the path, and forgeable back at the gateway.
+	// Same dev escape hatch as auth.jwks_url and OIDC: a developer pointing at
+	// a local collector sets admin_cookie_insecure, which no production config
+	// survives Validate with.
+	if u := cfg.Alerting.WebhookURL; u != "" {
+		webhookHTTPDev := cfg.AdminCookieInsecure && strings.HasPrefix(u, "http://")
+		if !strings.HasPrefix(u, "https://") && !webhookHTTPDev {
+			return fmt.Errorf("alerting.webhook_url must be an https URL, got %q "+
+				"(alert bodies name what was detected and about whom)", u)
+		}
 	}
 	return nil
 }

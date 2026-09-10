@@ -8,27 +8,6 @@ import (
 	"testing"
 )
 
-func TestIsPrivateOrLocalHost(t *testing.T) {
-	blocked := []string{
-		"localhost", "LocalHost",
-		"127.0.0.1", "::1",
-		"10.0.0.5", "192.168.1.1", "172.16.0.1",
-		"169.254.169.254", // cloud metadata (link-local)
-		"0.0.0.0",
-	}
-	for _, h := range blocked {
-		if !isPrivateOrLocalHost(h) {
-			t.Errorf("host %q should be treated as private/local", h)
-		}
-	}
-	allowed := []string{"93.184.216.34", "8.8.8.8", "feeds.example.com", "example.org"}
-	for _, h := range allowed {
-		if isPrivateOrLocalHost(h) {
-			t.Errorf("host %q should be allowed", h)
-		}
-	}
-}
-
 // checkFeedRedirect is the actual policy used by threatFeed.refresh.
 func TestCheckFeedRedirect(t *testing.T) {
 	mk := func(raw string) *http.Request {

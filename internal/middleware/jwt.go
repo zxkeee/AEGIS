@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"api-gateway/internal/config"
+	"api-gateway/internal/safefetch"
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/golang-jwt/jwt/v5"
@@ -64,7 +65,7 @@ const jwksMaxBackoff = 5 * time.Minute
 func jwksClient() *http.Client {
 	return &http.Client{
 		Timeout:       30 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error { return safeRedirect("jwks", req, via) },
+		CheckRedirect: func(req *http.Request, via []*http.Request) error { return safefetch.Redirect("jwks", req, via) },
 	}
 }
 
