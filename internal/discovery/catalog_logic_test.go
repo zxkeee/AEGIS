@@ -189,3 +189,83 @@ func TestAggregate_ZeroCapIsUnlimited(t *testing.T) {
 		t.Fatalf("zero cap must not drop endpoints; got %d want 5", len(eps))
 	}
 }
+
+// A mirrored observation has no response, and the catalog must say so rather
+// than record zeros that read like findings.
+//
+// This is the honesty requirement of mirror-sink mode. A PII count of zero
+// means "no sensitive data was found" for a proxied request and "responses were
+// never looked at" for a mirrored one. If both produce the same row, an auditor
+// shown that catalog is told the endpoint is clean when nobody checked.
+func TestAggregate_MirroredObservationRecordsNoResponseFacts(t *testing.T) {
+	c := newTestCatalog()
+	eps := map[string]*epAgg{}
+	cons := map[string]*consumerAgg{}
+	epCons := map[[3]string]int64{}
+
+	// The response-side fields are set deliberately, to prove they are IGNORED
+	// rather than merely absent.
+	c.aggregate(Observation{
+		Tenant: "acme", Method: "GET", Path: "/customers/7", ConsumerIP: "1.2.3.4",
+		RequestOnly: true,
+		Status:      200, LatencyMs: 42, PII: true, PIITypes: []string{"credit_card"},
+	}, eps, cons, epCons)
+
+	if len(eps) != 1 {
+		t.Fatalf("endpoints recorded = %d, want 1", len(eps))
+	}
+	var a *epAgg
+	for _, v := range eps {
+		a = v
+	}
+
+	if a.requestCount != 1 {
+		t.Errorf("requestCount = %d, want 1: the REQUEST was observed", a.requestCount)
+	}
+	if a.responsesSeen != 0 {
+		t.Errorf("responsesSeen = %d, want 0: there was no response to see", a.responsesSeen)
+	}
+	if a.piiCount != 0 {
+		t.Errorf("piiCount = %d, want 0: a mirrored request carries no response body, "+
+			"so a PII signal on it is not an observation", a.piiCount)
+	}
+	if len(a.piiTypes) != 0 {
+		t.Errorf("piiTypes = %v, want empty", a.piiTypes)
+	}
+	if a.latencySamples != 0 || a.latencyMsSum != 0 {
+		t.Errorf("latency recorded (%d samples, %d ms); nothing was timed",
+			a.latencySamples, a.latencyMsSum)
+	}
+	if len(a.statusDist) != 0 {
+		t.Errorf("statusDist = %v, want empty: the sink's own 204 is not the caller's status",
+			a.statusDist)
+	}
+	if a.errorCount != 0 {
+		t.Errorf("errorCount = %d, want 0", a.errorCount)
+	}
+	// The request-side half IS recorded — that is the point of the mode.
+	if a.anonCount != 1 {
+		t.Errorf("anonCount = %d, want 1: the request carried no identity", a.anonCount)
+	}
+}
+
+// The same observation proxied normally records everything, so the test above
+// pins RequestOnly and not an unrelated gap.
+func TestAggregate_ProxiedObservationRecordsResponseFacts(t *testing.T) {
+	c := newTestCatalog()
+	eps := map[string]*epAgg{}
+
+	c.aggregate(Observation{
+		Tenant: "acme", Method: "GET", Path: "/customers/7", ConsumerIP: "1.2.3.4",
+		Status: 200, LatencyMs: 42, PII: true, PIITypes: []string{"credit_card"},
+	}, eps, map[string]*consumerAgg{}, map[[3]string]int64{})
+
+	var a *epAgg
+	for _, v := range eps {
+		a = v
+	}
+	if a.responsesSeen != 1 || a.piiCount != 1 || a.latencySamples != 1 {
+		t.Fatalf("proxied observation lost response facts: responsesSeen=%d piiCount=%d "+
+			"latencySamples=%d", a.responsesSeen, a.piiCount, a.latencySamples)
+	}
+}

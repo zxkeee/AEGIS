@@ -113,6 +113,25 @@ type GatewayConfig struct {
 	AdminListen string `yaml:"admin_listen"`
 	AdminAuth   bool   `yaml:"admin_auth"`
 	AdminSecret string `yaml:"admin_secret"`
+	// MirrorSink accepts a COPY of production traffic and never forwards it.
+	//
+	// It exists to remove the one objection that stops a first pilot: "I am not
+	// putting your process in front of my traffic." With nginx's mirror
+	// directive (or Envoy shadow, or HAProxy), the customer's gateway sends a
+	// duplicate of each request here and discards whatever comes back. Their
+	// traffic never touches this process — not one byte, not one millisecond —
+	// so nothing AEGIS does can break it.
+	//
+	// The cost is stated rather than hidden: a mirrored request carries no
+	// response, so everything derived from a response body is unavailable.
+	// That means no PII detection, no object-ownership (BOLA) confirmation, and
+	// no real status codes. What remains is the request-side half: the endpoint
+	// catalog, path templates, who calls what, and undocumented endpoints.
+	//
+	// Observations recorded in this mode are marked as request-only so the
+	// catalog and the compliance report can say "responses were not inspected"
+	// instead of letting a zero PII count read as "no PII was found".
+	MirrorSink bool `yaml:"mirror_sink"`
 	// AdminBootstrapSecretDisabled turns off the AEGIS_ADMIN_SECRET bearer-token
 	// admin auth path once real per-tenant IAM operators have been provisioned.
 	// The bearer path is an always-super-admin, un-auditable-per-operator,
@@ -1021,6 +1040,39 @@ func Validate(cfg GatewayConfig) error {
 	}
 	if err := validateRetention(cfg); err != nil {
 		return err
+	}
+	if err := validateMirrorSink(cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateMirrorSink refuses a configuration that claims to enforce anything
+// while receiving mirrored traffic.
+//
+// A mirrored request is a copy: the original has already been answered by
+// somebody else's infrastructure, and nothing decided here can reach the caller.
+// So a blocking control in this mode does not block — it writes "denied" into a
+// log about a request that was served anyway. An operator reading that log would
+// believe an attack was stopped when it was not, which is worse than having no
+// control at all.
+//
+// Observe mode is therefore required, not merely recommended. ApplyObserveMode
+// already coerces every control into inspect-and-record; this makes turning it
+// off in mirror mode a startup error rather than a silent lie.
+func validateMirrorSink(cfg GatewayConfig) error {
+	if !cfg.MirrorSink {
+		return nil
+	}
+	if !cfg.Observe {
+		return errors.New("mirror_sink requires observe: true — mirrored traffic has " +
+			"already been answered elsewhere, so a control that 'blocks' here stops " +
+			"nothing and records a denial that did not happen")
+	}
+	if cfg.TLS.Enabled {
+		return errors.New("mirror_sink with tls.enabled is refused: the mirroring proxy " +
+			"has already terminated TLS, so there is no ClientHello here to fingerprint " +
+			"and the JA3 signal would be this process's own, not the caller's")
 	}
 	return nil
 }

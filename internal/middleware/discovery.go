@@ -44,7 +44,7 @@ func observationFrom(ctx context.Context) *discovery.Observation {
 // identity and PII signals), measures latency and status, and records the
 // result to the catalog. It must sit inside the auth/DLP middleware so those can
 // enrich the observation, and outside the proxy so it captures the final status.
-func Discovery(cfg config.APIInventoryConfig, cat Catalog, log Logger) Middleware {
+func Discovery(cfg config.APIInventoryConfig, cat Catalog, log Logger, requestOnly bool) Middleware {
 	if !cfg.Enabled || cat == nil {
 		return passthrough
 	}
@@ -61,10 +61,11 @@ func Discovery(cfg config.APIInventoryConfig, cat Catalog, log Logger) Middlewar
 				// plain configured path, same as if GraphQLPath were unset.
 			}
 			obs := &discovery.Observation{
-				Tenant:     tenant.From(r.Context()),
-				Method:     r.Method,
-				Path:       path,
-				ConsumerIP: RealIP(r),
+				Tenant:      tenant.From(r.Context()),
+				Method:      r.Method,
+				Path:        path,
+				ConsumerIP:  RealIP(r),
+				RequestOnly: requestOnly,
 			}
 			ctx := context.WithValue(r.Context(), obsKey, obs)
 
@@ -74,23 +75,38 @@ func Discovery(cfg config.APIInventoryConfig, cat Catalog, log Logger) Middlewar
 
 			// Endpoints that don't exist (404) are not part of the company's API
 			// surface — skip them so probing can't pollute the catalog.
-			if sw.status == http.StatusNotFound {
+			//
+			// Mirrored traffic is exempt: the sink answers 204 to everything, so
+			// there is no 404 to mean "no such endpoint" and applying this rule
+			// would be filtering on a status this process invented.
+			if !requestOnly && sw.status == http.StatusNotFound {
 				return
 			}
 
-			obs.Status = sw.status
-			obs.LatencyMs = time.Since(start).Milliseconds()
+			if !requestOnly {
+				obs.Status = sw.status
+				obs.LatencyMs = time.Since(start).Milliseconds()
+			}
 			cat.Record(*obs)
 
-			log.Info("api_access", map[string]any{
+			fields := map[string]any{
 				"method":     obs.Method,
 				"path":       obs.Path,
-				"status":     obs.Status,
-				"latency_ms": obs.LatencyMs,
 				"consumer":   consumerLabel(obs),
 				"ip":         obs.ConsumerIP,
 				"request_id": r.Header.Get("X-Request-ID"),
-			})
+			}
+			if requestOnly {
+				// No status and no latency are reported, because this process
+				// never saw a response. Logging the sink's own 204 here would
+				// put a number in the operator's log that describes nothing that
+				// happened to their traffic.
+				fields["mirrored"] = true
+			} else {
+				fields["status"] = obs.Status
+				fields["latency_ms"] = obs.LatencyMs
+			}
+			log.Info("api_access", fields)
 		})
 	}
 }

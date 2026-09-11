@@ -28,6 +28,17 @@ type Observation struct {
 	PII         bool     // DLP detected sensitive data in the response
 	PIITypes    []string // classified data types in the response (e.g. credit_card, email)
 
+	// RequestOnly marks an observation taken from a MIRRORED request, where no
+	// response exists to inspect (see GatewayConfig.MirrorSink).
+	//
+	// It is recorded because absence of evidence is not evidence of absence: a
+	// PII count of zero means "no sensitive data was found" for a proxied
+	// request and "responses were never looked at" for a mirrored one. Those
+	// must not read the same way in a catalog an auditor is shown, so Status
+	// and LatencyMs are not recorded as facts here either — there was no
+	// response to have a status or a duration.
+	RequestOnly bool
+
 	// Consumer identity. Any non-empty field contributes a consumer record.
 	ConsumerSubject string // from JWT "sub"/claims  -> "jwt:<sub>"
 	ConsumerKey     string // from API key header     -> "key:<id>"
@@ -148,10 +159,15 @@ type epAgg struct {
 	tenant, id, method, pathTemplate, routePath, posture string
 	requestCount, errorCount                             int64
 	authPresent, anonCount, piiCount                     int64
-	latencyMsSum, latencySamples                         int64
-	riskScore                                            int
-	statusDist                                           map[int]int64
-	piiTypes                                             map[string]bool // set of classified data types
+	// responsesSeen counts observations that actually carried a response. It is
+	// NOT the same as requestCount when traffic arrives mirrored: zero here
+	// means the response side was never inspected, which is what stops a
+	// piiCount of zero being read as "no sensitive data".
+	responsesSeen                int64
+	latencyMsSum, latencySamples int64
+	riskScore                    int
+	statusDist                   map[int]int64
+	piiTypes                     map[string]bool // set of classified data types
 }
 
 type consumerAgg struct {
@@ -386,13 +402,23 @@ func (c *Catalog) aggregate(obs Observation, eps map[string]*epAgg,
 		eps[epKey] = a
 	}
 	a.requestCount++
-	if obs.Status >= 400 {
-		a.errorCount++
-	}
 	if obs.AuthPresent {
 		a.authPresent++
 	} else {
 		a.anonCount++
+	}
+
+	// A mirrored request has no response. Everything below this point describes
+	// one, so none of it is recorded: a status nobody sent, a latency nothing
+	// took, and a PII count that would mean "clean" when it means "not looked
+	// at". responsesSeen is what separates those two readings downstream.
+	if obs.RequestOnly {
+		return
+	}
+	a.responsesSeen++
+
+	if obs.Status >= 400 {
+		a.errorCount++
 	}
 	if obs.PII {
 		a.piiCount++
