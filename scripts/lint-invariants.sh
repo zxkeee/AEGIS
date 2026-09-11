@@ -240,6 +240,51 @@ if [ -n "$joined" ]; then
   fail=1
 fi
 
+# ── Invariant 6: the admin RBAC gate sees every mutating route ────────────────
+#
+# AdminAuth refuses a viewer's request inside `if isMutating(r.Method)`. That
+# makes isMutating the definition of "mutation" for the whole admin plane: a
+# route registered with a method it does not list is reachable by a viewer, and
+# by anyone holding a session, with no RBAC check and no CSRF check either —
+# both live in the same branch.
+#
+# Today every route in server.go names a method and every mutating one is in
+# that set. This keeps it that way: a route registered with no method at all
+# (http.ServeMux then matches ALL methods, including POST) or with a verb the
+# gate does not recognise would otherwise pass review as ordinary plumbing.
+echo "invariant: every admin route's method is one the RBAC gate understands"
+SRV=internal/api/server.go
+ADM=internal/middleware/admin.go
+# Methods isMutating() treats as a mutation, read from the source rather than
+# copied here — a copy is what drifts.
+mutating=$(sed -n '/func isMutating/,/^}/p' "$ADM" \
+  | grep -oE 'http\.Method[A-Za-z]+' | sed 's/http.Method//' | tr '[:lower:]' '[:upper:]' | sort -u)
+# Safe verbs need no RBAC check: they change nothing.
+safe="GET HEAD OPTIONS"
+allowed=$(printf '%s\n%s\n' "$mutating" "$(printf '%s\n' $safe)" | sort -u)
+while IFS= read -r line; do
+  pattern=$(printf '%s' "$line" | sed -n 's/.*mux.HandleFunc("\([^"]*\)".*/\1/p')
+  [ -z "$pattern" ] && continue
+  verb=$(printf '%s' "$pattern" | awk '{print $1}')
+  # A pattern with no space is a bare path: ServeMux matches every method on it.
+  case "$pattern" in
+    *" "*) : ;;
+    *)
+      echo "ERROR: $SRV registers \"$pattern\" with no method — ServeMux will match POST"
+      echo "       on it too, and AdminAuth's RBAC and CSRF checks both sit inside"
+      echo "       isMutating(r.Method). Name the method."
+      fail=1
+      continue
+      ;;
+  esac
+  if ! printf '%s\n' "$allowed" | grep -qx "$verb"; then
+    echo "ERROR: $SRV registers \"$pattern\" with method $verb, which isMutating() in"
+    echo "       $ADM does not recognise — a viewer could call it, and no CSRF token"
+    echo "       would be required. Add it to isMutating or use a listed verb."
+    fail=1
+  fi
+done < <(grep 'mux.HandleFunc("' "$SRV")
+
 # ── Invariant 4: every payload-inspection WAF rule covers REQUEST_URI (no
 #    path blindness) ──────────────────────────────────────────────────────────
 #
