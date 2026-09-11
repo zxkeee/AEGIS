@@ -275,47 +275,84 @@ func TestBoundedUnique_KeepsFirstSeenAndReportsTruncation(t *testing.T) {
 // without limit and then made the worker walk every entry serially against
 // PostgreSQL — incident recording degraded to nothing during precisely the
 // distributed attack it exists to record.
+//
+// Through accumulate(), for the same reason as the test below: Observe() drops
+// when its buffer is full, and this flood is larger than the buffer. Measured
+// on the previous version — 5000 streams written, cap 5000, droppedKeys 0. The
+// channel had discarded the excess, accumulate never refused anything, and the
+// assertion "at most the cap" held because the flood never reached the cap.
+// A green test proving the wrong thing.
 func TestCorrelator_BoundsTheNumberOfStreams(t *testing.T) {
-	fs := &fakeStore{}
-	c := New(fs, nopLog{})
+	c := New(&fakeStore{}, nopLog{})
+	defer func() { _ = c.Close() }()
 
+	pending := map[key]*aggregate{}
 	// One address per event, far past the cap.
 	for i := 0; i < maxPendingKeys+500; i++ {
-		c.Observe(Event{Tenant: "acme", Reason: "waf_blocked",
+		c.accumulate(pending, Event{Tenant: "acme", Reason: "waf_blocked",
 			IP: fmt.Sprintf("10.%d.%d.%d", i/65536, (i/256)%256, i%256), At: t0})
 	}
-	_ = c.Close()
 
-	if got := len(fs.all()); got > maxPendingKeys {
-		t.Fatalf("%d streams written, want at most the cap of %d", got, maxPendingKeys)
+	if got := len(pending); got > maxPendingKeys {
+		t.Fatalf("%d streams tracked, want at most the cap of %d", got, maxPendingKeys)
+	}
+	// Without this the assertion above is satisfied by a flood that never
+	// reached the limit, which is exactly how this test used to pass.
+	if c.droppedKeys != 500 {
+		t.Errorf("droppedKeys = %d, want 500: every stream past the cap must be "+
+			"refused, and no more than those", c.droppedKeys)
 	}
 }
 
 // An already-tracked stream must keep accumulating even while new ones are
 // being refused — otherwise a flood of new addresses starves the incident that
 // is actually being recorded.
+//
+// Driven through accumulate() rather than Observe(), deliberately. Observe is
+// non-blocking and DROPS when its buffer is full: queueSize is 4096 and this
+// scenario needs more than maxPendingKeys (5000) distinct streams, so sending
+// them through the channel means the test passes only if the worker happens to
+// drain faster than the test fills. It did locally and did not in CI, where it
+// failed on the last victim event being one of the dropped ones.
+//
+// The cap lives in accumulate, so that is the level to test it at. What went
+// through the channel was never the behaviour under test — it was the channel's
+// throughput.
 func TestCorrelator_CapRefusesNewStreamsNotExistingOnes(t *testing.T) {
-	fs := &fakeStore{}
-	c := New(fs, nopLog{})
+	c := New(&fakeStore{}, nopLog{})
+	defer func() { _ = c.Close() }()
 
-	c.Observe(Event{Tenant: "acme", Reason: "bola_x", Consumer: "jwt:victim", At: t0})
+	pending := map[key]*aggregate{}
+	victim := Event{Tenant: "acme", Reason: "bola_x", Consumer: "jwt:victim", At: t0}
+	c.accumulate(pending, victim)
+
+	// One stream per address, past the cap.
 	for i := 0; i < maxPendingKeys+100; i++ {
-		c.Observe(Event{Tenant: "acme", Reason: "waf_blocked",
+		c.accumulate(pending, Event{Tenant: "acme", Reason: "waf_blocked",
 			IP: fmt.Sprintf("10.%d.%d.%d", i/65536, (i/256)%256, i%256), At: t0})
 	}
-	c.Observe(Event{Tenant: "acme", Reason: "bola_x", Consumer: "jwt:victim", At: t0.Add(time.Second)})
-	_ = c.Close()
-
-	for _, d := range fs.all() {
-		if d.Subject == "jwt:victim" {
-			if d.Count != 2 {
-				t.Errorf("the tracked stream recorded %d events, want 2 — a flood of new "+
-					"streams starved an incident already being recorded", d.Count)
-			}
-			return
-		}
+	if len(pending) > maxPendingKeys {
+		t.Fatalf("pending holds %d streams, past the cap of %d", len(pending), maxPendingKeys)
 	}
-	t.Fatal("the tracked stream was not written at all")
+	if c.droppedKeys == 0 {
+		t.Fatal("no stream was refused; the flood never reached the cap and the " +
+			"rest of this test would prove nothing")
+	}
+
+	// The victim's stream is already tracked, so it must still accumulate.
+	later := victim
+	later.At = t0.Add(time.Second)
+	c.accumulate(pending, later)
+
+	k := key{tenant: "acme", class: ClassOf("bola_x"), subject: subjectOf(victim)}
+	a := pending[k]
+	if a == nil {
+		t.Fatal("the tracked stream was evicted by the flood")
+	}
+	if a.count != 2 {
+		t.Errorf("the tracked stream recorded %d events, want 2 — a flood of new "+
+			"streams starved an incident already being recorded", a.count)
+	}
 }
 
 // Close is the shutdown path that flushes evidence. A panic there loses the
