@@ -1239,7 +1239,8 @@ sets:
 - `X-Gateway-Subject`, `X-Gateway-Roles`, `X-Gateway-Scopes` — the propagated
   identity.
 - `X-Gateway-Timestamp`, `X-Gateway-Nonce` — freshness and replay inputs.
-- `X-Gateway-Signature` — an HMAC-SHA256 over `subject:roles:scopes:timestamp:nonce`
+- `X-Gateway-Signature` — an HMAC-SHA256 over a length-prefixed encoding of
+  subject, roles, scopes, identity, timestamp and nonce (`gatewayverify.CanonicalPayload`)
   keyed with the shared secret.
 
 A backend should reconstruct the signed payload, recompute the HMAC with the

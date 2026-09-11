@@ -22,13 +22,12 @@ func signRequest(secret, sub, roles, scopes, nonce string, ts int64) *http.Reque
 }
 
 // signRequestID is signRequest plus the ownership-identity claim, mirroring the
-// canonical payload sub:roles:scopes:identity:ts:nonce.
+// canonical payload built by CanonicalPayload.
 func signRequestID(secret, sub, roles, scopes, identity, nonce string, ts int64) *http.Request {
 	r := httptest.NewRequest(http.MethodGet, "/orders/42", nil)
 	tss := strconv.FormatInt(ts, 10)
-	payload := strings.Join([]string{sub, roles, scopes, identity, tss, nonce}, ":")
 	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(payload))
+	mac.Write(CanonicalPayload(sub, roles, scopes, identity, tss, nonce))
 
 	r.Header.Set(HeaderSubject, sub)
 	if roles != "" {
@@ -179,5 +178,146 @@ func TestHandler_RejectsAndAllows(t *testing.T) {
 	}
 	if sawIdentity.Subject != "user-9" {
 		t.Fatalf("handler did not receive identity, got %q", sawIdentity.Subject)
+	}
+}
+
+// signCanonical signs whatever fields it is given, using the same canonical
+// form the gateway uses. It exists so the tests below can hand the verifier a
+// signature that is genuine for ONE identity and ask whether it authenticates
+// ANOTHER.
+func signCanonical(secret, sub, roles, scopes, identity, ts, nonce string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(CanonicalPayload(sub, roles, scopes, identity, ts, nonce))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// A signature the gateway issued for one identity must not authenticate a
+// different one.
+//
+// The payload used to be the six fields joined with ":", and none of them is
+// constrained to exclude that byte — `sub` comes straight from a JWT claim. So
+// a caller whose subject contained a colon received a signature equally valid
+// for a different split of the same bytes, including one naming ANOTHER USER as
+// the subject. Verified against the old encoding: a signature issued for
+// sub="alice:admin" was accepted as sub="alice", roles="admin:".
+//
+// It matters wherever the backend is reachable without traversing the gateway —
+// which is the only scenario this SDK exists for. If the backend could only be
+// reached through AEGIS, CleanHeaders would be enough and nobody would verify
+// anything.
+func TestVerify_SignatureCannotBeResplitIntoAnotherIdentity(t *testing.T) {
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	const nonce = "resplit-1"
+
+	// Genuine signature for the attacker's own token.
+	sig := signCanonical(testSecret, "alice:admin", "", "", "", ts, nonce)
+
+	// Every re-split of those same bytes must be refused.
+	for _, c := range []struct{ name, sub, roles string }{
+		{"another subject entirely", "alice", "admin:"},
+		{"subject truncated at the delimiter", "alice", "admin"},
+		{"delimiter moved into roles", "alice:", "admin"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			v := New(testSecret, time.Minute, NewMemoryNonceStore())
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.Header.Set(HeaderSubject, c.sub)
+			r.Header.Set(HeaderRoles, c.roles)
+			r.Header.Set(HeaderTimestamp, ts)
+			r.Header.Set(HeaderNonce, nonce)
+			r.Header.Set(HeaderSignature, sig)
+
+			id, err := v.Verify(r)
+			if err == nil {
+				t.Fatalf("a signature issued for sub=%q authenticated sub=%q: impersonation",
+					"alice:admin", id.Subject)
+			}
+		})
+	}
+}
+
+// The genuine identity still verifies — the fix must not refuse a colon, only
+// stop it moving a field boundary. Colons in subjects are ordinary (URNs,
+// OIDC issuer-qualified ids), so rejecting them would have been a different bug.
+func TestVerify_ASubjectMayContainTheDelimiter(t *testing.T) {
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	const nonce = "resplit-2"
+	sig := signCanonical(testSecret, "urn:user:alice", "admin", "read:orders", "7", ts, nonce)
+
+	v := New(testSecret, time.Minute, NewMemoryNonceStore())
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set(HeaderSubject, "urn:user:alice")
+	r.Header.Set(HeaderRoles, "admin")
+	r.Header.Set(HeaderScopes, "read:orders")
+	r.Header.Set(HeaderIdentity, "7")
+	r.Header.Set(HeaderTimestamp, ts)
+	r.Header.Set(HeaderNonce, nonce)
+	r.Header.Set(HeaderSignature, sig)
+
+	id, err := v.Verify(r)
+	if err != nil {
+		t.Fatalf("a legitimate colon-bearing subject was refused: %v", err)
+	}
+	if id.Subject != "urn:user:alice" || len(id.Scopes) != 1 || id.Scopes[0] != "read:orders" {
+		t.Fatalf("identity came back wrong: %+v", id)
+	}
+}
+
+// CanonicalPayload must be injective: distinct field tuples, distinct bytes.
+// The old encoding failed exactly here.
+func TestCanonicalPayload_IsInjective(t *testing.T) {
+	tuples := [][]string{
+		{"alice:admin", "", "", "", "1", "n"},
+		{"alice", "admin:", "", "", "1", "n"},
+		{"alice", "admin", "", "", "1", "n"},
+		{"alice", "", "admin", "", "1", "n"},
+		{"", "alice:admin", "", "", "1", "n"},
+		{"a:b:c", "", "", "", "1", "n"},
+		{"a", "b:c", "", "", "1", "n"},
+		{"a:b", "c", "", "", "1", "n"},
+	}
+	seen := map[string][]string{}
+	for _, tu := range tuples {
+		got := string(CanonicalPayload(tu[0], tu[1], tu[2], tu[3], tu[4], tu[5]))
+		if prev, dup := seen[got]; dup {
+			t.Errorf("collision: %q and %q encode identically", prev, tu)
+		}
+		seen[got] = tu
+	}
+}
+
+// A signature produced under the previous canonical form must fail closed, not
+// be reinterpreted under the new one.
+//
+// During a rolling upgrade the gateway and some backends run different
+// versions. The safe outcome is a rejected request — visible, fixed by
+// finishing the rollout — rather than an old signature quietly satisfying the
+// new verifier, which would leave the impersonation open for exactly as long as
+// the rollout took.
+//
+// Note what this test does and does not prove: the length-prefixed encoding
+// alone already differs from the old string, so this passes with or without
+// PayloadVersion. The version prefix earns its place at the NEXT format
+// change, when two length-prefixed encodings could otherwise be confused —
+// which is not something a test can demonstrate today.
+func TestVerify_RejectsASignatureFromThePreviousFormat(t *testing.T) {
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	const nonce = "legacy-1"
+
+	// The old encoding: the six fields joined with ":".
+	legacy := strings.Join([]string{"alice", "admin", "", "", ts, nonce}, ":")
+	mac := hmac.New(sha256.New, []byte(testSecret))
+	mac.Write([]byte(legacy))
+
+	v := New(testSecret, time.Minute, NewMemoryNonceStore())
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set(HeaderSubject, "alice")
+	r.Header.Set(HeaderRoles, "admin")
+	r.Header.Set(HeaderTimestamp, ts)
+	r.Header.Set(HeaderNonce, nonce)
+	r.Header.Set(HeaderSignature, hex.EncodeToString(mac.Sum(nil)))
+
+	if _, err := v.Verify(r); err == nil {
+		t.Fatal("a signature from the previous canonical form was accepted")
 	}
 }

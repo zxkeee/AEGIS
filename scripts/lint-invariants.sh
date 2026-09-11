@@ -43,8 +43,10 @@ fi
 # identity, so they are exempt.
 echo "invariant: every X-Gateway-* identity header is in the signature payload"
 JWT=internal/middleware/jwt.go
-# The line that builds the signed payload (strings.Join of the canonical fields).
-payload_line=$(grep -n 'payload := strings.Join' "$JWT" | head -1 | cut -d: -f1 || true)
+# The line that builds the signed payload. It used to be a strings.Join here;
+# the canonical form now lives in sdk/gatewayverify so the signer and the
+# verifier cannot describe it differently, and this matches the call site.
+payload_line=$(grep -n 'gatewayverify.CanonicalPayload(' "$JWT" | head -1 | cut -d: -f1 || true)
 if [ -z "${payload_line:-}" ]; then
   echo "ERROR: could not locate the canonical payload line in $JWT"
   fail=1
@@ -61,7 +63,7 @@ else
     hdr=${pair%%:*}
     var=${pair##*:}
     if grep -q "r.Header.Set(\"$hdr\"" "$JWT"; then
-      if ! grep 'payload := strings.Join' "$JWT" | grep -q "$var"; then
+      if ! grep 'gatewayverify.CanonicalPayload(' "$JWT" | grep -q "$var"; then
         echo "ERROR: $hdr is set in $JWT but its value ($var) is not in the signed payload"
         fail=1
       fi
@@ -209,6 +211,34 @@ for envVar in $(grep -ohE 'AEGIS_[A-Z_]+' internal/config/config.go cmd/gateway/
     fail=1
   fi
 done
+
+# ── Invariant 2b: nothing describes the identity payload as delimiter-joined ──
+#
+# The signed identity payload was `sub:roles:scopes:identity:ts:nonce` — six
+# fields joined with ":", none of them constrained to exclude it. `sub` comes
+# straight from a JWT claim, so a subject containing a colon produced a
+# signature that was equally valid for a DIFFERENT split of the same bytes,
+# naming a different user. It is length-prefixed now
+# (gatewayverify.CanonicalPayload).
+#
+# Six places described that format in prose, and three of them were already
+# wrong in another way — they listed five fields, from before the identity claim
+# was added. A format documented in seven places is a format that will be
+# described incorrectly somewhere, and someone reimplementing a backend verifier
+# from the docs would reintroduce exactly this bug.
+#
+# So: no file may spell the payload as a delimiter-joined field list.
+echo "invariant: the identity payload is not described as a delimiter-joined string"
+# This script is excluded: the comment above has to name the format it forbids.
+joined=$(grep -rIn --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.stand \
+  --exclude=lint-invariants.sh -E '(sub|subject):roles:scopes' . 2>/dev/null || true)
+if [ -n "$joined" ]; then
+  echo "ERROR: the identity payload is described as a delimiter-joined string here:"
+  echo "$joined" | sed 's/^/       /'
+  echo "       It is length-prefixed (gatewayverify.CanonicalPayload). A delimiter-joined"
+  echo "       payload is not injective and let one signature authenticate two identities."
+  fail=1
+fi
 
 # ── Invariant 4: every payload-inspection WAF rule covers REQUEST_URI (no
 #    path blindness) ──────────────────────────────────────────────────────────

@@ -145,9 +145,8 @@ func (v *Verifier) Verify(r *http.Request) (Identity, error) {
 	}
 
 	// 2. Authenticity — constant-time HMAC comparison over the canonical payload.
-	payload := strings.Join([]string{sub, roles, scopes, identity, ts, nonce}, ":")
 	mac := hmac.New(sha256.New, v.secret)
-	mac.Write([]byte(payload))
+	mac.Write(CanonicalPayload(sub, roles, scopes, identity, ts, nonce))
 	expected := mac.Sum(nil)
 
 	got, err := hex.DecodeString(sig)
@@ -194,4 +193,39 @@ func (v *Verifier) Handler(next http.Handler) http.Handler {
 		ctx := contextWithIdentity(r, id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// PayloadVersion prefixes the signed bytes so a signature produced under one
+// canonical form can never verify under another. Bump it whenever the encoding
+// below changes; an old signature then fails closed instead of being
+// reinterpreted.
+const PayloadVersion = "aegis-identity-v2"
+
+// CanonicalPayload builds the exact bytes signed for a forwarded identity.
+//
+// It is length-prefixed rather than delimiter-joined, because the previous form
+// — the six fields joined with ":" — was not injective. None of the fields is
+// constrained to exclude the delimiter and `sub` comes straight from a JWT
+// claim, so a caller whose subject contained a colon received a signature that
+// was equally valid for a DIFFERENT split of the same bytes: sub="alice:admin"
+// with no roles produces the same string as sub="alice" with roles="admin:".
+// A backend authorising on the subject was handed someone else's.
+//
+// Encoding each field as <byte length>:<field> makes the split unambiguous:
+// the length says where the field ends, so no content can move a boundary.
+//
+// This function is the single definition of the wire format. The gateway calls
+// it when signing (internal/middleware/jwt.go) and this package calls it when
+// verifying — previously each built the string independently, which is how a
+// format can drift on one side and silently keep passing on the other.
+func CanonicalPayload(sub, roles, scopes, identity, ts, nonce string) []byte {
+	var b strings.Builder
+	b.WriteString(PayloadVersion)
+	for _, f := range []string{sub, roles, scopes, identity, ts, nonce} {
+		b.WriteByte('\n')
+		b.WriteString(strconv.Itoa(len(f)))
+		b.WriteByte(':')
+		b.WriteString(f)
+	}
+	return []byte(b.String())
 }
