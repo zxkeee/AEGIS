@@ -318,7 +318,13 @@ func (s *pgStore) listEndpoints(ctx context.Context, tenantID string, f Endpoint
 		q += fmt.Sprintf(" AND first_seen <= $%d", len(args)+1)
 		args = append(args, f.SeenTo.UTC())
 	}
-	q += " ORDER BY risk_score DESC, request_count DESC"
+	// id is the tie-breaker, and it is not cosmetic. risk_score and
+	// request_count collide often (every endpoint seen once, scored the same),
+	// and PostgreSQL is free to return tied rows in any order — a parallel plan
+	// routinely does. The compliance report is built from these rows and then
+	// SIGNED, so without a total order the same state can produce two documents
+	// with two digests, and an auditor asking why gets no good answer.
+	q += " ORDER BY risk_score DESC, request_count DESC, id"
 	limit := f.Limit
 	if limit <= 0 || limit > 1000 {
 		limit = 500

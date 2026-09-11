@@ -555,3 +555,41 @@ func TestPG_ListEndpoints_FiltersByPeriodOverlap(t *testing.T) {
 		t.Fatalf("empty period = %d endpoints, want 0 — a narrow question returned a broad answer", len(empty))
 	}
 }
+
+// Tied rows must come back in a fixed order.
+//
+// risk_score and request_count collide constantly — every endpoint seen once
+// and scored the same ties with every other. PostgreSQL is free to return tied
+// rows in any order and a parallel plan routinely does. These rows feed the
+// compliance report, which is SIGNED: without a total order the same state can
+// produce two documents with two different digests, and "the report is
+// reproducible" stops being true in the one place the product sells it.
+func TestPG_ListEndpoints_TiedRowsHaveATotalOrder(t *testing.T) {
+	s := freshStore(t)
+	ctx := context.Background()
+
+	ids := []string{"GET:/e", "GET:/c", "GET:/a", "GET:/f", "GET:/b", "GET:/d"}
+	for _, id := range ids {
+		if err := s.upsertEndpoint(ctx, &epAgg{
+			tenant: "acme", id: id, method: "GET", pathTemplate: "/" + id,
+			requestCount: 1, posture: "protected", riskScore: 10,
+			statusDist: map[int]int64{200: 1},
+		}); err != nil {
+			t.Fatalf("upsert %s: %v", id, err)
+		}
+	}
+
+	got, err := s.listEndpoints(ctx, "acme", EndpointFilter{Limit: 50})
+	if err != nil {
+		t.Fatalf("listEndpoints: %v", err)
+	}
+	if len(got) != len(ids) {
+		t.Fatalf("got %d endpoints, want %d", len(got), len(ids))
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1].ID > got[i].ID {
+			t.Fatalf("tied rows are not totally ordered: %q came before %q; "+
+				"add a tie-breaker to the ORDER BY", got[i-1].ID, got[i].ID)
+		}
+	}
+}
