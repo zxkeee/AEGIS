@@ -69,3 +69,41 @@ jobs:
       # from growing unnoticed, and catches a newly added tag-only image.
       - name: Check container image pinning
         run: ./scripts/check-image-pins.sh
+
+  # The console bundle is committed so `go build` works without Node. Nothing
+  # checked that the committed bytes were built from the committed lockfile, so
+  # a dependency bump could change the console's inputs while the embedded
+  # bundle silently stayed as it was — and every npm update passed CI on that
+  # basis.
+  #
+  # This could not be checked before: sequential asset names made a no-op
+  # rebuild rewrite 58 files, so a diff meant nothing. With content-hashed
+  # assets a rebuild is byte-identical, and a diff means exactly one thing.
+  console-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/console/package-lock.json
+
+      - name: Rebuild the console
+        working-directory: web/console
+        run: |
+          npm ci
+          npm run build
+
+      - name: The committed bundle must match the lockfile
+        run: |
+          if ! git diff --exit-code --stat internal/api/console_dist/; then
+            echo "::error::internal/api/console_dist/ is not what the committed"
+            echo "::error::package-lock.json builds. Run 'make console' and commit"
+            echo "::error::the result, so the binary ships the console its"
+            echo "::error::dependencies describe."
+            exit 1
+          fi
