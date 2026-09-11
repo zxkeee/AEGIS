@@ -254,6 +254,25 @@ func TestValidate_Alerting(t *testing.T) {
 			t.Fatal("non-http(s) webhook url must be rejected")
 		}
 	})
+	// The field is documented as the HTTPS endpoint alerts are POSTed to, and
+	// was validated as http-or-https. An alert body names the detection, the
+	// endpoint and often the consumer, so plaintext delivery leaks the finding
+	// itself, not merely that one occurred.
+	t.Run("plaintext webhook is rejected", func(t *testing.T) {
+		c := validBase()
+		c.Alerting.WebhookURL = "http://collector.internal/hook"
+		if err := Validate(c); err == nil {
+			t.Fatal("http:// webhook url must be rejected")
+		}
+	})
+	t.Run("plaintext webhook allowed only under the dev flag", func(t *testing.T) {
+		c := validBase()
+		c.AdminCookieInsecure = true
+		c.Alerting.WebhookURL = "http://localhost:9000/hook"
+		if err := Validate(c); err != nil {
+			t.Fatalf("admin_cookie_insecure should allow a local http collector: %v", err)
+		}
+	})
 }
 
 func TestValidate_RedisSentinel(t *testing.T) {
@@ -868,4 +887,63 @@ func TestValidate_RejectsSharedPathWithDifferentSecurityOverrides(t *testing.T) 
 	if err := Validate(c); err != nil {
 		t.Fatalf("identical overrides on a shared path must be accepted: %v", err)
 	}
+}
+
+// AEGIS_ADMIN_SECRET="password" refuses to start. AEGIS_ROOT_PASSWORD="password"
+// created the super-admin that owns every tenant, because the pair sat outside
+// applyEnvOverrides, Validate and lint-invariants.sh alike — the weakest
+// credential in the system was the only one nothing checked.
+func TestValidateRootBootstrap(t *testing.T) {
+	t.Run("not requested", func(t *testing.T) {
+		if err := ValidateRootBootstrap("", ""); err != nil {
+			t.Fatalf("an unset pair is not an error: %v", err)
+		}
+	})
+	t.Run("half set is an error, not a silent no-op", func(t *testing.T) {
+		if err := ValidateRootBootstrap("root@example.com", ""); err == nil {
+			t.Error("email without password should be refused")
+		}
+		if err := ValidateRootBootstrap("", "correct-horse-battery"); err == nil {
+			t.Error("password without email should be refused")
+		}
+	})
+	// Each case isolates ONE check. The first version of these used short
+	// placeholders like "password", which the length floor caught first — so
+	// removing the placeholder check entirely left every case still green.
+	t.Run("placeholder passwords", func(t *testing.T) {
+		// Long enough to clear the floor, and varied enough to clear the
+		// entropy heuristic: only the literal list can refuse these.
+		for _, pw := range []string{
+			"change-me-to-a-strong-secret-in-production",
+			"CHANGE-ME-IN-PRODUCTION",
+		} {
+			if err := ValidateRootBootstrap("root@example.com", pw); err == nil {
+				t.Errorf("password %q should be refused", pw)
+			}
+		}
+	})
+	t.Run("too short", func(t *testing.T) {
+		// 11 distinct characters: clears the entropy heuristic, fails only the
+		// length floor.
+		if err := ValidateRootBootstrap("root@example.com", "aB3xY9zQ7wE"); err == nil {
+			t.Error("an 11-character super-admin password should be refused")
+		}
+	})
+	t.Run("low entropy", func(t *testing.T) {
+		// Well past the floor and in no placeholder list: only the entropy
+		// heuristic can refuse it.
+		if err := ValidateRootBootstrap("root@example.com", strings.Repeat("a", 24)); err == nil {
+			t.Error("a single repeated character should be refused")
+		}
+	})
+	t.Run("not an address", func(t *testing.T) {
+		if err := ValidateRootBootstrap("root", "7Kq2-vLm9-Zt4x"); err == nil {
+			t.Error("a non-address should be refused")
+		}
+	})
+	t.Run("a real pair is accepted", func(t *testing.T) {
+		if err := ValidateRootBootstrap("root@example.com", "7Kq2-vLm9-Zt4x"); err != nil {
+			t.Fatalf("a reasonable bootstrap pair was refused: %v", err)
+		}
+	})
 }

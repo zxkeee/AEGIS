@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"api-gateway/internal/logger"
+	"api-gateway/internal/safefetch"
 )
 
 // Severity levels for alerts, ordered by increasing urgency.
@@ -59,7 +60,19 @@ func NewWithConfig(webhookURL, format, minSeverity string, log *logger.Logger) *
 		format:     format,
 		minRank:    severityRank(minSeverity),
 		log:        log,
-		client:     &http.Client{Timeout: 10 * time.Second},
+		// The webhook URL is pinned to https by config.Validate. The default
+		// client would follow a redirect off that pin — to http://, where the
+		// alert body travels in clear, or to an internal address such as
+		// 169.254.169.254, which turns every fired alert into a blind SSRF
+		// against the gateway's own network. Alerts carry the detail of what
+		// was detected and about whom, so an unpinned destination leaks more
+		// than the fact that something fired.
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return safefetch.Redirect("alert_webhook", req, via)
+			},
+		},
 	}
 }
 

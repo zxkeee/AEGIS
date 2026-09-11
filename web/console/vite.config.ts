@@ -4,7 +4,10 @@ import path from "node:path";
 
 // The console is embedded into the Go binary and served from the admin plane
 // root. Relative asset paths keep it origin-agnostic; a single JS + CSS bundle
-// keeps the CSP simple (script-src 'self', one hashed file family).
+// keeps the CSP simple (script-src 'self', one file family). The names are
+// deliberately NOT content-hashed: the built bundle is committed so `go build`
+// works without Node, and hashed names would rewrite every filename on every
+// build. The server revalidates with an ETag instead — see serveConsoleAsset.
 export default defineConfig({
   plugins: [react()],
   base: "./",

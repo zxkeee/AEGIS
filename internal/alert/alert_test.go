@@ -98,3 +98,38 @@ func TestSeverityRank(t *testing.T) {
 		t.Fatal("unknown severity should rank as warning")
 	}
 }
+
+// A webhook that redirects must not carry the alert off the pinned https
+// destination. config.Validate pins the scheme an operator wrote; the default
+// client would follow a 302 to http://, where the alert body — the detection,
+// the endpoint, often the consumer — travels in clear, or to an internal
+// address, which makes every fired alert a blind SSRF from inside the gateway.
+//
+// The assertion is on the REDIRECT TARGET, not on the redirector: the
+// redirector is hit exactly once whether or not the hop is followed, so
+// counting its calls passes on a client with no policy at all.
+func TestFire_DoesNotFollowRedirectOffThePin(t *testing.T) {
+	var targetHits int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&targetHits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	// httptest serves plaintext on a loopback address, so this one target is
+	// refused twice over: the scheme is http and the host is private. Both are
+	// hops an operator's https pin is supposed to survive.
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	e := NewWithConfig(redirector.URL, "generic", SeverityWarning, testLogger())
+	e.Fire(context.Background(), SeverityCritical, "bola detected",
+		"consumer sub=alice enumerated 300 objects")
+
+	if got := atomic.LoadInt32(&targetHits); got != 0 {
+		t.Fatalf("the alert body reached the redirect target %d times; "+
+			"the https pin did not survive a 302", got)
+	}
+}

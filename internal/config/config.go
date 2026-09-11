@@ -64,6 +64,49 @@ var insecurePlaceholders = []string{
 	"password",
 }
 
+// ValidateRootBootstrap checks the AEGIS_ROOT_EMAIL / AEGIS_ROOT_PASSWORD pair
+// that first-boot bootstrap turns into a SUPER-ADMIN account.
+//
+// Those two variables sat outside every mechanism this package provides: they
+// are not config fields, so applyEnvOverrides never saw them, Validate never
+// checked them and lint-invariants.sh could not know they existed. The result
+// was that AEGIS_ADMIN_SECRET="password" refused to start, while
+// AEGIS_ROOT_PASSWORD="password" quietly created the account that owns every
+// tenant. The weakest credential in the system was the only one nothing
+// checked.
+//
+// It is a human password, not a machine secret, so the floor is lower than the
+// admin secret's — but a placeholder or a single repeated character is refused
+// on the same grounds, and setting one variable without the other is an error
+// rather than a silent no-op.
+func ValidateRootBootstrap(email, password string) error {
+	if email == "" && password == "" {
+		return nil // bootstrap not requested
+	}
+	if email == "" || password == "" {
+		return errors.New("AEGIS_ROOT_EMAIL and AEGIS_ROOT_PASSWORD must be set together; " +
+			"one without the other creates no account and reports nothing")
+	}
+	if !strings.Contains(email, "@") || strings.ContainsAny(email, " \t\r\n") {
+		return fmt.Errorf("AEGIS_ROOT_EMAIL %q is not an email address", email)
+	}
+	if len([]rune(password)) < rootPasswordMinLen {
+		return fmt.Errorf("AEGIS_ROOT_PASSWORD is %d characters; want at least %d "+
+			"(it is the password of the super-admin that owns every tenant)",
+			len([]rune(password)), rootPasswordMinLen)
+	}
+	if slices.Contains(insecurePlaceholders, password) || looksLowEntropy(password) {
+		return errors.New("AEGIS_ROOT_PASSWORD is a placeholder or too predictable; " +
+			"it is the password of the super-admin that owns every tenant")
+	}
+	return nil
+}
+
+// rootPasswordMinLen is the floor for the bootstrap super-admin password. Lower
+// than the admin secret's floor because a person types this one, high enough
+// that it is not guessed.
+const rootPasswordMinLen = 12
+
 // GatewayConfig is the root configuration.
 type GatewayConfig struct {
 	Listen      string `yaml:"listen"`
@@ -1203,8 +1246,20 @@ func validateAlerting(cfg GatewayConfig) error {
 	default:
 		return fmt.Errorf("alerting.min_severity must be 'info', 'warning' or 'critical', got %q", cfg.Alerting.MinSeverity)
 	}
-	if u := cfg.Alerting.WebhookURL; u != "" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-		return fmt.Errorf("alerting.webhook_url must be an http(s) URL")
+	// The field's own comment already said "the HTTPS endpoint alerts are
+	// POSTed to", while this check accepted http:// — so the plaintext case was
+	// documented as impossible and permitted anyway. An alert body names the
+	// detection, the endpoint and often the consumer; over http:// that is
+	// readable by anyone on the path, and forgeable back at the gateway.
+	// Same dev escape hatch as auth.jwks_url and OIDC: a developer pointing at
+	// a local collector sets admin_cookie_insecure, which no production config
+	// survives Validate with.
+	if u := cfg.Alerting.WebhookURL; u != "" {
+		webhookHTTPDev := cfg.AdminCookieInsecure && strings.HasPrefix(u, "http://")
+		if !strings.HasPrefix(u, "https://") && !webhookHTTPDev {
+			return fmt.Errorf("alerting.webhook_url must be an https URL, got %q "+
+				"(alert bodies name what was detected and about whom)", u)
+		}
 	}
 	return nil
 }
