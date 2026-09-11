@@ -275,19 +275,32 @@ func TestBoundedUnique_KeepsFirstSeenAndReportsTruncation(t *testing.T) {
 // without limit and then made the worker walk every entry serially against
 // PostgreSQL — incident recording degraded to nothing during precisely the
 // distributed attack it exists to record.
+//
+// Through accumulate(), for the same reason as the test below: Observe() drops
+// when its buffer is full, and this flood is larger than the buffer. Measured
+// on the previous version — 5000 streams written, cap 5000, droppedKeys 0. The
+// channel had discarded the excess, accumulate never refused anything, and the
+// assertion "at most the cap" held because the flood never reached the cap.
+// A green test proving the wrong thing.
 func TestCorrelator_BoundsTheNumberOfStreams(t *testing.T) {
-	fs := &fakeStore{}
-	c := New(fs, nopLog{})
+	c := New(&fakeStore{}, nopLog{})
+	defer func() { _ = c.Close() }()
 
+	pending := map[key]*aggregate{}
 	// One address per event, far past the cap.
 	for i := 0; i < maxPendingKeys+500; i++ {
-		c.Observe(Event{Tenant: "acme", Reason: "waf_blocked",
+		c.accumulate(pending, Event{Tenant: "acme", Reason: "waf_blocked",
 			IP: fmt.Sprintf("10.%d.%d.%d", i/65536, (i/256)%256, i%256), At: t0})
 	}
-	_ = c.Close()
 
-	if got := len(fs.all()); got > maxPendingKeys {
-		t.Fatalf("%d streams written, want at most the cap of %d", got, maxPendingKeys)
+	if got := len(pending); got > maxPendingKeys {
+		t.Fatalf("%d streams tracked, want at most the cap of %d", got, maxPendingKeys)
+	}
+	// Without this the assertion above is satisfied by a flood that never
+	// reached the limit, which is exactly how this test used to pass.
+	if c.droppedKeys != 500 {
+		t.Errorf("droppedKeys = %d, want 500: every stream past the cap must be "+
+			"refused, and no more than those", c.droppedKeys)
 	}
 }
 
