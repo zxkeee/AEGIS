@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker loadgen check-binaries check-secrets check-image-pins lint-invariants hooks console console-dev sample-report render-pdf preflight stand stand-down stand-test
+.PHONY: build run test clean docker loadgen demo demo-auto check-binaries check-secrets check-image-pins lint-invariants hooks console console-dev sample-report render-pdf preflight stand stand-down stand-test
 
 build:
 	go build -ldflags="-s -w" -o bin/gateway ./cmd/gateway
@@ -90,6 +90,15 @@ preflight:
 # license, an upstream and the gateway itself — the stand the dynamic security
 # scan builds in CI out of Docker containers. `make stand-test` goes from
 # nothing to a full WAF/auth pentest result in a few seconds.
+# The three-minute walkthrough for an audience: real traffic through a real
+# gateway, the signed compliance report it produces, and the verifier refusing
+# a tampered copy — and refusing to run at all without a key pinned out of band.
+demo:
+	./demo/evidence-demo.sh
+
+demo-auto:
+	./demo/evidence-demo.sh -y
+
 stand:
 	./scripts/pentest-stand.sh up
 
