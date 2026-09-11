@@ -220,11 +220,42 @@ func (d *dlpWriter) WriteHeader(code int) {
 	// body here means the backend ignored that and produced bytes DLP cannot
 	// scan — we pass them through rather than falsely report a clean scan).
 	if enc := d.Header().Get("Content-Encoding"); enc != "" && !strings.EqualFold(enc, "identity") {
+		// This is the second of the two ways a response can go uninspected, and
+		// it used to behave differently from the first. Oversized bodies honour
+		// fail_closed and increment a metric; an undecodable encoding did
+		// neither — it logged and passed the body through, whatever the operator
+		// had configured.
+		//
+		// Stripping Accept-Encoding upstream is a request to the backend, not a
+		// constraint on it: an nginx in front of the app, a CDN, or a
+		// compression middleware that ignores the header all produce a
+		// compressed body anyway. When one does, fail_closed silently stopped
+		// meaning what it says — an uninspected response reached the client.
+		//
+		// Both paths now answer to the same switch, and both are counted, so
+		// the coverage gap is visible rather than inferred from its absence.
+		if d.failClosed {
+			if d.log != nil {
+				d.log.Warn("dlp: response carries an undecodable content-encoding; refusing it (fail_closed)",
+					map[string]any{"path": d.path, "ip": d.ip, "content_encoding": enc})
+			}
+			if d.metrics != nil {
+				d.metrics.IncrMetric(d.ctx, "dlp_blocked_encoding")
+			}
+			d.refused = true
+			d.buf.Reset()
+			d.wroteHeader = true
+			http.Error(d.ResponseWriter, "Response encoding cannot be inspected", http.StatusBadGateway)
+			return
+		}
 		if d.log != nil {
 			d.log.Warn("dlp: response carries an undecodable content-encoding; skipping inspection", map[string]any{
 				"path":             d.path,
 				"content_encoding": enc,
 			})
+		}
+		if d.metrics != nil {
+			d.metrics.IncrMetric(d.ctx, "dlp_skipped_encoding")
 		}
 		d.passthrough = true
 		d.wroteHeader = true

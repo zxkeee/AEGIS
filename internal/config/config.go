@@ -617,13 +617,20 @@ type DLPConfig struct {
 	// inspect it. 0 selects the built-in default (4 MB). A response larger than
 	// this cannot be scanned; FailClosed decides what happens then.
 	MaxBufferBytes int64 `yaml:"max_buffer_bytes"`
-	// FailClosed refuses a response too large to inspect instead of streaming it
-	// through unscanned. Default false keeps availability: an oversized response
-	// is delivered intact and the gap is logged and counted. Set true where an
-	// unscanned response is not an acceptable outcome — the size of a response
-	// is often within a caller's control (a pagination limit, an export range),
-	// so the default makes the one control that redacts PII switchable off by
-	// the very party it is meant to constrain.
+	// FailClosed refuses a response DLP could not inspect, instead of streaming
+	// it through unscanned. There are two such cases and this covers both: a
+	// body larger than MaxBufferBytes, and a body carrying a content encoding
+	// DLP cannot decode. It used to cover only the first, so an operator who
+	// set it still had compressed responses delivered unscanned — Accept-Encoding
+	// is stripped upstream, but that is a request to the backend, not a
+	// constraint on it, and plenty of stacks compress regardless.
+	//
+	// Default false keeps availability: the response is delivered intact and the
+	// gap is logged and counted (dlp_skipped_oversized / dlp_skipped_encoding).
+	// Set true where an unscanned response is not an acceptable outcome — the
+	// size of a response is often within a caller's control (a pagination limit,
+	// an export range), so the default makes the one control that redacts PII
+	// switchable off by the very party it is meant to constrain.
 	FailClosed bool `yaml:"fail_closed"`
 }
 

@@ -423,3 +423,66 @@ func TestDLP_OversizedResponse(t *testing.T) {
 		}
 	})
 }
+
+// There are two ways DLP can fail to inspect a response: the body is larger
+// than the buffer, or it carries a content encoding DLP cannot decode. Only the
+// first honoured dlp.fail_closed.
+//
+// An operator who sets fail_closed is asking for one guarantee: a response that
+// was not inspected does not reach the client. Accept-Encoding is stripped
+// upstream, but that is a request to the backend, not a constraint on it —
+// plenty of stacks compress unconditionally (an nginx in front of the app, a
+// CDN, a compression middleware that ignores the header). When one does, the
+// body was never scanned and went out anyway, with fail_closed on.
+//
+// The gap was also invisible: the oversized path increments a metric precisely
+// so operators can see it, and this path incremented nothing at all.
+func TestDLP_CompressedResponseHonoursFailClosed(t *testing.T) {
+	_ = InitTrustedProxies(nil)
+	const pii = "card 4111111111111111 and a@b.com"
+
+	serve := func(cfg config.DLPConfig) (int, string, map[string]int) {
+		st := &fakeStore{}
+		next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			// The backend compresses regardless of what was asked for.
+			w.Header().Set("Content-Encoding", "gzip")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, pii)
+		})
+		h := DLP(cfg, fakeLogger{}, st)(next)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		return rec.Code, rec.Body.String(), st.metrics
+	}
+
+	t.Run("by default it passes through, and says so", func(t *testing.T) {
+		code, body, metrics := serve(config.DLPConfig{Enabled: true})
+		if code != http.StatusOK || body != pii {
+			t.Fatalf("code=%d body=%q; the default must preserve availability", code, body)
+		}
+		if metrics["dlp_skipped_encoding"] == 0 {
+			t.Error("the inspection gap was not counted; it is indistinguishable from a clean scan")
+		}
+	})
+
+	t.Run("fail_closed refuses it and leaks nothing", func(t *testing.T) {
+		code, body, metrics := serve(config.DLPConfig{Enabled: true, FailClosed: true})
+		if code != http.StatusBadGateway {
+			t.Fatalf("code = %d, want 502: an uninspectable response reached the client "+
+				"with fail_closed set", code)
+		}
+		if strings.Contains(body, "4111111111111111") || strings.Contains(body, "a@b.com") {
+			t.Fatalf("the unscanned body was delivered: %q", body)
+		}
+		if metrics["dlp_blocked_encoding"] == 0 {
+			t.Error("the refusal was not counted")
+		}
+	})
+
+	t.Run("observe never turns it into an error", func(t *testing.T) {
+		code, body, _ := serve(config.DLPConfig{Enabled: true, FailClosed: true, Observe: true})
+		if code != http.StatusOK || body != pii {
+			t.Fatalf("code=%d body=%q; observe mode must never block", code, body)
+		}
+	})
+}
