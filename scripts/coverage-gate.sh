@@ -57,10 +57,26 @@ fail=0
 while read -r pkg floor; do
   [[ -z "$pkg" ]] && continue
   # -covermode=atomic so the gate is consistent under -race in CI.
-  cov=$(go test -covermode=atomic -coverprofile=/dev/null "$pkg" 2>/dev/null \
-        | sed -n 's/.*coverage: \([0-9.]*\)%.*/\1/p')
+  #
+  # The output is captured rather than discarded, and the exit status is checked
+  # explicitly. With `set -euo pipefail` and `2>/dev/null`, a package whose tests
+  # FAILED killed this script on the assignment itself: no package name, no
+  # reason, no "coverage gate: FAILED" — just exit 1 and a list of the packages
+  # that happened to be checked first. That is what a CI run looked like, and
+  # the gate is the thing you reach for when you need to know why CI is red.
+  out=""
+  rc=0
+  out=$(go test -covermode=atomic -coverprofile=/dev/null "$pkg" 2>&1) || rc=$?
+  if (( rc != 0 )); then
+    echo "ERROR: tests FAILED for $pkg (go test exit $rc) — coverage cannot be measured:"
+    printf '%s\n' "$out" | grep -E '^(---|\s+---|FAIL|panic:|\s+.*_test\.go:)' | head -20 | sed 's/^/       /'
+    fail=1
+    continue
+  fi
+  cov=$(printf '%s\n' "$out" | sed -n 's/.*coverage: \([0-9.]*\)%.*/\1/p')
   if [[ -z "$cov" ]]; then
     echo "ERROR: no coverage reported for $pkg"
+    printf '%s\n' "$out" | head -5 | sed 's/^/       /'
     fail=1
     continue
   fi
