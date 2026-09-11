@@ -16,6 +16,7 @@ import (
 
 	"api-gateway/internal/config"
 	"api-gateway/internal/safefetch"
+	"api-gateway/sdk/gatewayverify"
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/golang-jwt/jwt/v5"
@@ -282,7 +283,7 @@ func (ja *JWTAuth) Middleware() Middleware {
 			// (subject + roles + scopes) together with a timestamp and a per-request
 			// nonce. Signing only the subject (as before) left roles/scopes
 			// unauthenticated and the signature replayable. Upstream must verify:
-			//   1. HMAC over "sub:roles:scopes:ts:nonce" matches X-Gateway-Signature
+			//   1. HMAC over gatewayverify.CanonicalPayload matches X-Gateway-Signature
 			//   2. abs(now - ts) < 30s   (freshness)
 			//   3. nonce has not been seen before within the freshness window (replay)
 			sub, _ := claims["sub"].(string)
@@ -347,13 +348,22 @@ func (ja *JWTAuth) Middleware() Middleware {
 				} else {
 					nonce := hex.EncodeToString(nonceBytes)
 
-					// Canonical payload — upstream must reconstruct it identically.
-					// identityStr is included so the ownership claim is authenticated,
-					// not just the gateway-internal header (which a backend reachable
-					// directly could otherwise be tricked into trusting).
-					payload := strings.Join([]string{sub, roleStr, scopeStr, identityStr, ts, nonce}, ":")
+					// Canonical payload — built by the reference SDK rather than
+					// here, so the signer and the verifier cannot describe the
+					// format differently. They did before: both joined the fields
+					// with ":" independently, and neither constrained a field from
+					// containing one. A subject carrying a colon therefore produced
+					// a signature that also authenticated a different split of the
+					// same bytes — sub="alice:admin" with no roles matching
+					// sub="alice" with roles="admin:" — handing a backend that
+					// authorises on the subject somebody else's identity.
+					//
+					// identityStr is included so the ownership claim is
+					// authenticated, not just the gateway-internal header (which a
+					// backend reachable directly could otherwise be tricked into
+					// trusting).
 					mac := hmac.New(sha256.New, []byte(propSecret))
-					mac.Write([]byte(payload))
+					mac.Write(gatewayverify.CanonicalPayload(sub, roleStr, scopeStr, identityStr, ts, nonce))
 
 					r.Header.Set("X-Gateway-Timestamp", ts)
 					r.Header.Set("X-Gateway-Nonce", nonce)

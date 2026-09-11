@@ -150,11 +150,17 @@ func handler(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-The signature is `HMAC-SHA256` over the canonical payload
-`subject:roles:scopes:identity:timestamp:nonce`, hex-encoded, in
-`X-Gateway-Signature`. It is **not** a signature over the request body — an
-earlier version of this document showed exactly that, and code copied from it
-would have verified nothing.
+The signature is `HMAC-SHA256` over `gatewayverify.CanonicalPayload`,
+hex-encoded, in `X-Gateway-Signature`. That function is the single definition of
+the wire format — the gateway calls it to sign and the SDK calls it to verify,
+so the two cannot drift apart. It encodes each field as `<byte length>:<value>`
+rather than joining them with a delimiter, because a delimiter-joined payload is
+not injective: a subject containing the delimiter produced a signature that was
+equally valid for a different split of the same bytes, naming a different user.
+
+It is **not** a signature over the request body — an earlier version of this
+document showed exactly that, and code copied from it would have verified
+nothing.
 
 `CleanHeaders` strips every inbound `X-Gateway-*` before anything downstream
 sees it, so a client cannot forge these headers through the gateway. That

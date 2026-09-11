@@ -215,7 +215,7 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       terminate TLS at the gateway or a trusted upstream.
 - [x] **Backend signature verification reference.** `sdk/gatewayverify` Go
       package + README verifies `X-Gateway-Signature`, timestamp freshness and
-      nonce uniqueness (HMAC over `sub:roles:scopes:ts:nonce`), with an
+      nonce uniqueness (HMAC over `gatewayverify.CanonicalPayload`), with an
       `http.Handler` wrapper, a pluggable `NonceStore`, and a non-Go recipe.
 - [x] **Secret rotation procedure** documented (`docs/runbooks/secret-rotation.md`)
       with rolling/dual-accept steps and verification for admin, JWT, Redis and

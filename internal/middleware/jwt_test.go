@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"api-gateway/internal/config"
+	"api-gateway/sdk/gatewayverify"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -263,5 +264,66 @@ func TestJWT_ExcludeIsCaseInsensitive(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/publicity", nil))
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("/publicity: got %d, want 401 — case-insensitivity must not widen the prefix", rec.Code)
+	}
+}
+
+// What the gateway signs, the reference SDK must accept — and nothing else.
+//
+// Until this test existed, nothing checked the two against each other. The
+// gateway built the signed payload here and sdk/gatewayverify built it again
+// independently, so the wire format was defined twice and a change to either
+// side would have kept passing on its own tests while breaking every backend.
+// That is also how the format stayed delimiter-joined and non-injective on both
+// sides for as long as it did.
+func TestJWT_SignedIdentityVerifiesWithTheReferenceSDK(t *testing.T) {
+	const propSecret = "propagation-secret-32-characters!!!!"
+	cfg := config.AuthConfig{
+		Enabled: true, Secret: testSecret,
+		PropagationSecret: propSecret, IdentityClaim: "uid",
+	}
+	var forwarded *http.Request
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded = r
+		w.WriteHeader(http.StatusOK)
+	})
+	_ = InitTrustedProxies(nil)
+	h := NewJWTAuth(cfg, fakeLogger{}, &fakeStore{}).Middleware()(next)
+
+	// A subject containing the old delimiter: ordinary (URNs, issuer-qualified
+	// OIDC subjects) and precisely the shape that used to be re-splittable.
+	tok := hsToken(t, testSecret, jwt.MapClaims{
+		"sub":   "urn:user:alice",
+		"uid":   42,
+		"roles": []any{"admin", "billing"},
+		"scope": "read:orders write:orders",
+		"exp":   time.Now().Add(time.Hour).Unix(),
+	})
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "1.2.3.4:1"
+	r.Header.Set("Authorization", "Bearer "+tok)
+	h.ServeHTTP(httptest.NewRecorder(), r)
+
+	if forwarded == nil {
+		t.Fatal("the request never reached the upstream")
+	}
+	v := gatewayverify.New(propSecret, time.Minute, gatewayverify.NewMemoryNonceStore())
+	id, err := v.Verify(forwarded)
+	if err != nil {
+		t.Fatalf("the SDK rejected what the gateway signed: %v", err)
+	}
+	if id.Subject != "urn:user:alice" {
+		t.Fatalf("subject = %q, want urn:user:alice", id.Subject)
+	}
+	if id.Identity != "42" {
+		t.Fatalf("identity = %q, want 42", id.Identity)
+	}
+
+	// And the same signature must not authenticate a re-split of those bytes.
+	tampered := forwarded.Clone(forwarded.Context())
+	tampered.Header.Set("X-Gateway-Subject", "urn:user")
+	tampered.Header.Set("X-Gateway-Roles", "alice:admin,billing")
+	v2 := gatewayverify.New(propSecret, time.Minute, gatewayverify.NewMemoryNonceStore())
+	if _, err := v2.Verify(tampered); err == nil {
+		t.Fatal("a re-split of the signed bytes authenticated a different subject")
 	}
 }

@@ -121,7 +121,9 @@ through `context.Context`:
 ### Identity propagation (`sdk/gatewayverify`)
 
 After JWT auth, the gateway signs the forwarded identity:
-`HMAC-SHA256(secret, "sub:roles:scopes:ts:nonce")` in `X-Gateway-Signature`
+`HMAC-SHA256(secret, gatewayverify.CanonicalPayload(...))` in `X-Gateway-Signature`
+(length-prefixed, not delimiter-joined: a delimiter-joined payload let a subject
+containing the delimiter authenticate a different identity)
 (set in `middleware/jwt.go`). Backends verify authenticity + timestamp freshness
 + nonce replay using the reference SDK in `sdk/gatewayverify`. `CleanHeaders`
 strips inbound `X-Gateway-*` so clients can never forge it.

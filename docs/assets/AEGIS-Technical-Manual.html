@@ -454,7 +454,7 @@ td.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabu
 
   <h3>Identity propagation to backends</h3>
   <p>After JWT verification, the gateway signs the forwarded identity —
-    <code>HMAC-SHA256(secret, "sub:roles:scopes:ts:nonce")</code> — into
+    <code>HMAC-SHA256(secret, gatewayverify.CanonicalPayload(...))</code> — into
     <code>X-Gateway-Signature</code>. A backend can verify authenticity, timestamp freshness, and
     replay (nonce) using the reference SDK (<code>sdk/gatewayverify</code>), so a compromised
     edge cannot silently forge an identity a backend trusts. Inbound <code>X-Gateway-*</code>
