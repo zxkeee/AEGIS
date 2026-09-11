@@ -85,6 +85,30 @@ spec:
                   key: report-signing-key
                   optional: true
             {{- end }}
+            {{- if or .Values.secrets.consumerSalt .Values.secrets.existingSecret }}
+            - name: AEGIS_CONSUMER_SALT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: consumer-salt
+                  optional: true
+            {{- end }}
+            {{- if or .Values.secrets.rootEmail .Values.secrets.existingSecret }}
+            - name: AEGIS_ROOT_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: root-email
+                  optional: true
+            {{- end }}
+            {{- if or .Values.secrets.rootPassword .Values.secrets.existingSecret }}
+            - name: AEGIS_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: root-password
+                  optional: true
+            {{- end }}
             {{- if or .Values.secrets.sentinelPassword .Values.secrets.existingSecret }}
             - name: AEGIS_REDIS_SENTINEL_PASSWORD
               valueFrom:
