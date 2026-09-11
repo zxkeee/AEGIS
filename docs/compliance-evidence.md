@@ -77,6 +77,19 @@ reports and, worse, make two different documents indistinguishable.
 `digest` is a convenience, not a control: it lets a reader identify the document
 with `sha256sum` and no crypto tooling. The signature is what protects it.
 
+**`signed_at` is covered by the signature.** It has to be. Everything else in
+the attestation is recomputed or cross-checked during verification, so tampering
+with it is caught — but a field that nothing checks is a field an operator can
+edit on a genuinely signed report, and this one is printed on the single line an
+auditor reads. Editing it now invalidates the attestation. The signature is made
+over `aegis-attest-v1\n<signed_at>\n<document>`; the version prefix domain-
+separates it, so a signature made for any other purpose under the same key is
+not an attestation.
+
+The compliance report also carries `generated_at` and `tenant` **inside** the
+signed body, so the document says for itself when it was produced and whom it is
+about, rather than relying on the envelope around it.
+
 `format=csv` cannot carry an attestation, so `?format=csv&sign=1` is refused
 rather than answered with an unsigned spreadsheet. Likewise, a request for a
 signature on a gateway with no key configured is a `400`, never a quietly
@@ -182,6 +195,16 @@ Art. 19 requires an initial notification, an intermediate report and a final
 report too, but its time limits are set by the regulatory technical standards
 under Art. 20, not by the regulation — so that schedule is configuration.
 Confirm the limits that apply to you; do not assume the NIS2 defaults do.
+
+A submission does not clear a deadline on its own — it has to have been on
+time. A filing made after the due time reports `late` **and** `overdue`, so
+"filed, 76h late" and "never filed" are both failures and are distinguishable.
+
+`sent_at` is the operator's **claim**; AEGIS cannot witness a filing to a
+regulator. `recorded_at` is stamped server-side when the gateway was told, and
+is what deadline resolution uses — so appending a backdated entry cannot rewrite
+history, only add to it. A claim that predates the incident or sits in the
+future is refused outright.
 
 Closing an incident does not clear a deadline that passed unmet. An obligation
 that was missed stays missed, and a report that hid that would be the most

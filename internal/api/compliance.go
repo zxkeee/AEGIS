@@ -221,9 +221,20 @@ type evidenceProvenance struct {
 }
 
 type complianceReport struct {
-	Evidence   evidenceProvenance    `json:"evidence"`
-	Frameworks []complianceFramework `json:"frameworks"`
-	Summary    struct {
+	// GeneratedAt and Tenant are the document's own provenance, carried inside
+	// the signed body rather than only in the attestation around it.
+	//
+	// A signed report used to have exactly one date — attestation.signed_at —
+	// and nothing to cross-check it against. Binding that field to the
+	// signature (internal/attest) makes it unforgeable, but a document that
+	// still cannot say when it is about, or whom it is about, is a weaker
+	// artifact than it needs to be: a shared-key deployment could not tell one
+	// tenant's signed report from another's.
+	GeneratedAt string                `json:"generated_at"`
+	Tenant      string                `json:"tenant"`
+	Evidence    evidenceProvenance    `json:"evidence"`
+	Frameworks  []complianceFramework `json:"frameworks"`
+	Summary     struct {
 		Critical         int `json:"critical"`
 		Warning          int `json:"warning"`
 		ControlsAffected int `json:"controls_affected"`

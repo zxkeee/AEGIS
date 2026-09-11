@@ -56,6 +56,11 @@ type handlers struct {
 	draining *atomic.Bool
 	// ready caches the readiness Redis check — see readinessTTL.
 	ready readinessCache
+	// endpoints is the catalog read the incident view needs, behind a narrow
+	// interface so the read-once property is testable. nil when discovery is
+	// disabled — the classification's endpoint half then stays empty rather
+	// than false-by-default.
+	endpoints endpointLister
 	// incidents is the incident record (NIS2 Art. 23, DORA Art. 17-19). nil
 	// when forensic_dsn is unset, in which case the routes report 503 and the
 	// compliance report keeps listing those articles as not evidenced.
@@ -565,6 +570,11 @@ func isUnblockableIP(ip net.IP) bool {
 
 // ── JWT Revocation ────────────────────────────────────────────────────────────
 
+// maxRevocationTTLSeconds caps a revocation at 30 days, expressed in the
+// caller's units so the bound can be applied to the INPUT rather than to a
+// duration that may already have overflowed.
+const maxRevocationTTLSeconds = 30 * 24 * 3600
+
 func (h *handlers) revokeJWT(w http.ResponseWriter, r *http.Request) {
 	if !h.requireMutator(w, r) {
 		return
@@ -585,18 +595,23 @@ func (h *handlers) revokeJWT(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "jti is required")
 		return
 	}
-	if req.TTLSeconds < 0 {
-		writeError(w, http.StatusBadRequest, "ttl_seconds must not be negative")
+	// Bounded BEFORE the conversion, not after.
+	//
+	// The range check used to run on the input and the cap on the resulting
+	// time.Duration, so a value large enough to overflow int64 nanoseconds
+	// landed between them: ttl_seconds=18446744074 becomes ~290ms — positive,
+	// non-zero, under the cap. The handler answered "JWT revoked" and the
+	// revocation evaporated a third of a second later. A revocation that
+	// silently does not stick is the worst failure this endpoint has.
+	if req.TTLSeconds < 0 || req.TTLSeconds > maxRevocationTTLSeconds {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf(
+			"ttl_seconds must be between 0 and %d (30 days)", maxRevocationTTLSeconds))
 		return
 	}
 
 	ttl := time.Duration(req.TTLSeconds) * time.Second
 	if ttl == 0 {
 		ttl = 24 * time.Hour // Default 24h
-	}
-	// Cap TTL to prevent indefinite revocations
-	if ttl > 30*24*time.Hour {
-		ttl = 30 * 24 * time.Hour
 	}
 
 	if err := h.store.RevokeJTI(r.Context(), req.JTI, ttl); err != nil {

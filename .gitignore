@@ -92,3 +92,7 @@ demo/fp-assessment/out/
 # Local pentest stand (scripts/pentest-stand.sh): throwaway keys, logs and a
 # PostgreSQL data directory. Never anything that should be committed.
 .stand/
+
+# Local working notes and third-party linter scratch state.
+handoff.md
+.aislop/

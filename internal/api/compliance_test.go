@@ -1,8 +1,12 @@
 package api
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"api-gateway/internal/discovery"
 )
@@ -336,5 +340,36 @@ func TestBuildCompliance_IncidentEvidenceReadsAsEnglish(t *testing.T) {
 		buildCompliance(nil, nil, incidentEvidence{Total: 3, Open: 1, Contained: 1, Closed: 1}), fwDORA), "Art. 17")
 	if !strings.Contains(c.Issues[0], "1 open, 1 contained, 1 closed") {
 		t.Errorf("lifecycle counts = %q, want open/contained/closed stated separately", c.Issues[0])
+	}
+}
+
+// A signed report used to have exactly one date — the attestation's signed_at —
+// and nothing to cross-check it against. That field is now bound to the
+// signature, but the document should also be able to say for itself when and
+// about whom it was produced.
+func TestGetCompliance_CarriesItsOwnProvenance(t *testing.T) {
+	h := seededCatalogHandlers(t)
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/compliance", nil)
+	h.getCompliance(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	gen, _ := body["generated_at"].(string)
+	if gen == "" {
+		t.Fatal("the report carries no generated_at; a signed document with no date of its own " +
+			"has nothing to cross-check its attestation against")
+	}
+	if _, err := time.Parse(time.RFC3339, gen); err != nil {
+		t.Errorf("generated_at = %q, want RFC 3339: %v", gen, err)
+	}
+	if body["tenant"] == nil || body["tenant"] == "" {
+		t.Error("the report does not say which tenant it is about")
 	}
 }

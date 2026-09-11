@@ -2,7 +2,9 @@ package incident
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +36,7 @@ CREATE TABLE IF NOT EXISTS incidents (
 	endpoints           TEXT[] NOT NULL DEFAULT '{}',
 	sources             TEXT[] NOT NULL DEFAULT '{}',
 	reasons             TEXT[] NOT NULL DEFAULT '{}',
+	evidence_truncated  BOOLEAN NOT NULL DEFAULT FALSE,
 	clients_affected    INT,
 	geographic_spread   TEXT,
 	economic_impact_eur DOUBLE PRECISION,
@@ -41,6 +44,8 @@ CREATE TABLE IF NOT EXISTS incidents (
 	notifications       JSONB NOT NULL DEFAULT '[]'::jsonb,
 	PRIMARY KEY (tenant_id, id)
 );
+
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS evidence_truncated BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS idx_incidents_detected ON incidents (tenant_id, detected_at DESC);
 CREATE INDEX IF NOT EXISTS idx_incidents_status   ON incidents (tenant_id, status);
@@ -147,44 +152,64 @@ func (s *PGStore) insert(ctx context.Context, tx *sql.Tx, d Delta) error {
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO incidents
 	(tenant_id, id, title, class, subject, status, severity, detected_at,
-	 last_event_at, event_count, endpoints, sources, reasons)
-VALUES ($1,$2,$3,$4,$5,'open','minor',$6,$7,$8,$9,$10,$11)`,
+	 last_event_at, event_count, endpoints, sources, reasons, evidence_truncated)
+VALUES ($1,$2,$3,$4,$5,'open','minor',$6,$7,$8,$9,$10,$11,$12)`,
 		tenantOr(d.Tenant), newID(d), Title(d.Class, d.Subject), d.Class, d.Subject,
 		d.First, d.Last, d.Count,
-		arr(d.Endpoints), arr(d.Sources), arr(d.Reasons))
+		arr(d.Endpoints), arr(d.Sources), arr(d.Reasons), d.Truncated)
 	return err
 }
 
 func (s *PGStore) update(ctx context.Context, tx *sql.Tx, id string, d Delta) error {
-	// The array columns are unioned and re-capped in SQL so two gateways
-	// merging concurrently cannot lose each other's values, and so an attacker
-	// rotating source addresses cannot grow a row without bound.
+	// The array columns are unioned and re-capped in SQL so two gateways merging
+	// concurrently cannot lose each other's values, and so an attacker rotating
+	// source addresses cannot grow a row without bound.
+	//
+	// EXISTING values are kept ahead of new ones (pri 0 before pri 1) rather
+	// than taking the lexicographically smallest. Ordering by value handed an
+	// attacker an eviction primitive: after touching the real target, fifty
+	// requests to paths sorting before it displaced the real evidence from the
+	// row, and the catalog enrichment then derived criticality from the decoys.
+	// Evidence already recorded is no longer displaced by anything sent later.
 	_, err := tx.ExecContext(ctx, `
 UPDATE incidents SET
 	last_event_at = GREATEST(last_event_at, $3),
 	detected_at   = LEAST(detected_at, $4),
 	event_count   = event_count + $5,
-	endpoints     = (SELECT ARRAY(SELECT DISTINCT unnest(endpoints || $6::text[]) ORDER BY 1 LIMIT 50)),
-	sources       = (SELECT ARRAY(SELECT DISTINCT unnest(sources   || $7::text[]) ORDER BY 1 LIMIT 50)),
-	reasons       = (SELECT ARRAY(SELECT DISTINCT unnest(reasons   || $8::text[]) ORDER BY 1 LIMIT 50))
+	endpoints     = (SELECT ARRAY(SELECT v FROM (
+	                   SELECT unnest(endpoints) AS v, 0 AS pri
+	                   UNION ALL SELECT unnest($6::text[]), 1) t
+	                 GROUP BY v ORDER BY min(pri), v LIMIT 50)),
+	sources       = (SELECT ARRAY(SELECT v FROM (
+	                   SELECT unnest(sources) AS v, 0 AS pri
+	                   UNION ALL SELECT unnest($7::text[]), 1) t
+	                 GROUP BY v ORDER BY min(pri), v LIMIT 50)),
+	reasons       = (SELECT ARRAY(SELECT v FROM (
+	                   SELECT unnest(reasons) AS v, 0 AS pri
+	                   UNION ALL SELECT unnest($8::text[]), 1) t
+	                 GROUP BY v ORDER BY min(pri), v LIMIT 50)),
+	evidence_truncated = evidence_truncated OR $9
+	                     OR cardinality(endpoints) >= 50 OR cardinality(sources) >= 50
 WHERE tenant_id = $1 AND id = $2`,
 		tenantOr(d.Tenant), id, d.Last, d.First, d.Count,
-		arr(d.Endpoints), arr(d.Sources), arr(d.Reasons))
+		arr(d.Endpoints), arr(d.Sources), arr(d.Reasons), d.Truncated)
 	return err
 }
 
 // newID is deterministic in the incident's identity and its start, so a retried
 // merge cannot produce two incidents for the same activity.
+//
+// The subject is HASHED rather than character-substituted. The previous version
+// mapped ':' to '_' and truncated at 80 characters, which is lossy: two
+// subjects differing only in ':' versus '_', or only past character 80,
+// produced the same id. The correlation lookup uses the exact subject, so the
+// second one found no open incident, its INSERT hit the primary key, and the
+// whole Merge transaction failed — that flush's incident was not recorded at
+// all. An attacker holding two identities shaped to collide could suppress
+// recording. A hash is injective enough that the case cannot arise.
 func newID(d Delta) string {
-	return fmt.Sprintf("%s:%s:%d", d.Class, sanitiseID(d.Subject), d.First.UTC().Unix())
-}
-
-func sanitiseID(s string) string {
-	s = strings.ReplaceAll(s, ":", "_")
-	if len(s) > 80 {
-		s = s[:80]
-	}
-	return s
+	sum := sha256.Sum256([]byte(d.Subject))
+	return fmt.Sprintf("%s:%s:%d", d.Class, hex.EncodeToString(sum[:])[:16], d.First.UTC().Unix())
 }
 
 // Filter selects incidents for a listing.
@@ -209,7 +234,7 @@ func (s *PGStore) List(ctx context.Context, tenant string, f Filter, sched Sched
 SELECT id, title, class, subject, status, severity, severity_confirmed,
        detected_at, last_event_at, closed_at, event_count, endpoints, sources,
        reasons, clients_affected, geographic_spread, economic_impact_eur, notes,
-       notifications
+       notifications, evidence_truncated
 FROM incidents WHERE tenant_id = $1`)
 	args := []any{tenantOr(tenant)}
 
@@ -270,7 +295,7 @@ func (s *PGStore) Get(ctx context.Context, tenant, id string) (*Incident, error)
 SELECT id, title, class, subject, status, severity, severity_confirmed,
        detected_at, last_event_at, closed_at, event_count, endpoints, sources,
        reasons, clients_affected, geographic_spread, economic_impact_eur, notes,
-       notifications
+       notifications, evidence_truncated
 FROM incidents WHERE tenant_id = $1 AND id = $2`, tenantOr(tenant), id)
 		got, err := scanIncident(row)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -302,7 +327,7 @@ func scanIncident(sc scanner) (Incident, error) {
 		&inc.Severity, &inc.SeverityConfirmed, &inc.DetectedAt, &inc.LastEventAt,
 		&closedAt, &inc.EventCount, pgTypeMap.SQLScanner(&inc.Endpoints), pgTypeMap.SQLScanner(&inc.Sources),
 		pgTypeMap.SQLScanner(&inc.Reasons), &clients, &geo, &economic, &inc.Classification.Notes,
-		&notifRaw)
+		&notifRaw, &inc.EvidenceTruncated)
 	if err != nil {
 		return Incident{}, err
 	}
@@ -347,6 +372,11 @@ type Update struct {
 
 // ErrNotFound is returned when the incident does not exist for the tenant.
 var ErrNotFound = errors.New("incident: not found")
+
+// ErrInvalid marks a caller mistake, as opposed to a store failure. The two
+// used to be indistinguishable at the API boundary, so a database outage was
+// reported to the client as a 400 with the raw driver error attached.
+var ErrInvalid = errors.New("incident: invalid request")
 
 // Apply writes an operator's changes.
 //
@@ -423,39 +453,78 @@ func nullable[T any](p *T) any {
 
 // RecordNotification appends a submitted report to the incident's history.
 //
-// Append-only on purpose. This is the record that a deadline was met, so it must
-// not be possible to move a submission time later to make a missed deadline look
-// met — the only way to change history here is to add to it.
+// Append-only, and now witnessed. The previous version accepted whatever
+// sent_at the caller supplied and recorded nothing about when it was told, so
+// "append-only" stopped a submission time being EDITED while leaving it
+// perfectly possible to append a backdated one — the same outcome by another
+// route. RecordedAt is stamped here, from the database clock, and is what
+// Deadlines resolves on.
+//
+// sent_at is also bounded against the incident's own timeline: a submission
+// cannot predate the incident it reports, and cannot be in the future. Neither
+// is a defence against a determined operator — the honest limit of this record
+// is that AEGIS cannot witness a filing to a regulator, only that it was told
+// about one — but both reject the mistakes and the crude forgeries, and the
+// gap between claim and witness is now visible to anyone reading the report.
 func (s *PGStore) RecordNotification(ctx context.Context, tenant, id string, n Notification) error {
-	if n.SentAt.IsZero() {
-		n.SentAt = time.Now().UTC()
-	}
 	switch n.Kind {
 	case KindEarlyWarning, KindNotification, KindFinalReport:
 	default:
-		return fmt.Errorf("incident: unknown notification kind %q", n.Kind)
+		return fmt.Errorf("%w: unknown notification kind %q", ErrInvalid, n.Kind)
 	}
-	raw, err := json.Marshal([]Notification{n})
-	if err != nil {
-		return err
-	}
+
 	return s.withTenantTx(ctx, tenant, func(tx *sql.Tx) error {
+		var detectedAt, dbNow time.Time
+		err := tx.QueryRowContext(ctx,
+			`SELECT detected_at, NOW() FROM incidents WHERE tenant_id = $1 AND id = $2`,
+			tenantOr(tenant), id).Scan(&detectedAt, &dbNow)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+
+		if n.SentAt.IsZero() {
+			n.SentAt = dbNow.UTC()
+		}
+		if n.SentAt.Before(detectedAt) {
+			return fmt.Errorf("%w: sent_at %s precedes the incident's detection at %s",
+				ErrInvalid, n.SentAt.UTC().Format(time.RFC3339), detectedAt.UTC().Format(time.RFC3339))
+		}
+		// A small allowance for clock skew between the operator's system and
+		// the database; beyond that a future submission is not a filing that
+		// happened, and accepting one would let a deadline be met in advance.
+		if n.SentAt.After(dbNow.Add(clockSkewAllowance)) {
+			return fmt.Errorf("%w: sent_at %s is in the future",
+				ErrInvalid, n.SentAt.UTC().Format(time.RFC3339))
+		}
+		n.RecordedAt = dbNow.UTC()
+
+		raw, err := json.Marshal([]Notification{n})
+		if err != nil {
+			return err
+		}
 		res, err := tx.ExecContext(ctx, `
 UPDATE incidents SET notifications = notifications || $3::jsonb
 WHERE tenant_id = $1 AND id = $2`, tenantOr(tenant), id, string(raw))
 		if err != nil {
 			return err
 		}
-		n, err := res.RowsAffected()
+		rows, err := res.RowsAffected()
 		if err != nil {
 			return err
 		}
-		if n == 0 {
+		if rows == 0 {
 			return ErrNotFound
 		}
 		return nil
 	})
 }
+
+// clockSkewAllowance is how far ahead of the database clock a claimed
+// submission time may sit before it is refused.
+const clockSkewAllowance = 5 * time.Minute
 
 // Stats summarises the incident record for the compliance report.
 type Stats struct {

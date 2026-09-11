@@ -74,6 +74,9 @@ type Delta struct {
 	Endpoints              []string
 	Sources                []string
 	Reasons                []string
+	// Truncated marks that at least one of the lists above dropped a value at
+	// its cap, so a reader is never shown a partial list as if it were whole.
+	Truncated bool
 }
 
 // Store persists correlated deltas.
@@ -98,6 +101,14 @@ const (
 	DefaultFlush = 5 * time.Second
 	// maxList caps each attacker-influenced list on an incident.
 	maxList = 50
+	// maxPendingKeys caps how many distinct incident streams one flush window
+	// may hold. The per-incident lists were capped; the MAP of incidents was
+	// not, and its key includes the source address — so an attacker rotating
+	// addresses (a botnet, an IPv6 /64) grows it without limit and then makes
+	// the worker walk every entry serially against PostgreSQL. Incident
+	// recording degraded to nothing during precisely the distributed attack it
+	// exists to record.
+	maxPendingKeys = 5000
 	// queueSize bounds the ingest buffer. Full means drop: an incident record
 	// is valuable, but not more valuable than serving traffic.
 	queueSize = 4096
@@ -119,7 +130,16 @@ type Correlator struct {
 
 	ch   chan Event
 	quit chan struct{}
-	wg   sync.WaitGroup
+	// closeOnce guards close(quit). A second Close panicked with "close of
+	// closed channel" — not reachable today (main.go defers it once), but this
+	// is the shutdown path that flushes evidence, and a panic there loses the
+	// final batch.
+	closeOnce sync.Once
+	wg        sync.WaitGroup
+
+	// droppedKeys counts incident streams refused at maxPendingKeys since the
+	// last flush. Worker-goroutine-local, like pending itself.
+	droppedKeys int
 
 	// flushReq asks the worker to write what it holds and close the channel it
 	// carries. Tests need a deterministic flush; a sleep long enough to be
@@ -176,7 +196,7 @@ func (c *Correlator) Close() error {
 	if c == nil {
 		return nil
 	}
-	close(c.quit)
+	c.closeOnce.Do(func() { close(c.quit) })
 	c.wg.Wait()
 	return nil
 }
@@ -239,6 +259,13 @@ func (c *Correlator) accumulate(pending map[key]*aggregate, e Event) {
 	k := key{tenant: e.Tenant, class: ClassOf(e.Reason), subject: subjectOf(e)}
 	a := pending[k]
 	if a == nil {
+		// Existing streams keep accumulating; only NEW ones are refused at the
+		// cap. An attacker rotating addresses therefore cannot push an
+		// already-tracked incident out of the window.
+		if len(pending) >= maxPendingKeys {
+			c.droppedKeys++
+			return
+		}
 		a = &aggregate{first: e.At, last: e.At}
 		pending[k] = a
 	}
@@ -269,18 +296,36 @@ func (c *Correlator) write(pending map[key]*aggregate) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	var failed int
+	var lastErr error
 	for k, a := range pending {
 		d := Delta{
 			Tenant: k.tenant, Class: k.class, Subject: k.subject,
 			First: a.first, Last: a.last, Count: a.count,
 		}
-		d.Endpoints = sortedUnique(a.endpoints, maxList)
-		d.Sources = sortedUnique(a.sources, maxList)
-		d.Reasons = sortedUnique(a.reasons, maxList)
-		if err := c.store.Merge(ctx, d, c.window); err != nil && c.log != nil {
-			c.log.Error("incident: merge failed", map[string]any{
-				"error": err.Error(), "class": d.Class, "subject": d.Subject,
-			})
+		var te, ts, tr bool
+		d.Endpoints, te = boundedUnique(a.endpoints, maxList)
+		d.Sources, ts = boundedUnique(a.sources, maxList)
+		d.Reasons, tr = boundedUnique(a.reasons, maxList)
+		d.Truncated = te || ts || tr
+		if err := c.store.Merge(ctx, d, c.window); err != nil {
+			// Counted, not logged per key. One line per failing key meant a
+			// flood of rotated addresses produced a flood of log lines at
+			// exactly the moment the operator needed to read their log.
+			failed++
+			lastErr = err
 		}
 	}
+	if c.log != nil && (failed > 0 || c.droppedKeys > 0) {
+		f := map[string]any{"streams": len(pending)}
+		if failed > 0 {
+			f["failed"] = failed
+			f["error"] = lastErr.Error()
+		}
+		if c.droppedKeys > 0 {
+			f["dropped_streams"] = c.droppedKeys
+		}
+		c.log.Error("incident: flush degraded", f)
+	}
+	c.droppedKeys = 0
 }

@@ -16,6 +16,7 @@ package attest
 import (
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -52,8 +53,14 @@ type Attestation struct {
 	// quote the digest as the document's identity in a ticket. Verify checks it
 	// first only so a changed document reports as a changed document rather
 	// than as a bad signature.
+	//
+	// Note it covers LESS than the signature does: the digest is over the
+	// document bytes alone, so that `sha256sum` on the document matches, while
+	// the signature also covers signed_at.
 	Digest string `json:"digest"`
-	// SignedAt is when the attestation was made, RFC 3339 in UTC.
+	// SignedAt is when the attestation was made, RFC 3339 in UTC. It is COVERED
+	// BY THE SIGNATURE (see signedMessage) — editing it invalidates the
+	// attestation, which is the whole reason it is trustworthy enough to print.
 	SignedAt string `json:"signed_at"`
 	// Signature is the hex Ed25519 signature over the document bytes.
 	Signature string `json:"signature"`
@@ -93,7 +100,20 @@ func NewSigner(b64 string) (*Signer, error) {
 		priv := ed25519.NewKeyFromSeed(raw)
 		return &Signer{priv: priv, pub: priv.Public().(ed25519.PublicKey)}, nil
 	case ed25519.PrivateKeySize:
+		// A 64-byte Ed25519 key is seed || public. Nothing forced the two halves
+		// to agree, and Go's Sign derives the scalar from the seed while folding
+		// priv[32:] into the challenge hash — so a corrupted key produces
+		// signatures that verify under NO key at all. Startup succeeded,
+		// config.Validate passed, reports were served with an attestation block,
+		// and the failure surfaced only when an auditor ran the verifier months
+		// later. Turn it into a boot error, which is what this function's own
+		// documentation promises.
 		priv := ed25519.PrivateKey(raw)
+		derived := ed25519.NewKeyFromSeed(raw[:ed25519.SeedSize])
+		if subtle.ConstantTimeCompare(derived[ed25519.SeedSize:], raw[ed25519.SeedSize:]) != 1 {
+			return nil, errors.New("attest: signing key is internally inconsistent " +
+				"(its public half does not match its seed); it would produce signatures nobody can verify")
+		}
 		return &Signer{priv: priv, pub: priv.Public().(ed25519.PublicKey)}, nil
 	default:
 		return nil, fmt.Errorf("attest: signing key is %d bytes; want %d (seed) or %d (private key)",
@@ -108,12 +128,40 @@ func (s *Signer) KeyID() string { return KeyIDOf(s.pub) }
 // PublicKey returns the base64 verifying key.
 func (s *Signer) PublicKey() string { return base64.StdEncoding.EncodeToString(s.pub) }
 
-// Attest serialises doc and signs the bytes it produced.
+// sigContext domain-separates this signature from any other use of the same
+// key. Without it, bytes signed for one purpose could be replayed as bytes
+// signed for another; with it, a signature only means what this package means.
+// The version suffix is what a future change to the signed construction bumps.
+const sigContext = "aegis-attest-v1"
+
+// signedMessage is the exact byte string the signature covers.
+//
+// It is the document AND the attestation metadata that is not otherwise bound
+// — currently signed_at. Signing the body alone was the original mistake: the
+// algorithm, digest, public key and key id are all recomputed or cross-checked
+// during verification, so tampering with them is caught, but signed_at was
+// checked by nothing. An operator could take a genuinely signed clean report
+// and edit that one field, and the verifier would print the attacker's date on
+// the single line an auditor reads.
+//
+// The separator is a newline and signed_at is RFC 3339, which contains no
+// newline, so the fields cannot be slid into one another.
+func signedMessage(signedAt string, body []byte) []byte {
+	msg := make([]byte, 0, len(sigContext)+len(signedAt)+len(body)+2)
+	msg = append(msg, sigContext...)
+	msg = append(msg, '\n')
+	msg = append(msg, signedAt...)
+	msg = append(msg, '\n')
+	return append(msg, body...)
+}
+
+// Attest serialises doc and signs it together with the time of signing.
 func (s *Signer) Attest(doc any) (Envelope, error) {
 	body, err := json.Marshal(doc)
 	if err != nil {
 		return Envelope{}, fmt.Errorf("attest: encode document: %w", err)
 	}
+	signedAt := time.Now().UTC().Format(time.RFC3339)
 	sum := sha256.Sum256(body)
 	return Envelope{
 		Document: string(body),
@@ -122,8 +170,8 @@ func (s *Signer) Attest(doc any) (Envelope, error) {
 			KeyID:     s.KeyID(),
 			PublicKey: s.PublicKey(),
 			Digest:    "sha256:" + hex.EncodeToString(sum[:]),
-			SignedAt:  time.Now().UTC().Format(time.RFC3339),
-			Signature: hex.EncodeToString(ed25519.Sign(s.priv, body)),
+			SignedAt:  signedAt,
+			Signature: hex.EncodeToString(ed25519.Sign(s.priv, signedMessage(signedAt, body))),
 		},
 	}, nil
 }
@@ -148,11 +196,17 @@ func Verify(env Envelope, pub ed25519.PublicKey) error {
 		return fmt.Errorf("%w: digest is %s, document hashes to %s",
 			ErrTampered, env.Attestation.Digest, want)
 	}
+	// Rejected before it reaches the signed message so a malformed value cannot
+	// be presented to a reader as a date. It is covered by the signature either
+	// way; this is about what the field is allowed to say.
+	if _, err := time.Parse(time.RFC3339, env.Attestation.SignedAt); err != nil {
+		return fmt.Errorf("attest: signed_at %q is not RFC 3339: %w", env.Attestation.SignedAt, err)
+	}
 	sig, err := hex.DecodeString(env.Attestation.Signature)
 	if err != nil {
 		return fmt.Errorf("attest: signature is not valid hex: %w", err)
 	}
-	if !ed25519.Verify(pub, body, sig) {
+	if !ed25519.Verify(pub, signedMessage(env.Attestation.SignedAt, body), sig) {
 		return fmt.Errorf("%w: signature does not verify under the given key", ErrTampered)
 	}
 	if got := KeyIDOf(pub); got != env.Attestation.KeyID {
@@ -162,10 +216,22 @@ func Verify(env Envelope, pub ed25519.PublicKey) error {
 	return nil
 }
 
+// keyIDHexLen is how much of the SHA-256 a key id keeps: 32 hex characters,
+// 128 bits.
+//
+// It was 16 (64 bits), and the doc comment asserted "a forger cannot produce a
+// different key with the same id". That holds only at 64-bit second-preimage
+// strength, and Ed25519 keypairs can be enumerated cheaply — roughly one point
+// addition and one hash per candidate. Not a threat today, but this identifier
+// is pinned by an auditor and has to stay trustworthy for years, so the claim
+// should be true by construction rather than by cost. 32 characters is still
+// short enough to paste into a ticket.
+const keyIDHexLen = 32
+
 // KeyIDOf derives the short identifier of a verifying key. It is a hash of the
 // key, so an id a reader trusts authenticates the key that arrives with a
 // document — which is what lets a verifier pin an id instead of a whole key.
 func KeyIDOf(pub ed25519.PublicKey) string {
 	sum := sha256.Sum256(pub)
-	return hex.EncodeToString(sum[:])[:16]
+	return hex.EncodeToString(sum[:])[:keyIDHexLen]
 }

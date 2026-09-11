@@ -237,7 +237,7 @@ func TestUsers_AdminCannotCreateInOtherTenant(t *testing.T) {
 	// acme admin tries to create a globex user — forbidden.
 	rec, _ := doReq(h.createUser, http.MethodPost, "/api/users",
 		ctxAs("acme", iam.RoleAdmin, false), map[string]any{
-			"email": "intruder@globex.io", "password": "longlonglonglong", "tenant": "globex",
+			"email": "intruder@globex.io", "password": "longlonglonglong", "role": "admin", "tenant": "globex",
 		})
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-tenant createUser: %d, want 403", rec.Code)
@@ -250,7 +250,7 @@ func TestUsers_OrdinaryAdminCannotGrantSuperAdmin(t *testing.T) {
 		ctxAs("default", iam.RoleAdmin, true), map[string]any{"id": "acme"})
 	rec, _ := doReq(h.createUser, http.MethodPost, "/api/users",
 		ctxAs("acme", iam.RoleAdmin, false), map[string]any{
-			"email": "x@acme.io", "password": "longlonglonglong", "super_admin": true,
+			"email": "x@acme.io", "password": "longlonglonglong", "role": "admin", "super_admin": true,
 		})
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("non-super granting super: %d, want 403", rec.Code)
@@ -276,10 +276,10 @@ func TestUsers_AdminListSeesOnlyOwnTenant(t *testing.T) {
 	_, _ = doReq(h.createTenant, http.MethodPost, "/api/tenants", su, map[string]any{"id": "acme"})
 	_, _ = doReq(h.createTenant, http.MethodPost, "/api/tenants", su, map[string]any{"id": "globex"})
 	_, _ = doReq(h.createUser, http.MethodPost, "/api/users", su, map[string]any{
-		"email": "a@acme.io", "password": "longlonglonglong", "tenant": "acme",
+		"email": "a@acme.io", "password": "longlonglonglong", "role": "admin", "tenant": "acme",
 	})
 	_, _ = doReq(h.createUser, http.MethodPost, "/api/users", su, map[string]any{
-		"email": "g@globex.io", "password": "longlonglonglong", "tenant": "globex",
+		"email": "g@globex.io", "password": "longlonglonglong", "role": "admin", "tenant": "globex",
 	})
 
 	// acme admin tries to peek into globex by passing ?tenant=globex — must be
@@ -309,7 +309,7 @@ func TestUsers_CrossTenantDeleteForbidden(t *testing.T) {
 	_, _ = doReq(h.createTenant, http.MethodPost, "/api/tenants", su, map[string]any{"id": "acme"})
 	_, _ = doReq(h.createTenant, http.MethodPost, "/api/tenants", su, map[string]any{"id": "globex"})
 	_, gxBody := doReq(h.createUser, http.MethodPost, "/api/users", su, map[string]any{
-		"email": "g@globex.io", "password": "longlonglonglong", "tenant": "globex",
+		"email": "g@globex.io", "password": "longlonglonglong", "role": "admin", "tenant": "globex",
 	})
 	gxID, _ := gxBody["id"].(string)
 	if gxID == "" {
@@ -340,7 +340,7 @@ func TestUsers_CannotDeleteSelf(t *testing.T) {
 	h := freshHandlers(t)
 	su := ctxAs("default", iam.RoleAdmin, true)
 	_, body := doReq(h.createUser, http.MethodPost, "/api/users", su, map[string]any{
-		"email": "me@default.io", "password": "longlonglonglong",
+		"email": "me@default.io", "password": "longlonglonglong", "role": "admin",
 	})
 	uid, _ := body["id"].(string)
 	if uid == "" {
@@ -370,7 +370,7 @@ func TestUsers_DeleteRevokesLiveSessions(t *testing.T) {
 	h := freshHandlers(t)
 	su := ctxAs("default", iam.RoleAdmin, true)
 	_, body := doReq(h.createUser, http.MethodPost, "/api/users", su, map[string]any{
-		"email": "victim@default.io", "password": "longlonglonglong",
+		"email": "victim@default.io", "password": "longlonglonglong", "role": "admin",
 	})
 	uid, _ := body["id"].(string)
 	if uid == "" {
@@ -408,7 +408,7 @@ func TestUsers_RejectsMalformedTenantID(t *testing.T) {
 
 	for _, bad := range []string{"acme:evil", "acme/evil", "gw:t:acme", "acme evil", strings.Repeat("a", 65)} {
 		rec, _ := doReq(h.createUser, http.MethodPost, "/api/users", su, map[string]any{
-			"email": "x@acme.io", "password": "longlonglonglong", "tenant": bad,
+			"email": "x@acme.io", "password": "longlonglonglong", "role": "admin", "tenant": bad,
 		})
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("createUser with tenant %q: %d, want 400 — the id reaches Redis key namespaces", bad, rec.Code)
@@ -419,7 +419,7 @@ func TestUsers_RejectsMalformedTenantID(t *testing.T) {
 	// which is the documented default and must not be caught by the shape check.
 	rec, body := doReq(h.createUser, http.MethodPost, "/api/users",
 		ctxAs("default", iam.RoleAdmin, false), map[string]any{
-			"email": "self@default.io", "password": "longlonglonglong", "tenant": "  ",
+			"email": "self@default.io", "password": "longlonglonglong", "role": "admin", "tenant": "  ",
 		})
 	if rec.Code != http.StatusCreated || body["tenant"] != "default" {
 		t.Fatalf("blank tenant: %d body=%v, want 201 in the caller's own tenant", rec.Code, body)
@@ -429,9 +429,65 @@ func TestUsers_RejectsMalformedTenantID(t *testing.T) {
 	// endpoint.
 	_, _ = doReq(h.createTenant, http.MethodPost, "/api/tenants", su, map[string]any{"id": "acme"})
 	rec, body = doReq(h.createUser, http.MethodPost, "/api/users", su, map[string]any{
-		"email": "ok@acme.io", "password": "longlonglonglong", "tenant": "acme",
+		"email": "ok@acme.io", "password": "longlonglonglong", "role": "admin", "tenant": "acme",
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("createUser with a valid tenant id: %d, body=%v", rec.Code, body)
+	}
+}
+
+// An unrecognised role used to become RoleAdmin as a "sensible default", so an
+// empty, misspelled or differently-cased role silently provisioned a full
+// mutator. That is the exact mistake an operator makes while trying to create a
+// read-only auditor, and it inverts the least-privilege default the rest of the
+// IAM layer enforces (iam.FromContext falls back to RoleViewer precisely so a
+// forgotten role never grants admin).
+func TestCreateUser_UnrecognisedRoleIsRefusedNotPromoted(t *testing.T) {
+	h := freshHandlers(t)
+	_, _ = doReq(h.createTenant, http.MethodPost, "/api/tenants",
+		ctxAs("default", iam.RoleAdmin, true), map[string]any{"id": "acme"})
+	ctx := ctxAs("acme", iam.RoleAdmin, false)
+
+	for _, bad := range []any{"", "Viewer", "viewer ", "ADMIN", "read-only", "superadmin", nil} {
+		// No role key at all when bad is nil — that is the "operator forgot the
+		// field" case, and it is the one the old default silently promoted.
+		body := map[string]any{"email": "x@acme.io", "password": "longlonglonglong"}
+		if bad != nil {
+			body["role"] = bad
+		}
+		rec, got := doReq(h.createUser, http.MethodPost, "/api/users", ctx, body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("role=%v: status %d, want 400 — an unrecognised role must never resolve upward (got %v)",
+				bad, rec.Code, got)
+		}
+		if got["role"] == string(iam.RoleAdmin) {
+			t.Errorf("role=%v: created an ADMIN", bad)
+		}
+	}
+
+	// Both recognised roles still work, and land as asked.
+	for _, want := range []iam.Role{iam.RoleAdmin, iam.RoleViewer} {
+		rec, got := doReq(h.createUser, http.MethodPost, "/api/users", ctx, map[string]any{
+			"email": string(want) + "@acme.io", "password": "longlonglonglong", "role": string(want),
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("role=%s rejected: %d %v", want, rec.Code, got)
+		}
+		if got["role"] != string(want) {
+			t.Errorf("role = %v, want %s", got["role"], want)
+		}
+	}
+}
+
+func TestRole_Valid(t *testing.T) {
+	for _, r := range []iam.Role{iam.RoleAdmin, iam.RoleViewer} {
+		if !r.Valid() {
+			t.Errorf("%s rejected", r)
+		}
+	}
+	for _, r := range []iam.Role{"", "Admin", "viewer ", "root", "superadmin"} {
+		if r.Valid() {
+			t.Errorf("%q accepted as a role", r)
+		}
 	}
 }

@@ -23,6 +23,14 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# `go install` puts the pinned tools in GOPATH/bin, which is not on PATH in a
+# default shell. Without this the script installed golangci-lint, gosec and
+# govulncheck and then reported all three as "command not found" — three FAILs
+# that said nothing about the code. Prepend it so the tools this script just
+# installed are the ones it runs.
+PATH="$(go env GOPATH)/bin:$PATH"
+export PATH
+
 # Pinned to match .github/workflows/lint.yml exactly.
 GOLANGCI_VERSION=v2.12.2
 GOSEC_VERSION=v2.28.0

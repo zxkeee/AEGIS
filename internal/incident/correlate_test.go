@@ -2,6 +2,7 @@ package incident
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -238,18 +239,93 @@ func TestCorrelator_NilIsSafe(t *testing.T) {
 	}
 }
 
-func TestSortedUnique_DeduplicatesAndCaps(t *testing.T) {
-	in := []string{"b", "a", "b", "", "c"}
-	got := sortedUnique(in, 10)
-	if len(got) != 3 || got[0] != "a" || got[2] != "c" {
-		t.Errorf("got %v, want [a b c]", got)
+// The caps are not cosmetic: these lists grow from attacker-supplied values.
+// The ORDER is the security-relevant part — keeping the lexicographically
+// smallest let an attacker evict real evidence by sending values that sort
+// before it.
+func TestBoundedUnique_KeepsFirstSeenAndReportsTruncation(t *testing.T) {
+	got, dropped := boundedUnique([]string{"b", "a", "b", "", "c"}, 10)
+	if len(got) != 3 || got[0] != "b" || got[1] != "a" || got[2] != "c" {
+		t.Errorf("got %v, want first-seen order [b a c]", got)
 	}
-	// The cap is not cosmetic: these lists grow from attacker-controlled input.
-	big := make([]string, 500)
-	for i := range big {
-		big[i] = string(rune('a'+i%26)) + string(rune('a'+i/26))
+	if dropped {
+		t.Error("nothing was dropped but truncation was reported")
 	}
-	if got := sortedUnique(big, 50); len(got) != 50 {
-		t.Errorf("len = %d, want the list capped at 50", len(got))
+
+	// The eviction attack: the real target is seen first, then fifty decoys
+	// that would all sort before it.
+	in := []string{"GET /admin/keys"}
+	for i := 0; i < 60; i++ {
+		in = append(in, fmt.Sprintf("GET /AAA%02d", i))
+	}
+	kept, dropped := boundedUnique(in, 50)
+	if !dropped {
+		t.Error("values were dropped but truncation was not reported")
+	}
+	if len(kept) != 50 {
+		t.Fatalf("kept %d, want the cap of 50", len(kept))
+	}
+	if kept[0] != "GET /admin/keys" {
+		t.Fatalf("the first-seen value was evicted by later ones: %v", kept[:3])
+	}
+}
+
+// The per-incident lists were capped; the MAP of incident streams was not, and
+// its key includes the source address. An attacker rotating addresses grew it
+// without limit and then made the worker walk every entry serially against
+// PostgreSQL — incident recording degraded to nothing during precisely the
+// distributed attack it exists to record.
+func TestCorrelator_BoundsTheNumberOfStreams(t *testing.T) {
+	fs := &fakeStore{}
+	c := New(fs, nopLog{})
+
+	// One address per event, far past the cap.
+	for i := 0; i < maxPendingKeys+500; i++ {
+		c.Observe(Event{Tenant: "acme", Reason: "waf_blocked",
+			IP: fmt.Sprintf("10.%d.%d.%d", i/65536, (i/256)%256, i%256), At: t0})
+	}
+	_ = c.Close()
+
+	if got := len(fs.all()); got > maxPendingKeys {
+		t.Fatalf("%d streams written, want at most the cap of %d", got, maxPendingKeys)
+	}
+}
+
+// An already-tracked stream must keep accumulating even while new ones are
+// being refused — otherwise a flood of new addresses starves the incident that
+// is actually being recorded.
+func TestCorrelator_CapRefusesNewStreamsNotExistingOnes(t *testing.T) {
+	fs := &fakeStore{}
+	c := New(fs, nopLog{})
+
+	c.Observe(Event{Tenant: "acme", Reason: "bola_x", Consumer: "jwt:victim", At: t0})
+	for i := 0; i < maxPendingKeys+100; i++ {
+		c.Observe(Event{Tenant: "acme", Reason: "waf_blocked",
+			IP: fmt.Sprintf("10.%d.%d.%d", i/65536, (i/256)%256, i%256), At: t0})
+	}
+	c.Observe(Event{Tenant: "acme", Reason: "bola_x", Consumer: "jwt:victim", At: t0.Add(time.Second)})
+	_ = c.Close()
+
+	for _, d := range fs.all() {
+		if d.Subject == "jwt:victim" {
+			if d.Count != 2 {
+				t.Errorf("the tracked stream recorded %d events, want 2 — a flood of new "+
+					"streams starved an incident already being recorded", d.Count)
+			}
+			return
+		}
+	}
+	t.Fatal("the tracked stream was not written at all")
+}
+
+// Close is the shutdown path that flushes evidence. A panic there loses the
+// final batch.
+func TestCorrelator_CloseIsIdempotent(t *testing.T) {
+	c := New(&fakeStore{}, nopLog{})
+	if err := c.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := c.Close(); err != nil { // must not panic on a closed channel
+		t.Fatalf("second Close: %v", err)
 	}
 }

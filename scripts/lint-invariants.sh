@@ -111,11 +111,23 @@ while IFS= read -r goField; do
   # killed this script outright — it exited before printing the very error it
   # was written to print, so the check reported "failed" with no reason at all.
   yamlKey=$(grep -oE "\\b${goField}\\b +\\S+ +\`yaml:\"[a-z0-9_-]+\"" "$CFG" | grep -oE '"[a-z0-9_-]+"' | tr -d '"' | head -1 || true)
-  # A field tagged `yaml:"-"` is never marshalled, so it cannot reach the
-  # ConfigMap at all — a stronger guarantee than being force-blanked there, and
-  # the right shape for a value that only ever comes from the environment.
+  # A field tagged `yaml:"-"` must be checked HARDER, not skipped.
+  #
+  # This block used to `continue` here, on the reasoning that `yaml:"-"` means
+  # the field "cannot reach the ConfigMap at all — a stronger guarantee than
+  # being force-blanked". That reasoning is a category error and it let two
+  # secrets leak (2026-09-07 audit): `yaml:"-"` governs how GO marshals the
+  # config struct. The ConfigMap does not marshal the Go struct — Helm marshals
+  # `.Values.gateway`, an operator-authored YAML map, through `toYaml`. Helm has
+  # no knowledge of Go struct tags and never will.
+  #
+  # The tag therefore makes a field MORE likely to leak, not less: it is the
+  # marker of "environment-only secret", precisely the class this invariant
+  # exists for. Such a field still needs blanking, under the snake_case key an
+  # operator would naturally write in values.yaml.
   if [ "$yamlKey" = "-" ]; then
-    continue
+    yamlKey=$(printf '%s' "$goField" \
+      | sed -E 's/([a-z0-9])([A-Z])/\1_\2/g' | tr '[:upper:]' '[:lower:]')
   fi
   if [ -z "$yamlKey" ]; then
     echo "ERROR: could not resolve the yaml tag for field $goField (assigned from an AEGIS_* env var in $CFG) — add it manually to this invariant"
@@ -128,6 +140,38 @@ while IFS= read -r goField; do
     fail=1
   fi
 done < <(grep -oE 'cfg\.[A-Za-z.]+ = v$' "$CFG" | sed -E 's/ = v$//; s/^.*\.//')
+
+# The static check above reads templates; this one reads the OUTPUT. A grep over
+# a template can be satisfied by a commented-out line, cannot see whether a
+# `set` targets the right nesting level, and — as the block above proves — can
+# be defeated entirely by reasoning about the wrong marshaller. Rendering the
+# chart with canary values and grepping the result cannot be fooled by any of
+# that: if a secret appears in the rendered ConfigMap, it appears.
+echo "invariant: no AEGIS_*-sourced secret survives into the rendered ConfigMap"
+if ! command -v helm >/dev/null 2>&1; then
+  # NOT a silent skip. A guard that quietly does nothing where it matters is the
+  # failure mode this whole block was rewritten to fix.
+  echo "WARNING: helm is not installed — the canary render check did NOT run."
+  echo "         Install helm, or this invariant is only as strong as the static grep above."
+else
+  canaryOut=$(helm template charts/aegis \
+    --set secrets.adminSecret=x --set secrets.redisPassword=y \
+    --set gateway.report_signing_key=AEGIS_CANARY_A \
+    --set gateway.security.consumer_id.salt=AEGIS_CANARY_B \
+    --set gateway.forensic_dsn=AEGIS_CANARY_C \
+    --set gateway.admin_secret=AEGIS_CANARY_D \
+    --set gateway.security.auth.secret=AEGIS_CANARY_E \
+    --set gateway.security.auth.propagation_secret=AEGIS_CANARY_F \
+    --set gateway.redis.password=AEGIS_CANARY_G \
+    --set gateway.alerting.webhook_url=AEGIS_CANARY_H \
+    2>/dev/null | grep -n 'AEGIS_CANARY' || true)
+  if [ -n "$canaryOut" ]; then
+    echo "ERROR: the rendered chart contains operator-supplied secret values in cleartext:"
+    echo "$canaryOut"
+    echo "       Force-blank each of these keys in $CM."
+    fail=1
+  fi
+fi
 
 # ── Invariant 4: every payload-inspection WAF rule covers REQUEST_URI (no
 #    path blindness) ──────────────────────────────────────────────────────────

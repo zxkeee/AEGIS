@@ -212,9 +212,6 @@ func (h *handlers) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	role := iam.Role(req.Role)
-	if role != iam.RoleAdmin && role != iam.RoleViewer {
-		role = iam.RoleAdmin // sensible default
-	}
 	target := strings.TrimSpace(req.Tenant)
 	if target == "" {
 		target = tenant.From(r.Context())
@@ -231,6 +228,21 @@ func (h *handlers) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.canManageTenant(r, target) {
 		writeError(w, http.StatusForbidden, "cannot create users in another tenant")
+		return
+	}
+
+	// Refused, not defaulted. This used to assign RoleAdmin on no match, so "",
+	// "Viewer", "viewer " or any typo silently provisioned a full mutator — the
+	// opposite of the least-privilege default iam.FromContext enforces, and the
+	// exact mistake an operator makes while trying to create a read-only
+	// auditor.
+	//
+	// Checked AFTER the tenant and privilege gates above, deliberately: a caller
+	// who may not create this user at all should get 403 whatever their body
+	// looks like. Validating first would tell them their request was well-formed
+	// before telling them they are not allowed to make it.
+	if !role.Valid() {
+		writeError(w, http.StatusBadRequest, `role must be "admin" or "viewer"`)
 		return
 	}
 	if req.SuperAdmin && !iam.IsSuperAdmin(r.Context()) {

@@ -20,7 +20,6 @@ package incident
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 )
@@ -192,10 +191,21 @@ var DefaultSchedule = Schedule{
 
 // Notification records that a report was submitted to a competent authority.
 type Notification struct {
-	Kind      DeadlineKind `json:"kind"`
-	SentAt    time.Time    `json:"sent_at"`
-	Authority string       `json:"authority,omitempty"`
-	Reference string       `json:"reference,omitempty"`
+	Kind DeadlineKind `json:"kind"`
+	// SentAt is the operator's CLAIM about when they filed. AEGIS cannot
+	// observe a submission to a regulator, so this is testimony, not evidence.
+	SentAt time.Time `json:"sent_at"`
+	// RecordedAt is when the gateway was told — set server-side, never by the
+	// caller. It is the witness to the claim above.
+	//
+	// Without it, "append-only" was not the guarantee its own comment claimed.
+	// Editing a submission time was blocked, but APPENDING a backdated entry
+	// achieved the same outcome, and the earliest-wins reduction made the new
+	// entry authoritative. An operator could clear a missed NIS2 Art. 23
+	// deadline after the fact and the record showed nothing.
+	RecordedAt time.Time `json:"recorded_at"`
+	Authority  string    `json:"authority,omitempty"`
+	Reference  string    `json:"reference,omitempty"`
 }
 
 // Deadline is one obligation with its due time and current state.
@@ -203,8 +213,19 @@ type Deadline struct {
 	Kind   DeadlineKind `json:"kind"`
 	Due    time.Time    `json:"due"`
 	SentAt *time.Time   `json:"sent_at,omitempty"`
-	// Overdue is true when the deadline has passed and nothing was submitted.
+	// Overdue means the obligation was NOT met on time — either nothing was
+	// submitted and the deadline has passed, or something was submitted after
+	// it.
+	//
+	// The second case used to be missing: any recorded submission cleared the
+	// flag without ever comparing its time to the due time, so an early warning
+	// filed at hour 100 against a 24-hour obligation reported clean. That is a
+	// breach of the obligation being presented to a regulator as compliance.
 	Overdue bool `json:"overdue"`
+	// Late is true when a submission was made, but after the deadline. It is
+	// separate from Overdue so a report can distinguish "filed, 76h late" from
+	// "never filed" — both are failures, and they are not the same failure.
+	Late bool `json:"late,omitempty"`
 	// Article names the obligation, so a reader does not have to look it up.
 	Article string `json:"article"`
 }
@@ -241,6 +262,10 @@ type Incident struct {
 	Endpoints  []string `json:"endpoints,omitempty"`
 	Sources    []string `json:"sources,omitempty"`
 	Reasons    []string `json:"reasons,omitempty"`
+	// EvidenceTruncated marks that the lists above hit their cap and are
+	// partial. A partial list shown as if it were whole is the kind of quiet
+	// omission this product exists to stop producing.
+	EvidenceTruncated bool `json:"evidence_truncated,omitempty"`
 
 	Classification Classification `json:"classification"`
 	Notifications  []Notification `json:"notifications,omitempty"`
@@ -252,11 +277,27 @@ type Incident struct {
 // does not stop having been missed because the incident was later closed, and a
 // report that hid that would be the most dangerous kind of wrong.
 func (i *Incident) Deadlines(s Schedule, now time.Time) []Deadline {
-	sent := map[DeadlineKind]time.Time{}
+	// Resolved by earliest RECORDED time, not earliest claimed time: the first
+	// submission the gateway witnessed is the authoritative one. Taking the
+	// earliest claim instead let a later, backdated entry rewrite history —
+	// which is precisely the forgery an append-only log is supposed to prevent.
+	//
+	// Rows written before recorded_at existed have a zero value; they fall back
+	// to the claim so an upgrade does not silently reorder old history.
+	type record struct{ sent, recorded time.Time }
+	first := map[DeadlineKind]record{}
 	for _, n := range i.Notifications {
-		if prev, ok := sent[n.Kind]; !ok || n.SentAt.Before(prev) {
-			sent[n.Kind] = n.SentAt
+		rec := n.RecordedAt
+		if rec.IsZero() {
+			rec = n.SentAt
 		}
+		if prev, ok := first[n.Kind]; !ok || rec.Before(prev.recorded) {
+			first[n.Kind] = record{sent: n.SentAt, recorded: rec}
+		}
+	}
+	sent := map[DeadlineKind]time.Time{}
+	for k, r := range first {
+		sent[k] = r.sent
 	}
 
 	mk := func(kind DeadlineKind, due time.Time) Deadline {
@@ -264,6 +305,11 @@ func (i *Incident) Deadlines(s Schedule, now time.Time) []Deadline {
 		if t, ok := sent[kind]; ok {
 			tt := t
 			d.SentAt = &tt
+			// A submission does not by itself discharge the obligation — it has
+			// to have been on time. Returning here without this comparison, as
+			// this used to, reported a deadline missed by four days as met.
+			d.Late = t.After(due)
+			d.Overdue = d.Late
 			return d
 		}
 		d.Overdue = now.After(due)
@@ -334,13 +380,26 @@ var classTitles = map[string]string{
 	"ratelimit": "Sustained request flooding",
 }
 
-// sortedUnique returns the distinct values of in, ordered, capped at max.
+// boundedUnique returns the distinct values of in, in FIRST-SEEN order, capped
+// at max, and reports whether anything was dropped.
 //
-// The cap is not cosmetic: these lists are grown from attacker-controlled input
-// (source addresses, paths), and an unbounded one is a memory-growth lever an
-// attacker pulls by rotating them.
-func sortedUnique(in []string, max int) []string {
-	seen := map[string]struct{}{}
+// It used to sort and keep the lexicographically smallest, which handed an
+// attacker an eviction primitive: these lists are grown from attacker-supplied
+// values (request paths, source addresses), so after hitting the real target at
+// `GET /admin/keys` you issue fifty requests to paths that sort before it and
+// the real one is gone from the incident row. The catalog enrichment then
+// derives criticality and data-at-risk from the decoys, which feeds the
+// proposed severity.
+//
+// First-seen is not a perfect defence — an attacker who knows the target in
+// advance can pre-fill the list — but it is strictly better: evidence already
+// recorded is never displaced by anything sent afterwards.
+//
+// The cap itself stays. An unbounded list is a memory-growth lever an attacker
+// pulls by rotating values, which is a worse problem than a partial list. The
+// dropped flag is what keeps the partial list honest.
+func boundedUnique(in []string, max int) ([]string, bool) {
+	seen := make(map[string]struct{}, len(in))
 	out := make([]string, 0, len(in))
 	for _, v := range in {
 		if v == "" {
@@ -350,11 +409,10 @@ func sortedUnique(in []string, max int) []string {
 			continue
 		}
 		seen[v] = struct{}{}
+		if len(out) >= max {
+			return out, true
+		}
 		out = append(out, v)
 	}
-	sort.Strings(out)
-	if len(out) > max {
-		out = out[:max]
-	}
-	return out
+	return out, false
 }

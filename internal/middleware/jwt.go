@@ -52,6 +52,22 @@ func NewJWTAuth(cfg config.AuthConfig, log Logger, st RevocationChecker) *JWTAut
 // jwksMaxBackoff caps the retry interval of the background JWKS fetch loop.
 const jwksMaxBackoff = 5 * time.Minute
 
+// jwksClient fetches the JWKS document under the same redirect policy as the
+// threat feed.
+//
+// config.Validate pins auth.jwks_url to https, and this keeps that pin from
+// evaporating at the first 302: without a CheckRedirect the default client
+// happily follows up to ten hops, including to http:// and to internal
+// addresses. Since this document is the trust root for every RSA/ECDSA token
+// the gateway accepts, an unpinned redirect is a full authentication bypass
+// for anyone who controls the configured host or the path to it.
+func jwksClient() *http.Client {
+	return &http.Client{
+		Timeout:       30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error { return safeRedirect("jwks", req, via) },
+	}
+}
+
 // initJWKS fetches and caches JWKS keys from the configured URL, retrying
 // FOREVER with capped exponential backoff. Validation fails closed while the
 // keys are absent (see keyFunc), so giving up after a fixed number of attempts
@@ -62,7 +78,8 @@ func (ja *JWTAuth) initJWKS() {
 	backoff := 2 * time.Second
 
 	for attempt := 1; ; attempt++ {
-		k, err := keyfunc.NewDefault([]string{ja.cfg.JWKSURL})
+		k, err := keyfunc.NewDefaultOverrideCtx(context.Background(),
+			[]string{ja.cfg.JWKSURL}, keyfunc.Override{Client: jwksClient()})
 		if err != nil {
 			ja.log.Error("jwks: fetch failed (all tokens are rejected until keys load); will retry", map[string]any{
 				"url":      ja.cfg.JWKSURL,
