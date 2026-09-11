@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -371,5 +372,79 @@ func TestGetCompliance_CarriesItsOwnProvenance(t *testing.T) {
 	}
 	if body["tenant"] == nil || body["tenant"] == "" {
 		t.Error("the report does not say which tenant it is about")
+	}
+}
+
+// One control, one title — everywhere it is referenced.
+//
+// NIS2 Art. 21(2)(i) was listed twice with different titles: "Access control
+// policies" under API1/API5 and "Asset management" under API9. Both are real
+// parts of that article, which covers human resources security, access control
+// policies AND asset management — but buildCompliance aggregates by
+// {framework, control} and keeps whichever title arrived first.
+//
+// Two consequences, and the second is the serious one:
+//
+//   - An auditor reads "Art. 21(2)(i) — Access control policies" with shadow
+//     endpoints listed under it, which looks like a mapping error.
+//   - The same underlying state produces a DIFFERENT DOCUMENT depending on row
+//     order, and the document is signed. A report whose bytes depend on
+//     iteration order cannot be reproduced, and reproducibility is the whole
+//     claim this product makes.
+func TestOwaspControls_OneControlHasOneTitle(t *testing.T) {
+	type key struct{ framework, control string }
+	titles := map[key]map[string][]string{}
+	for cat, refs := range owaspControls {
+		for _, ref := range refs {
+			k := key{ref.framework, ref.control}
+			if titles[k] == nil {
+				titles[k] = map[string][]string{}
+			}
+			titles[k][ref.title] = append(titles[k][ref.title], cat)
+		}
+	}
+	for k, byTitle := range titles {
+		if len(byTitle) > 1 {
+			t.Errorf("%s %s has %d different titles, so the one in a signed report "+
+				"depends on which finding was processed first:", k.framework, k.control, len(byTitle))
+			for title, cats := range byTitle {
+				t.Errorf("    %q (from %v)", title, cats)
+			}
+		}
+	}
+}
+
+// The same findings in a different order must produce the same report. It is
+// signed: identical state has to hash identically.
+func TestBuildCompliance_IsOrderIndependent(t *testing.T) {
+	mk := func(owasp, severity, title, path string) findingRow {
+		r := findingRow{Method: "GET", PathTemplate: path}
+		r.Finding.OWASP = owasp
+		r.Finding.Severity = severity
+		r.Finding.Title = title
+		return r
+	}
+	rows := []findingRow{
+		mk("API1:2023", "critical", "bola", "/orders/{id}"),
+		mk("API9:2023", "warning", "shadow", "/internal/export"),
+		mk("API3:2023", "critical", "pii", "/customers/{id}"),
+		mk("API5:2023", "critical", "bfla", "/admin/users"),
+	}
+	reversed := make([]findingRow, len(rows))
+	for i, r := range rows {
+		reversed[len(rows)-1-i] = r
+	}
+
+	a, err := json.Marshal(buildCompliance(rows, nil, incidentEvidence{}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	b, err := json.Marshal(buildCompliance(reversed, nil, incidentEvidence{}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Equal(a, b) {
+		t.Errorf("the report differs with the rows reversed; a signed document "+
+			"cannot depend on iteration order\n  forward: %s\n  reversed: %s", a, b)
 	}
 }

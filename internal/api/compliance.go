@@ -35,10 +35,20 @@ type controlRef struct {
 
 // owaspControls maps an OWASP API category (e.g. "API1") to the framework
 // controls it evidences. Keyed by the bare category (the ":2023" suffix stripped).
+//
+// A control referenced from more than one category MUST carry the same title in
+// every reference. buildCompliance aggregates by {framework, control} and keeps
+// whichever title it saw first, so two titles for one control means the report
+// — which is signed — depends on the order rows came back from the database.
+// NIS2 Art. 21(2)(i) shipped that way: "Access control policies" under API1/API5
+// and "Asset management" under API9. Both are real parts of that article, which
+// covers human resources security, access control policies and asset management;
+// neither was the whole of it, and which one an auditor saw was a coin flip.
+// TestOwaspControls_OneControlHasOneTitle enforces this.
 var owaspControls = map[string][]controlRef{
 	"API1": { // Broken Object Level Authorization (BOLA / IDOR)
 		{framework: fwOWASP, control: "API1:2023", title: "Broken Object Level Authorization"},
-		{framework: fwNIS2, control: "Art. 21(2)(i)", title: "Access control policies"},
+		{framework: fwNIS2, control: "Art. 21(2)(i)", title: "Human resources security, access control policies and asset management"},
 		{framework: fwDORA, control: "Art. 9(4)(c)", title: "Logical access limited to what is required"},
 		{framework: fwDORA, control: "Art. 10(1)", title: "Prompt detection of anomalous activities", runtimeOnly: true},
 		{framework: fwISO, control: "A.8.3", title: "Information access restriction"},
@@ -57,14 +67,14 @@ var owaspControls = map[string][]controlRef{
 	},
 	"API5": { // Broken Function Level Authorization (BFLA)
 		{framework: fwOWASP, control: "API5:2023", title: "Broken Function Level Authorization"},
-		{framework: fwNIS2, control: "Art. 21(2)(i)", title: "Access control policies"},
+		{framework: fwNIS2, control: "Art. 21(2)(i)", title: "Human resources security, access control policies and asset management"},
 		{framework: fwDORA, control: "Art. 9(4)(c)", title: "Logical access limited to what is required"},
 		{framework: fwDORA, control: "Art. 10(1)", title: "Prompt detection of anomalous activities", runtimeOnly: true},
 		{framework: fwISO, control: "A.8.2", title: "Privileged access rights"},
 	},
 	"API9": { // Improper Inventory Management (shadow / undocumented APIs)
 		{framework: fwOWASP, control: "API9:2023", title: "Improper Inventory Management"},
-		{framework: fwNIS2, control: "Art. 21(2)(i)", title: "Asset management"},
+		{framework: fwNIS2, control: "Art. 21(2)(i)", title: "Human resources security, access control policies and asset management"},
 		{framework: fwDORA, control: "Art. 8(1)", title: "Identification and documentation of ICT assets"},
 		{framework: fwISO, control: "A.5.9", title: "Inventory of information and associated assets"},
 	},
@@ -279,9 +289,11 @@ func buildCompliance(rows []findingRow, abuse map[string]int, ev incidentEvidenc
 			if severityRank(severity) < severityRank(c.Severity) {
 				c.Severity = severity
 			}
-			if len(c.Issues) < maxIssuesPerControl {
-				c.Issues = append(c.Issues, issue)
-			}
+			// Collected unsorted here and ordered once the set is complete —
+			// see the sort below. Truncating during collection would make WHICH
+			// issues survive depend on arrival order, the same defect one level
+			// down.
+			c.Issues = append(c.Issues, issue)
 		}
 	}
 
@@ -361,6 +373,16 @@ func buildCompliance(rows []findingRow, abuse map[string]int, ev incidentEvidenc
 			}
 			return cs[i].Control < cs[j].Control
 		})
+		// Order the issues, then cut. Appending until full and stopping made the
+		// surviving issues a function of the order rows arrived in — and this
+		// document is signed, so it has to be reproducible from the same state
+		// rather than from the same query plan.
+		for _, c := range cs {
+			sort.Strings(c.Issues)
+			if len(c.Issues) > maxIssuesPerControl {
+				c.Issues = c.Issues[:maxIssuesPerControl]
+			}
+		}
 		rep.Frameworks = append(rep.Frameworks, complianceFramework{
 			Framework: fw, Controls: cs, NotEvidenced: gaps[fw],
 		})
