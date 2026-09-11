@@ -329,9 +329,11 @@ the backend):
 
 Several ordering decisions are worth calling out:
 
-- **`CleanHeaders` is first.** Internal identity headers (`X-Gateway-Subject`,
-  `X-Gateway-Roles`, etc.) must never be trusted from the client. Stripping them
-  before anything else runs guarantees that only AEGIS can set them.
+- **`TenantResolve` is first, `CleanHeaders` immediately after.** The tenant has
+  to be known before anything reads or writes tenant-scoped state. Then internal
+  identity headers (`X-Gateway-Subject`, `X-Gateway-Roles`, etc.), which must
+  never be trusted from the client, are stripped before any control reads one —
+  so only AEGIS can set them.
 - **Cheap, decisive rejections precede expensive analysis.** IP reputation,
   threat feed and rate limiting run before the WAF and before discovery. There is
   no point parsing a request body through the WAF for an IP that is already

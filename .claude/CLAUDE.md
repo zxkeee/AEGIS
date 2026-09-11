@@ -71,14 +71,21 @@ old chain.
 ### Middleware chain — order is load-bearing
 
 `BuildHandlerChain` (via `chainSteps`) in `internal/gateway/chain.go` assembles
-the chain; the **first listed is outermost**. The ordering is deliberate (e.g.
-`TenantResolve` must run first; `CleanHeaders` strips spoofed identity before
-anything trusts it; `Discovery` sits inside auth/DLP so it can enrich the
-observation with identity and PII signals, and outside the proxy so it captures
-the final status). Read
-that function before reordering anything. Each middleware lives in
-`internal/middleware/` and is a `func(http.Handler) http.Handler`; disabled
-features return `passthrough`.
+the chain; the **first listed is outermost**. The ordering is deliberate:
+`TenantResolve` runs first; `CleanHeaders` strips spoofed identity before
+anything trusts it; `WAF` runs before `Discovery` so blocked attacks never enter
+the catalog; `Discovery` sits **outside** `Auth` and `DLP` — it observes first
+and is enriched afterwards through the observation pointer in the context —
+and outside the proxy so it captures the final status.
+
+(That last point read "inside auth/DLP" here for some time, and was wrong. The
+order is now pinned by `TestChainSteps_OrderIsLoadBearing`, which states the
+consequence of breaking each rule; prose drifts, that test does not. Change the
+test when you change the order, and read its reasons before deciding the order
+was arbitrary.)
+
+Each middleware lives in `internal/middleware/` and is a
+`func(http.Handler) http.Handler`; disabled features return `passthrough`.
 
 ### State backends
 
