@@ -80,3 +80,60 @@ jobs:
       - name: Audit npm dependencies (marketing site)
         working-directory: web/v3
         run: npm audit --audit-level=high
+
+  # Nothing scanned the image AEGIS actually ships. gosec reads our Go source
+  # and govulncheck reads our module graph; neither sees the base image, the
+  # OS packages in it, or anything a Dockerfile instruction pulls in. The
+  # artefact a customer runs was the one part of the supply chain with no check
+  # at all.
+  image-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Build locally and scan the result rather than scanning a published tag:
+      # this gates the image BEFORE it is pushed, and scans exactly what this
+      # commit produces.
+      - name: Build the gateway image
+        run: docker build -t aegis-ci-scan:${{ github.sha }} .
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Installed from source under the project's Go toolchain and pinned to a
+      # release, the same way gosec and govulncheck are handled above — rather
+      # than a third-party action whose own supply chain we would then have to
+      # reason about.
+      - name: Install Trivy
+        run: go install github.com/aquasecurity/trivy/cmd/trivy@v0.58.2
+
+      # --ignore-unfixed: a CVE with no available fix cannot be actioned by
+      # updating, and failing on it would train everyone to ignore this job.
+      # Those are surfaced in the non-blocking listing below instead.
+      - name: Scan the image (blocking)
+        run: |
+          trivy image \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --format table \
+            aegis-ci-scan:${{ github.sha }}
+
+      - name: List unfixed findings (non-blocking)
+        if: always()
+        run: |
+          trivy image \
+            --severity HIGH,CRITICAL \
+            --exit-code 0 \
+            --format table \
+            aegis-ci-scan:${{ github.sha }}
+
+      # Secrets baked into a layer survive `rm` in a later instruction, so a
+      # filesystem scan of the build context is a different question from the
+      # image scan above — and .dockerignore is what stands between the two.
+      - name: Scan the repository for committed secrets
+        run: trivy fs --scanners secret --severity HIGH,CRITICAL --exit-code 1 .

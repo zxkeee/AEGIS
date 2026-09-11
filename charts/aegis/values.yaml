@@ -58,7 +58,8 @@ autoscaling:
 secrets:
   # Name of an existing K8s Secret containing all required keys:
   #   admin-secret, redis-password, jwt-secret (optional), forensic-dsn (optional),
-  #   propagation-secret (optional), sentinel-password (optional),
+  #   propagation-secret (optional), report-signing-key (optional),
+  #   consumer-salt (optional), sentinel-password (optional),
   #   oidc-client-id (optional), oidc-client-secret (optional),
   #   alert-webhook-url (optional)
   # When set, the values below are ignored.
@@ -92,6 +93,28 @@ secrets:
   # holds the other secret forge an audit report. Empty (the default) means
   # /api/report?sign=1 refuses rather than answering unsigned.
   reportSigningKey: ""
+  # consumerSalt keys the pseudonymous consumer catalog (AEGIS_CONSUMER_SALT).
+  # API keys and session ids come from small enough spaces that an unkeyed
+  # digest could be searched back to a live credential by anyone who can read
+  # the catalog, so the salt is what keeps the catalog irreversible.
+  #
+  # Nothing in this chart could set it before: the ConfigMap force-blanks
+  # security.consumer_id.salt (it must never render into a plaintext ConfigMap)
+  # and no environment variable was plumbed — so every Kubernetes deployment
+  # silently fell back to deriving it from the admin secret. Whoever held that
+  # secret could reverse the catalog, and rotating it renamed every consumer.
+  consumerSalt: ""
+  # rootEmail / rootPassword bootstrap the SUPER-ADMIN account on first boot
+  # (AEGIS_ROOT_EMAIL / AEGIS_ROOT_PASSWORD). Neither was reachable from this
+  # chart, so a Kubernetes install had no way to create a real account and the
+  # operator's only entry was the bearer secret — the thing the bootstrap exists
+  # to avoid. They take effect only when no users exist yet; afterwards they are
+  # ignored, so leaving them set across upgrades is harmless.
+  #
+  # config.ValidateRootBootstrap refuses a weak or half-set pair and the gateway
+  # will not start: this is the password of the account that owns every tenant.
+  rootEmail: ""
+  rootPassword: ""
   # sentinelPassword authenticates to Redis Sentinel when redis.sentinel is in
   # use (AEGIS_REDIS_SENTINEL_PASSWORD). Leave empty for a standalone Redis
   # (the default — see the redis sub-chart below).

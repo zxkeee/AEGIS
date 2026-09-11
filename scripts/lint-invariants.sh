@@ -173,6 +173,43 @@ else
   fi
 fi
 
+# ── Invariant 3b: every AEGIS_* env var the gateway reads is reachable from the
+#    Helm chart ────────────────────────────────────────────────────────────────
+#
+# Invariant 3 checks that a secret set the WRONG way cannot leak. This checks
+# the other half: that it can be set the RIGHT way at all.
+#
+# AEGIS_CONSUMER_SALT had no plumbing in this chart. The ConfigMap force-blanks
+# security.consumer_id.salt (invariant 3 requires exactly that), and no
+# environment variable carried it — so every Kubernetes deployment silently fell
+# back to deriving the salt from the admin secret. The salt is what makes the
+# consumer catalog irreversible: whoever held the admin secret could search the
+# catalog back to live API keys, and rotating that secret renamed every
+# consumer. Nothing failed, nothing warned; the value was simply unreachable.
+#
+# AEGIS_ROOT_EMAIL and AEGIS_ROOT_PASSWORD had the same gap, which left a
+# Kubernetes operator with no way to create a real account — only the bearer
+# secret the bootstrap exists to avoid.
+#
+# The list is derived from the source, not maintained by hand, so a new
+# AEGIS_* variable added to the gateway is caught here if the chart is not
+# updated in the same change.
+echo "invariant: every AEGIS_* env var the gateway reads is reachable from the Helm chart"
+DEPLOY=charts/aegis/templates/deployment.yaml
+# Deliberate exemptions, each with a reason. Not a way to silence the check:
+# adding a name here is a claim that the chart must NOT plumb it.
+#   AEGIS_LICENSE_PATH — a filesystem path, not a secret; the chart exposes it
+#                        as gateway.license_path in the ConfigMap instead.
+chartExempt="AEGIS_LICENSE_PATH"
+for envVar in $(grep -ohE 'AEGIS_[A-Z_]+' internal/config/config.go cmd/gateway/main.go | sort -u); do
+  case " $chartExempt " in *" $envVar "*) continue ;; esac
+  if ! grep -q "name: $envVar\b" "$DEPLOY"; then
+    echo "ERROR: $DEPLOY never sets $envVar — the gateway reads it, so a Kubernetes"
+    echo "       operator has no way to supply it and silently gets the fallback."
+    fail=1
+  fi
+done
+
 # ── Invariant 4: every payload-inspection WAF rule covers REQUEST_URI (no
 #    path blindness) ──────────────────────────────────────────────────────────
 #

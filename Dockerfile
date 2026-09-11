@@ -1,7 +1,7 @@
 # ── Build stage ────────────────────────────────────────────────────────────────
 # Pinned to the toolchain in go.mod (avoid silent compiler drift from a moving
 # golang:alpine tag).
-FROM golang:1.26-alpine@sha256:111d79159b2326f7e80c4a4706e1ba166acb0e2611df853955f3621828cd49e8 AS builder
+FROM golang:1.26-alpine@sha256:ce864e7223ac17b1775e6fd0b4c0db580c2eb50e7953a427916379e4b92a1628 AS builder
 
 WORKDIR /build
 
@@ -43,7 +43,7 @@ RUN set -eu; \
         -o gateway ./cmd/gateway
 
 # ── Runtime stage ──────────────────────────────────────────────────────────────
-FROM alpine:3.19@sha256:b58899f069c47216f6002a6850143dc6fae0d35eb8b0df9300bbe6327b9c2171
+FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
 RUN apk add --no-cache ca-certificates tzdata wget && \
     addgroup -S aegis && adduser -S -G aegis aegis
