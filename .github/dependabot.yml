@@ -1,0 +1,79 @@
+# Dependency update automation.
+#
+# SECURITY.md previously claimed this file existed. It did not, and the claim
+# survived several rewrites of that document — a process described but never
+# run is worse than none, because it is trusted.
+#
+# govulncheck and npm audit in security.yml tell us a dependency is vulnerable.
+# They do not update it. This does, and every update still has to pass the full
+# gate (race suite, coverage floors, gosec, govulncheck, invariants) before it
+# can merge.
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      # One PR for the routine bumps, so patch churn does not bury a security
+      # update in a stack of individual PRs.
+      go-minor-and-patch:
+        update-types: [minor, patch]
+
+  # web/ is a separate Go module and was invisible to every dependency check
+  # until it was added to security.yml explicitly.
+  - package-ecosystem: gomod
+    directory: /web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(web)"
+    groups:
+      go-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /web/console
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(console)"
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /web/v3
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(site)"
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  # Actions are pinned by commit SHA in this repository (see
+  # scripts/check-image-pins.sh and the workflow files). A pinned SHA never
+  # updates on its own, which is the point — and also means nothing would ever
+  # tell us a pinned action had a fix. Dependabot rewrites the SHA and the
+  # trailing version comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "build"

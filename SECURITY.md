@@ -30,19 +30,28 @@ reasoning, rather than leaving it open.
 
 ## What is actually run against this codebase
 
-Three CI workflows gate every push. They are the whole of the automated
-security process — there is no Dependabot, no Snyk and no nancy in this
-repository, and previous versions of this file described all three.
+CI gates every push. This is the whole of the automated security process —
+there is no Snyk and no nancy in this repository, and previous versions of this
+file described both.
 
 | Check | Where | What it does |
 |---|---|---|
 | `gosec` | `.github/workflows/security.yml` | Static analysis for insecure Go constructs |
 | `govulncheck` | `.github/workflows/security.yml` | Known CVEs in dependencies, reachability-aware |
+| `trivy image` | `.github/workflows/security.yml` | CVEs in the **shipped image** — base OS packages and the compiled binary's module graph. Blocking for HIGH/CRITICAL with a fix available; unfixed ones are listed, not enforced |
+| `trivy fs --scanners secret` | `.github/workflows/security.yml` | Credentials committed to the repository |
+| Dependabot | `.github/dependabot.yml` | Weekly updates for both Go modules, both npm lockfiles, GitHub Actions and the Dockerfile |
 | `golangci-lint` | `.github/workflows/lint.yml` | Both Go modules (root and `web/`) |
 | `go test -race` | `.github/workflows/test.yml` | Full suite under the race detector |
 | Coverage gate | `.github/workflows/test.yml` | Per-package floors that only ratchet up |
 | `npm audit` | preflight | Both lockfiles (`web/console`, `web/v3`) |
 | Repo invariants | `scripts/lint-invariants.sh` | Secrets that must never render into a ConfigMap, pinned image digests, no committed binaries |
+
+`govulncheck` and `trivy` answer different questions and both are needed:
+govulncheck is reachability-aware, so it stays silent about a vulnerable
+function nothing calls, while trivy reports on the version present. The image
+that shipped before this was written carried five HIGH/CRITICAL CVEs with fixes
+available, every one of them invisible to govulncheck.
 
 Run all of it locally before pushing:
 
