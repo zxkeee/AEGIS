@@ -128,7 +128,7 @@ func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Stor
 		{"BotProtection", middleware.BotProtection(cfg.Security.Bot, log, st)},
 		{"Challenge", middleware.Challenge(cfg.Security.Challenge, log, st)},
 		{"WAF", wafMW},
-		{"Discovery", middleware.Discovery(cfg.Security.Inventory, cat, log)}, // passive API discovery
+		{"Discovery", middleware.Discovery(cfg.Security.Inventory, cat, log, cfg.MirrorSink)}, // passive API discovery
 		{"Auth", authMW},
 		// Immediately after Auth so a verified JWT subject always wins, and
 		// before AbuseDetection, whose whole question is "did THIS consumer read
@@ -191,6 +191,20 @@ func BuildHandlerChain(cfg config.GatewayConfig, log *logger.Logger, st middlewa
 	for i, s := range steps {
 		mws[i] = s.mw
 	}
+
+	// In mirror-sink mode the chain terminates here instead of at the proxy:
+	// this process is receiving a COPY of somebody's traffic and must never
+	// forward it. Forwarding would double every request against their backend
+	// and replay every POST — the opposite of the guarantee that makes a
+	// mirrored deployment safe to accept.
+	//
+	// The proxy is still constructed above: it validates the route config, and
+	// the admin plane reads it for health and metrics wiring.
+	if cfg.MirrorSink {
+		log.Info("mirror sink enabled: requests are observed and discarded, never forwarded", nil)
+		return middleware.Chain(middleware.MirrorSink(), mws...), gw, nil
+	}
+
 	return middleware.Chain(gw, mws...), gw, nil
 }
 

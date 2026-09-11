@@ -947,3 +947,45 @@ func TestValidateRootBootstrap(t *testing.T) {
 		}
 	})
 }
+
+// Mirror-sink mode must refuse a configuration that claims to enforce.
+//
+// A mirrored request is a copy: the original was already answered by the
+// customer's own infrastructure, and nothing decided here reaches the caller.
+// A "blocking" control in this mode blocks nothing and writes a denial into a
+// log about a request that was served anyway — an operator reading it would
+// believe an attack was stopped when it was not.
+func TestValidate_MirrorSink(t *testing.T) {
+	t.Run("requires observe", func(t *testing.T) {
+		c := validBase()
+		c.MirrorSink = true
+		if err := Validate(c); err == nil {
+			t.Fatal("mirror_sink without observe must be refused: it would log denials " +
+				"for requests that were served by someone else")
+		}
+	})
+	t.Run("accepted with observe", func(t *testing.T) {
+		c := validBase()
+		c.MirrorSink = true
+		c.Observe = true
+		if err := Validate(c); err != nil {
+			t.Fatalf("mirror_sink with observe was refused: %v", err)
+		}
+	})
+	t.Run("refuses TLS termination", func(t *testing.T) {
+		c := validBase()
+		c.MirrorSink = true
+		c.Observe = true
+		c.TLS.Enabled = true
+		if err := Validate(c); err == nil {
+			t.Fatal("mirror_sink with tls.enabled must be refused: the mirroring proxy " +
+				"already terminated TLS, so any fingerprint here is this process's own")
+		}
+	})
+	t.Run("off changes nothing", func(t *testing.T) {
+		c := validBase()
+		if err := Validate(c); err != nil {
+			t.Fatalf("a config without mirror_sink was refused: %v", err)
+		}
+	})
+}

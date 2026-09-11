@@ -202,7 +202,7 @@ func (f *fakeCatalog) Record(o discovery.Observation) { f.obs = append(f.obs, o)
 func runDiscovery(cfg config.APIInventoryConfig, cat Catalog, nextStatus int) (*httptest.ResponseRecorder, *http.Request) {
 	_ = InitTrustedProxies(nil)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(nextStatus) })
-	h := Discovery(cfg, cat, fakeLogger{})(next)
+	h := Discovery(cfg, cat, fakeLogger{}, false)(next)
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/users/42", nil)
 	r.RemoteAddr = "1.2.3.4:5555"
 	rec := httptest.NewRecorder()
@@ -255,7 +255,7 @@ func TestDiscovery_Skips404(t *testing.T) {
 func runDiscoveryRequest(cfg config.APIInventoryConfig, cat Catalog, method, path, body string) *httptest.ResponseRecorder {
 	_ = InitTrustedProxies(nil)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	h := Discovery(cfg, cat, fakeLogger{})(next)
+	h := Discovery(cfg, cat, fakeLogger{}, false)(next)
 	var r *http.Request
 	if body != "" {
 		r = httptest.NewRequest(method, path, strings.NewReader(body))
@@ -348,7 +348,7 @@ func TestDiscovery_GraphQLBodyStillReachesUpstream(t *testing.T) {
 		gotBody = string(b)
 		w.WriteHeader(http.StatusOK)
 	})
-	h := Discovery(cfg, &fakeCatalog{}, fakeLogger{})(next)
+	h := Discovery(cfg, &fakeCatalog{}, fakeLogger{}, false)(next)
 	r := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(body))
 	r.RemoteAddr = "1.2.3.4:5555"
 	h.ServeHTTP(httptest.NewRecorder(), r)
@@ -380,7 +380,7 @@ func TestDiscovery_GraphQLOperationGetsPIIAttribution(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":{"user":{"card":"4111111111111111"}}}`))
 	})
 	// Discovery wraps DLP, matching the real chain's ordering.
-	h := Discovery(discCfg, cat, fakeLogger{})(DLP(dlpCfg, fakeLogger{}, &fakeStore{})(backend))
+	h := Discovery(discCfg, cat, fakeLogger{}, false)(DLP(dlpCfg, fakeLogger{}, &fakeStore{})(backend))
 
 	r := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"query GetUser { user(id: 1) { card } }"}`))
 	r.RemoteAddr = "1.2.3.4:1"
