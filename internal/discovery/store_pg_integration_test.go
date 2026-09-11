@@ -469,9 +469,35 @@ func TestPG_ListEndpoints_FiltersByPeriodOverlap(t *testing.T) {
 		if err := s.upsertEndpoint(ctx, a); err != nil {
 			t.Fatalf("upsertEndpoint %s: %v", id, err)
 		}
-		if _, err := s.db.Exec(
-			`UPDATE api_endpoints SET first_seen = $1, last_seen = $2 WHERE tenant_id = 'acme' AND id = $3`,
-			first.UTC(), last.UTC(), id); err != nil {
+		// Through withTenantTx, not s.db directly. api_endpoints is under RLS
+		// with a fail-closed policy keyed on the app.tenant_id GUC, so a bare
+		// UPDATE matches no rows and reports no error — it just silently does
+		// nothing. This test used to do exactly that: the lifetimes were never
+		// written, every endpoint kept its insert-time timestamps, and the
+		// assertions still passed because the CI role is a superuser and
+		// bypasses RLS entirely. Against a role that does not (which is what
+		// production looks like) it failed, and the failure was real.
+		//
+		// RowsAffected is checked for the same reason: a silent zero must never
+		// again look like a successful write.
+		if err := s.withTenantTx(ctx, "acme", func(tx *sql.Tx) error {
+			res, err := tx.ExecContext(ctx,
+				`UPDATE api_endpoints SET first_seen = $1, last_seen = $2
+				 WHERE tenant_id = 'acme' AND id = $3`,
+				first.UTC(), last.UTC(), id)
+			if err != nil {
+				return err
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if n != 1 {
+				t.Fatalf("set lifetime %s: %d rows affected, want 1 "+
+					"(an RLS-blocked UPDATE reports success and changes nothing)", id, n)
+			}
+			return nil
+		}); err != nil {
 			t.Fatalf("set lifetime %s: %v", id, err)
 		}
 	}

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path"
+	"strings"
 	"time"
 )
 
@@ -14,6 +16,40 @@ func main() {
 
 		// Логгируем, что бекенд получил запрос
 		fmt.Printf("[Backend] Received %s %s\n", r.Method, r.URL.Path)
+
+		// A customer path returns personal and card data, so the stand can
+		// exercise the controls that only fire on sensitive responses: DLP
+		// masking, the PII counters behind the catalog, and the API3
+		// "sensitive data without authentication" finding. Without a response
+		// that contains any, those paths were unreachable on this stand and a
+		// live check of them had to be assembled by hand every time.
+		//
+		// The values are obviously synthetic (4111… is the standard Visa test
+		// number) and this backend is a test fixture, never shipped.
+		if strings.Contains(r.URL.Path, "/customers/") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":      strings.TrimPrefix(path.Base(r.URL.Path), "customers/"),
+				"name":    "Alice Example",
+				"email":   "alice@example.com",
+				"phone":   "415-555-0142",
+				"card":    "4111111111111111",
+				"user_id": 7,
+				"path":    r.URL.Path,
+			})
+			return
+		}
+
+		// An order carries an owner id, which is what object-ownership
+		// (BOLA) detection compares against the verified caller.
+		if strings.Contains(r.URL.Path, "/orders/") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"order_id": path.Base(r.URL.Path),
+				"user_id":  7,
+				"total":    "42.00",
+				"path":     r.URL.Path,
+			})
+			return
+		}
 
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":  "success",
