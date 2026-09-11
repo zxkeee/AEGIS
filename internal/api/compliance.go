@@ -377,10 +377,16 @@ func buildCompliance(rows []findingRow, abuse map[string]int, ev incidentEvidenc
 		// surviving issues a function of the order rows arrived in — and this
 		// document is signed, so it has to be reproducible from the same state
 		// rather than from the same query plan.
-		for _, c := range cs {
-			sort.Strings(c.Issues)
-			if len(c.Issues) > maxIssuesPerControl {
-				c.Issues = c.Issues[:maxIssuesPerControl]
+		// By index. `for _, c := range cs` gives a COPY of the struct, and cs is
+		// []complianceControl, not []*complianceControl — so `c.Issues = …`
+		// assigned to the copy and the cap never applied. sort.Strings still
+		// worked (a slice header copy shares its backing array), which is why
+		// this looked right: the ordering half of the loop did what it said and
+		// the truncating half silently did nothing.
+		for i := range cs {
+			sort.Strings(cs[i].Issues)
+			if len(cs[i].Issues) > maxIssuesPerControl {
+				cs[i].Issues = cs[i].Issues[:maxIssuesPerControl]
 			}
 		}
 		rep.Frameworks = append(rep.Frameworks, complianceFramework{

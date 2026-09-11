@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -446,5 +447,48 @@ func TestBuildCompliance_IsOrderIndependent(t *testing.T) {
 	if !bytes.Equal(a, b) {
 		t.Errorf("the report differs with the rows reversed; a signed document "+
 			"cannot depend on iteration order\n  forward: %s\n  reversed: %s", a, b)
+	}
+}
+
+// The per-control issue cap must actually bound the list.
+//
+// It did not. The truncation ran inside `for _, c := range cs`, which copies
+// each struct because cs is []complianceControl — so the assignment updated a
+// copy and every control carried its full list. A report from a busy tenant
+// embedded hundreds of issues per control and nothing noticed, because the
+// order-independence test that covers this loop uses four findings and the cap
+// is eight.
+//
+// So: more findings than the cap, on one OWASP category, so every control it
+// maps to is over the limit.
+func TestBuildCompliance_IssueListIsCapped(t *testing.T) {
+	rows := make([]findingRow, 0, maxIssuesPerControl*3)
+	for i := 0; i < maxIssuesPerControl*3; i++ {
+		r := findingRow{Method: "GET", PathTemplate: fmt.Sprintf("/p%02d", i)}
+		r.Finding.OWASP = "API1:2023"
+		r.Finding.Severity = "critical"
+		r.Finding.Title = fmt.Sprintf("finding-%02d", i)
+		rows = append(rows, r)
+	}
+
+	rep := buildCompliance(rows, nil, incidentEvidence{})
+	seen := 0
+	for _, f := range rep.Frameworks {
+		for _, c := range f.Controls {
+			seen++
+			if len(c.Issues) > maxIssuesPerControl {
+				t.Errorf("%s %s carries %d issues, cap is %d",
+					f.Framework, c.Control, len(c.Issues), maxIssuesPerControl)
+			}
+			// Count is the honest total and must NOT be capped — an auditor
+			// needs to know the list was trimmed, not that it was short.
+			if c.Count != maxIssuesPerControl*3 {
+				t.Errorf("%s %s count = %d, want the full %d",
+					f.Framework, c.Control, c.Count, maxIssuesPerControl*3)
+			}
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no controls were produced; the fixture no longer exercises the cap")
 	}
 }
