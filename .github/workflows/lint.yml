@@ -107,3 +107,36 @@ jobs:
             echo "::error::dependencies describe."
             exit 1
           fi
+
+  # web/v3 is the marketing site. Until now CI only ran `npm audit` against it,
+  # so nothing ever built it — and a dependency bump that makes it uninstallable
+  # passed every check.
+  #
+  # That is not hypothetical. Two Dependabot PRs were green on this repository
+  # while `npm ci` failed outright: react-dom 19 against react 18 (#47), and
+  # @vitejs/plugin-react 6 requiring vite 8 against vite 6 (#48). Both were
+  # caught by hand. The next one would not have been.
+  #
+  # No artifact is kept: the site is deployed separately. The question this job
+  # answers is only "does it still install and build", which is the question the
+  # audit-only setup could not ask.
+  site-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/v3/package-lock.json
+
+      # `npm ci` is the check, not a preamble to it: a peer-dependency conflict
+      # fails here, which is how both of the PRs above should have failed.
+      - name: Install and build
+        working-directory: web/v3
+        run: |
+          npm ci
+          npm run build
