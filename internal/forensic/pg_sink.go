@@ -66,6 +66,40 @@ CREATE POLICY tenant_isolation ON forensic_logs
       OR current_setting('app.tenant_id', true) = '*')
   WITH CHECK (tenant_id = current_setting('app.tenant_id', true)
       OR current_setting('app.tenant_id', true) = '*');
+
+-- Integrity seals over the log (see seal.go). One row per tenant per period,
+-- carrying the Merkle root of the entries in it and the previous seal's root.
+--
+-- Deliberately NOT touched by the retention sweep. A seal is ~200 bytes and
+-- outliving the entries it covers is the entire point: the question an auditor
+-- asks is "was anything removed", and the answer has to survive the removal of
+-- what it describes.
+CREATE TABLE IF NOT EXISTS forensic_seals (
+	id           BIGSERIAL PRIMARY KEY,
+	tenant_id    TEXT        NOT NULL,
+	period_start TIMESTAMPTZ NOT NULL,
+	period_end   TIMESTAMPTZ NOT NULL,
+	entry_count  BIGINT      NOT NULL,
+	merkle_root  TEXT        NOT NULL,
+	prev_root    TEXT        NOT NULL,
+	signature    TEXT        NOT NULL DEFAULT '',
+	key_id       TEXT        NOT NULL DEFAULT '',
+	sealed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	-- One seal per period per tenant. A second seal for the same window would
+	-- let an operator keep the convenient one and drop the other.
+	UNIQUE (tenant_id, period_start)
+);
+CREATE INDEX IF NOT EXISTS idx_forensic_seals_period
+  ON forensic_seals (tenant_id, period_start DESC);
+
+ALTER TABLE forensic_seals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE forensic_seals FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON forensic_seals;
+CREATE POLICY tenant_isolation ON forensic_seals
+  USING (tenant_id = current_setting('app.tenant_id', true)
+      OR current_setting('app.tenant_id', true) = '*')
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)
+      OR current_setting('app.tenant_id', true) = '*');
 `
 
 // NewPGSink creates a new PostgreSQL forensic log sink.
