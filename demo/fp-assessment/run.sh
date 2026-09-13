@@ -69,7 +69,7 @@ fetch() {
 fetch /api/findings   "$HERE/out/findings.json"
 fetch /api/catalog    "$HERE/out/catalog.json"
 fetch /api/consumers  "$HERE/out/consumers.json"
-fetch /api/posture    "$HERE/out/posture.json"
+fetch /api/posture/summary "$HERE/out/posture.json"
 fetch "/api/block-log?limit=1000" "$HERE/out/block-log.json"
 cp "$BIN/gateway.log" "$HERE/out/gateway.log" 2>/dev/null || true
 echo "  экспорт в $HERE/out/"
