@@ -361,3 +361,146 @@ func TestSealWorker_IsIdempotent(t *testing.T) {
 		t.Errorf("not intact after a repeated run: %s", checks[0].Detail)
 	}
 }
+
+// Run ticks and Stop ends it. Covered because the worker's lifecycle is how
+// seals actually get written in production — sealDue being correct is no use if
+// nothing calls it, and a Stop that does not stop leaks a goroutine per reload.
+func TestSealWorker_RunAndStop(t *testing.T) {
+	s := sealSink(t)
+	ctx := context.Background()
+	h0 := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Hour)
+	seedEntries(t, s, "acme", h0, 2)
+
+	// A short period so the first immediate pass has something closed to seal.
+	w := NewSealWorker(s, SealSchedule{Period: time.Hour, Lag: time.Minute},
+		nil, s.TenantsWithEntries, nopLogger{})
+
+	done := make(chan struct{})
+	go func() { w.Run(ctx); close(done) }()
+
+	// Run seals once immediately, before the first tick.
+	deadline := time.After(5 * time.Second)
+	for {
+		checks, err := s.VerifySeals(ctx, "acme")
+		if err != nil {
+			t.Fatalf("VerifySeals: %v", err)
+		}
+		if len(checks) > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("Run did not seal the closed period within 5s")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	w.Stop()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not end Run: a goroutine leaks on every config reload")
+	}
+}
+
+// Run must also end when its context is cancelled — shutdown path.
+func TestSealWorker_RunStopsOnContextCancel(t *testing.T) {
+	s := sealSink(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	w := NewSealWorker(s, SealSchedule{Period: time.Hour, Lag: time.Minute},
+		nil, s.TenantsWithEntries, nopLogger{})
+	done := make(chan struct{})
+	go func() { w.Run(ctx); close(done) }()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run ignored context cancellation")
+	}
+}
+
+// Defaults: a zero Period or Lag must not produce a worker that ticks
+// constantly or seals a window still being written to.
+func TestNewSealWorker_Defaults(t *testing.T) {
+	w := NewSealWorker(nil, SealSchedule{}, nil, nil, nopLogger{})
+	if w.cfg.Period != time.Hour {
+		t.Errorf("period = %v, want 1h", w.cfg.Period)
+	}
+	if w.cfg.Lag != 5*time.Minute {
+		t.Errorf("lag = %v, want 5m", w.cfg.Lag)
+	}
+}
+
+// A tenant listing that fails must not take the worker down, and must not seal
+// a partial set of tenants as though the rest had nothing to seal.
+func TestSealWorker_SurvivesATenantListingFailure(t *testing.T) {
+	s := sealSink(t)
+	w := NewSealWorker(s, SealSchedule{Period: time.Hour, Lag: time.Minute}, nil,
+		func(context.Context) ([]string, error) { return nil, errors.New("db down") },
+		nopLogger{})
+	// Must return rather than panic or block.
+	w.sealDue(context.Background(), time.Now())
+}
+
+// A tenant with no entries has nothing to commit to, and must not get a seal
+// over an empty window that would then conflict with its first real period.
+func TestSealWorker_SkipsATenantWithNoEntries(t *testing.T) {
+	s := sealSink(t)
+	ctx := context.Background()
+	w := NewSealWorker(s, SealSchedule{Period: time.Hour, Lag: time.Minute}, nil,
+		func(context.Context) ([]string, error) { return []string{"empty-tenant"}, nil },
+		nopLogger{})
+	w.sealDue(ctx, time.Now())
+
+	checks, err := s.VerifySeals(ctx, "empty-tenant")
+	if err != nil {
+		t.Fatalf("VerifySeals: %v", err)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("sealed %d periods for a tenant with no entries", len(checks))
+	}
+}
+
+// SealPeriod refuses a period that is not a period.
+func TestSealPeriod_RefusesAnEmptyWindow(t *testing.T) {
+	s := sealSink(t)
+	at := time.Date(2026, 9, 13, 6, 0, 0, 0, time.UTC)
+	if _, err := s.SealPeriod(context.Background(), "acme", at, at, nil); err == nil {
+		t.Fatal("a zero-length period was sealed")
+	}
+	if _, err := s.SealPeriod(context.Background(), "acme", at, at.Add(-time.Hour), nil); err == nil {
+		t.Fatal("a backwards period was sealed")
+	}
+}
+
+// A signed seal carries the signature and the key id that produced it.
+func TestSealPeriod_SignsWhenASignerIsGiven(t *testing.T) {
+	s := sealSink(t)
+	ctx := context.Background()
+	start := time.Date(2026, 9, 13, 4, 0, 0, 0, time.UTC)
+	seedEntries(t, s, "acme", start, 2)
+
+	seal, err := s.SealPeriod(ctx, "acme", start, start.Add(time.Hour), stubSigner{})
+	if err != nil {
+		t.Fatalf("SealPeriod: %v", err)
+	}
+	if seal.Signature == "" || seal.KeyID == "" {
+		t.Fatalf("seal is unsigned: sig=%q keyID=%q", seal.Signature, seal.KeyID)
+	}
+	// And it survives the round trip through the database.
+	checks, err := s.VerifySeals(ctx, "acme")
+	if err != nil {
+		t.Fatalf("VerifySeals: %v", err)
+	}
+	if checks[0].Seal.Signature != seal.Signature {
+		t.Error("the signature did not round-trip")
+	}
+}
+
+type stubSigner struct{}
+
+func (stubSigner) SignBytes(payload []byte) (string, string) {
+	return "sig-" + string(payload[:8]), "key-1"
+}

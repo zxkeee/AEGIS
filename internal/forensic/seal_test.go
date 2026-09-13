@@ -149,3 +149,54 @@ func TestSealPayload_CommitsToEveryField(t *testing.T) {
 		}
 	}
 }
+
+// short truncates a root for a message a human reads. It is in the failure
+// path of every chain-break report, so a panic here would replace "the chain is
+// broken" with a crash at the moment an operator most needs the message.
+func TestShort(t *testing.T) {
+	cases := map[string]string{
+		"":              "",
+		"abc":           "abc",
+		"123456789012":  "123456789012",
+		"1234567890123": "123456789012…",
+	}
+	for in, want := range cases {
+		if got := short(in); got != want {
+			t.Errorf("short(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// An empty period still gets a root. "Nothing happened in this hour" is a claim
+// worth committing to: without it, a period with no entries is
+// indistinguishable from a period whose entries were all deleted.
+func TestMerkleRoot_EmptyPeriodHasAStableRoot(t *testing.T) {
+	a := merkleRoot(nil)
+	b := merkleRoot([][]byte{})
+	if a == "" {
+		t.Fatal("an empty period produced no root")
+	}
+	if a != b {
+		t.Error("nil and empty produced different roots")
+	}
+	// And it must differ from a period that has one entry.
+	if a == merkleRoot(digestsFor(1)) {
+		t.Error("an empty period and a one-entry period share a root")
+	}
+}
+
+// SealSchedule defaults are applied by the constructor, not assumed by callers.
+func TestNewSealWorker_AppliesDefaults(t *testing.T) {
+	for _, in := range []SealSchedule{
+		{},
+		{Period: -time.Hour, Lag: -time.Minute},
+		{Period: 0, Lag: 0},
+	} {
+		w := NewSealWorker(nil, in, nil, nil, nopLogger{})
+		if w.cfg.Period <= 0 || w.cfg.Lag <= 0 {
+			t.Errorf("NewSealWorker(%+v) left period=%v lag=%v; a non-positive period "+
+				"makes the ticker panic and a non-positive lag seals an open window",
+				in, w.cfg.Period, w.cfg.Lag)
+		}
+	}
+}
