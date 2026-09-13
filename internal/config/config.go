@@ -223,7 +223,8 @@ type GatewayConfig struct {
 	OIDC OIDCConfig `yaml:"oidc"`
 	// Retention bounds the growth of the PostgreSQL tables that would otherwise
 	// grow without limit (forensic logs, admin audit log, consumer graph).
-	Retention RetentionConfig `yaml:"retention"`
+	Retention    RetentionConfig    `yaml:"retention"`
+	ForensicSeal ForensicSealConfig `yaml:"forensic_seal"`
 }
 
 // ApplyObserveMode coerces the security configuration into a guaranteed
@@ -323,6 +324,31 @@ func anyRouteRequiresAuthCfg(routes []RouteConfig) bool {
 // (api_endpoints) is intentionally NOT pruned: it is bounded by path
 // normalisation and is the valuable inventory. A per-table window of 0 keeps
 // that table forever (sweep skips it).
+// ForensicSealConfig controls periodic integrity seals over the forensic log.
+//
+// The signed compliance report proves the document was not altered after it was
+// produced. It says nothing about the log the document was computed from, and
+// that log is an ordinary table the retention sweep deletes from on a schedule.
+// "What stops you removing the inconvenient rows before generating the report"
+// had no answer; a seal is one, for a period rather than a row.
+type ForensicSealConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Period is the window each seal covers. Default 1h.
+	//
+	// The trade is legibility against precision: a day-long period means an
+	// auditor learns "something in Tuesday changed", an hour narrows it to the
+	// hour. Shorter costs one small row per tenant per period and nothing else.
+	Period time.Duration `yaml:"period"`
+	// Lag is how long to wait after a period closes before sealing it. Default
+	// 5m.
+	//
+	// Not padding: the forensic sink batches writes, so an entry timestamped
+	// 10:59 can land in the table after 11:00. Sealing 10:00–11:00 immediately
+	// would commit to a window still being written to, and the late entry would
+	// then read as "added after sealing" forever.
+	Lag time.Duration `yaml:"lag"`
+}
+
 type RetentionConfig struct {
 	Enabled bool `yaml:"enabled"`
 	// Interval is how often the sweep runs. Default 24h when enabled.

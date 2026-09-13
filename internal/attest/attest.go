@@ -123,6 +123,21 @@ func NewSigner(b64 string) (*Signer, error) {
 
 // KeyID is the short identifier of the signing key. Publish it alongside the
 // public key so a reader can tell which key should have signed a document.
+// SignBytes signs an arbitrary payload and returns the hex signature with the
+// key id that produced it.
+//
+// Attest wraps a JSON document in an envelope; this signs bytes the caller has
+// already made canonical. The forensic seal uses it, because a seal is a row in
+// a table rather than a document and its canonical form is defined where it is
+// written (forensic.sealPayload).
+//
+// The key id travels with the signature for the same reason it does in an
+// envelope: a signature is only meaningful against a key the reader pinned
+// elsewhere, and the id is how they tell whether this is that key.
+func (s *Signer) SignBytes(payload []byte) (signature string, keyID string) {
+	return hex.EncodeToString(ed25519.Sign(s.priv, payload)), s.KeyID()
+}
+
 func (s *Signer) KeyID() string { return KeyIDOf(s.pub) }
 
 // PublicKey returns the base64 verifying key.

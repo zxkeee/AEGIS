@@ -387,3 +387,42 @@ func TestKeyID_Is128Bits(t *testing.T) {
 		t.Error("distinct keys produced the same id")
 	}
 }
+
+// SignBytes signs a payload the caller has already made canonical, and reports
+// which key did it. The forensic seal uses it: a seal is a table row, not a
+// document, so its canonical form is defined where it is written.
+func TestSignBytes(t *testing.T) {
+	s := testSigner(t, 0x42)
+
+	sig, keyID := s.SignBytes([]byte("aegis-forensic-seal-v1\nacme\nroot"))
+	if sig == "" {
+		t.Fatal("empty signature")
+	}
+	if keyID != s.KeyID() {
+		t.Errorf("key id = %q, want %q — a signature is only meaningful against "+
+			"a key the reader pinned, and the id is how they tell", keyID, s.KeyID())
+	}
+
+	// It must verify under this key's public half, and only this one.
+	raw, err := hex.DecodeString(sig)
+	if err != nil {
+		t.Fatalf("signature is not hex: %v", err)
+	}
+	if !ed25519.Verify(s.pub, []byte("aegis-forensic-seal-v1\nacme\nroot"), raw) {
+		t.Fatal("the signature does not verify under the signer's own key")
+	}
+
+	// One byte different, one signature different — otherwise a seal could be
+	// moved between periods.
+	other, _ := s.SignBytes([]byte("aegis-forensic-seal-v1\nacme\nroot2"))
+	if other == sig {
+		t.Error("two different payloads produced the same signature")
+	}
+	if !ed25519.Verify(s.pub, []byte("aegis-forensic-seal-v1\nacme\nroot"), raw) {
+		t.Fatal("verification is not stable")
+	}
+	// And the altered payload must NOT verify against the original signature.
+	if ed25519.Verify(s.pub, []byte("aegis-forensic-seal-v1\nacme\nroot2"), raw) {
+		t.Fatal("a modified payload verified under the original signature")
+	}
+}

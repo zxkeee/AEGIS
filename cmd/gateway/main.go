@@ -17,6 +17,7 @@ import (
 
 	"api-gateway/internal/alert"
 	"api-gateway/internal/api"
+	"api-gateway/internal/attest"
 	"api-gateway/internal/audit"
 	"api-gateway/internal/config"
 	"api-gateway/internal/discovery"
@@ -245,6 +246,43 @@ func main() {
 				"consumer_idle_days": cfg.Retention.ConsumerIdleDays,
 			})
 		}
+	}
+
+	// ── Forensic integrity seals ──────────────────────────────────────────────
+	// The signed compliance report proves the DOCUMENT was not altered after it
+	// was produced; it says nothing about the log the document was computed
+	// from, and the retention sweep above deletes from that log on a schedule.
+	// A seal commits to each period's contents so a later deletion, addition or
+	// edit is detectable. See docs/forensic-seals.md for what that does and does
+	// not prove.
+	sealCtx, stopSeals := context.WithCancel(context.Background())
+	defer stopSeals()
+	if cfg.ForensicSeal.Enabled && fSink != nil {
+		var sealSigner forensic.Signer
+		if cfg.ReportSigningKey != "" {
+			if sg, serr := attest.NewSigner(cfg.ReportSigningKey); serr == nil {
+				sealSigner = sg
+			} else {
+				// Not fatal, and not silent: unsigned seals still detect an
+				// edit made through the database, which is the common case.
+				// They do not survive an operator who rewrites the chain.
+				log.Error("forensic seals: signing key unusable, seals will be unsigned",
+					map[string]any{"error": serr.Error()})
+			}
+		} else {
+			log.Warn("forensic seals: no report signing key configured, seals are unsigned "+
+				"(they detect edits made through the database, not a rewritten chain)", nil)
+		}
+		sw := forensic.NewSealWorker(fSink,
+			forensic.SealSchedule{Period: cfg.ForensicSeal.Period, Lag: cfg.ForensicSeal.Lag},
+			sealSigner, fSink.TenantsWithEntries, log)
+		defer sw.Stop()
+		go sw.Run(sealCtx)
+		log.Info("forensic integrity seals enabled", map[string]any{
+			"period": cfg.ForensicSeal.Period.String(),
+			"lag":    cfg.ForensicSeal.Lag.String(),
+			"signed": sealSigner != nil,
+		})
 	}
 
 	// ── OIDC single sign-on (admin console) ───────────────────────────────────
