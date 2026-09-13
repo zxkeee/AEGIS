@@ -14,9 +14,16 @@ func hasFinding(fs []Finding, code string) *Finding {
 	return nil
 }
 
-// PII + observed anonymous access = confirmed critical exposure (API3/API2).
+// PII + observed anonymous access = confirmed exposure (API3/API2), graded by
+// the class of data that was exposed.
+//
+// The fixture now names the data type, because it decides the grade. It used to
+// leave PIITypes empty and assert critical, which was true of every exposure
+// then and is true of card data now — see
+// TestDetectFindings_SeverityFollowsTheDataClass for the reasoning and
+// demo/fp-assessment for the measurement that forced it.
 func TestFindings_PIIWithAnon_Critical(t *testing.T) {
-	e := Endpoint{PIICount: 5, AnonCount: 3}
+	e := Endpoint{PIICount: 5, AnonCount: 3, PIITypes: []string{"credit_card"}}
 	fs := DetectFindings(e, Controls{AuthRequired: false}, true)
 	f := hasFinding(fs, "sensitive_data_no_auth")
 	if f == nil {
@@ -134,5 +141,83 @@ func TestDetectFindings_DeclareTheirEvidenceProvenance(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Severity follows what was exposed, not merely that something was.
+//
+// Measured against a real third-party API (demo/fp-assessment, Codeberg), the
+// old constant produced ten critical findings, every one of them "this endpoint
+// returns committer email addresses to anonymous callers" — on a public code
+// host, where those addresses are in the commit objects by design.
+//
+// A grade that is wrong in the alarming direction is not the safe choice: ten
+// criticals that are all the same benign fact teach an operator to skim, and
+// the eleventh is a card number.
+func TestDetectFindings_SeverityFollowsTheDataClass(t *testing.T) {
+	base := Endpoint{
+		ID: "GET:/x", Method: "GET", PathTemplate: "/x",
+		RequestCount: 10, PIICount: 10, AnonCount: 10,
+	}
+
+	cases := []struct {
+		name     string
+		types    []string
+		want     string
+		because  string
+	}{
+		{"email alone", []string{"email"}, "warning",
+			"a public profile or a commit author is frequently deliberate"},
+		{"phone alone", []string{"phone"}, "warning", "same"},
+		{"card", []string{"credit_card"}, "critical",
+			"there is no ordinary reason to serve a card number to an anonymous caller"},
+		{"health identifier", []string{"npi"}, "critical", "PHI carries its own regime"},
+		{"card mixed with email", []string{"email", "credit_card"}, "critical",
+			"a mixture grades by its worst class"},
+		{"ssn", []string{"ssn"}, "warning",
+			"ssn is classified PII by internal/classify; if that changes, this " +
+				"expectation changes with it"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := base
+			e.PIITypes = c.types
+			got := DetectFindings(e, Controls{}, true)
+
+			var found *Finding
+			for i := range got {
+				if got[i].Code == "sensitive_data_no_auth" {
+					found = &got[i]
+					break
+				}
+			}
+			if found == nil {
+				t.Fatalf("no sensitive_data_no_auth finding for %v — the detection "+
+					"itself must not change, only its grade", c.types)
+			}
+			if found.Severity != c.want {
+				t.Errorf("severity = %q, want %q (%s)", found.Severity, c.want, c.because)
+			}
+		})
+	}
+}
+
+// The finding must still fire for every class: grading is not filtering. An
+// exposure that is merely a warning is still an exposure, and an operator who
+// decides it is deliberate should make that decision from a list, not from
+// silence.
+func TestDetectFindings_GradingDoesNotSuppress(t *testing.T) {
+	e := Endpoint{
+		ID: "GET:/x", Method: "GET", PathTemplate: "/x",
+		RequestCount: 5, PIICount: 5, AnonCount: 5, PIITypes: []string{"email"},
+	}
+	got := DetectFindings(e, Controls{}, true)
+	var codes []string
+	for _, f := range got {
+		codes = append(codes, f.Code)
+	}
+	if len(got) == 0 {
+		t.Fatalf("an email exposure produced no finding at all; codes=%v", codes)
 	}
 }

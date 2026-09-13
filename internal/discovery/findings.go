@@ -85,6 +85,40 @@ func countersOnly() EvidenceRef {
 // v1 focuses on the highest-value, data-centric signal — sensitive data exposed
 // without authentication (OWASP API3 Excessive Data Exposure + API2 Broken
 // Authentication) — built entirely on counters the catalog already maintains.
+// exposureSeverity grades a data exposure by WHAT was exposed, not merely that
+// something was.
+//
+// Every sensitive_data finding used to be critical. Measured against a real
+// third-party API (demo/fp-assessment, Codeberg), that produced ten critical
+// findings, all of them "this endpoint returns committer email addresses to
+// anonymous callers" — on a public code host, where those addresses are in the
+// commit objects by design and the API exists to serve them.
+//
+// The detection was right and the grade was wrong, and a grade that is wrong in
+// the alarming direction is not the safe option: an operator who finds ten
+// criticals that are all the same benign fact learns to skim the list, and the
+// eleventh — an actual card number — is skimmed with it.
+//
+// So severity follows the data class:
+//
+//   - PCI (card numbers) or PHI (health identifiers) reaching an unauthenticated
+//     caller is critical. There is no ordinary reason for either, and both carry
+//     their own regulatory regime.
+//   - Ordinary PII — an email address, a phone number — is a warning. It is
+//     frequently deliberate (a public profile, a commit author, a support
+//     contact) and the operator is the only one who can say which it is.
+//
+// A mixture grades by its worst class: an endpoint returning both a card and an
+// email is critical, because the card is.
+func exposureSeverity(piiTypes []string) string {
+	for _, cat := range classify.Categories(piiTypes) {
+		if cat == classify.CategoryPCI || cat == classify.CategoryPHI {
+			return "critical"
+		}
+	}
+	return "warning"
+}
+
 func DetectFindings(e Endpoint, c Controls, matched bool) []Finding {
 	var out []Finding
 
@@ -97,7 +131,7 @@ func DetectFindings(e Endpoint, c Controls, matched bool) []Finding {
 			out = append(out, Finding{
 				Code:     "sensitive_data_no_auth",
 				OWASP:    "API3:2023",
-				Severity: "critical",
+				Severity: exposureSeverity(e.PIITypes),
 				Title:    "Sensitive data exposed to unauthenticated callers",
 				Why: "endpoint returned " + label + " on " + strconv.FormatInt(e.PIICount, 10) +
 					" response(s) while " + strconv.FormatInt(e.AnonCount, 10) +

@@ -57,8 +57,34 @@ whether the inventory looks like an API or like a request log.
 
 The residual 10 findings are `sensitive_data_no_auth` on endpoints that really
 do return committer email addresses to anonymous callers. The detection is
-correct; calling it *critical* on a public code host is not. That is the
-severity-and-context problem, and it is still open.
+correct; calling it *critical* on a public code host was not.
+
+**Fixed 2026-09-14.** Severity now follows the data class: PCI (card numbers)
+and PHI stay critical, ordinary PII — an email, a phone number — is a warning.
+An email served to an anonymous caller is frequently deliberate (a public
+profile, a commit author, a support address) and only the operator can say which
+it is; a card number never is. A mixture grades by its worst class.
+
+The same run now produces **10 findings, all warning**. The detection did not
+change — the same ten endpoints, the same code — only the grade. That is the
+intended outcome: grading is not filtering, and an exposure an operator decides
+is deliberate should be decided from a list rather than from silence.
+
+Why this mattered more than it looks: ten criticals that are all the same benign
+fact teach an operator to skim the list, and the eleventh finding is the card
+number.
+
+### Two things the re-run surfaced
+
+**193 of 1036 requests came back 409** from Codeberg (837×200, 6×404,
+193×409). Forgejo answers 409 for some repository states, and the pacing is
+already conservative, so this is the upstream's behaviour rather than the
+gateway's — but it means the effective sample is ~837 requests, not 1036. Worth
+knowing before quoting the numbers.
+
+**The posture export never worked.** `run.sh` fetched `/api/posture`; the route
+is `/api/posture/summary`. It had been writing an empty file and printing a
+failure line nobody read since the script was written. Fixed.
 
 ## Keeping it honest
 
