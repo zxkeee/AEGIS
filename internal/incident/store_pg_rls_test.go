@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"api-gateway/internal/pgtest"
 )
 
 // asRestrictedRole returns a store connected as a freshly-created role that
@@ -18,6 +20,12 @@ import (
 // cluster and in CI, where the service container runs as `postgres`. So the RLS
 // assertions were skipped absolutely everywhere and verified nothing, while
 // reading like a guarantee. Creating the role costs three statements.
+//
+// The role is created over an ADMIN connection, not over the store's own. Once
+// ordinary tests run as an unprivileged role (POSTGRES_APP_DSN), CREATE ROLE
+// from the store's connection fails — and the old code turned that failure into
+// a skip, so the stronger environment silently ran fewer assertions than the
+// weaker one. Both modes now run this test.
 //
 // This also demonstrates the deployment requirement in docs/runbooks/ha.md:
 // RLS protects nothing if the application connects as a superuser.
@@ -35,6 +43,12 @@ func asRestrictedRole(t *testing.T, s *PGStore) *PGStore {
 		t.Fatalf("current_database: %v", err)
 	}
 
+	admin, err := sql.Open("pgx", pgtest.AdminDSN(t, schema))
+	if err != nil {
+		t.Fatalf("open admin connection: %v", err)
+	}
+	t.Cleanup(func() { _ = admin.Close() })
+
 	for _, stmt := range []string{
 		`DROP ROLE IF EXISTS ` + role,
 		`CREATE ROLE ` + role + ` LOGIN PASSWORD 'rlstest' NOSUPERUSER NOBYPASSRLS`,
@@ -42,15 +56,16 @@ func asRestrictedRole(t *testing.T, s *PGStore) *PGStore {
 		`GRANT USAGE ON SCHEMA ` + pq(schema) + ` TO ` + role,
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON incidents TO ` + role,
 	} {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-			t.Skipf("cannot create a non-privileged role here (%v); RLS assertions need one", err)
+		if _, err := admin.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("cannot create a non-privileged role (%v); RLS assertions need one, "+
+				"and skipping here is how they came to verify nothing", err)
 		}
 	}
 	t.Cleanup(func() {
-		_, _ = s.db.Exec(`REVOKE ALL ON incidents FROM ` + role)
-		_, _ = s.db.Exec(`REVOKE ALL ON SCHEMA ` + pq(schema) + ` FROM ` + role)
-		_, _ = s.db.Exec(`REVOKE ALL ON DATABASE ` + pq(dbName) + ` FROM ` + role)
-		_, _ = s.db.Exec(`DROP ROLE IF EXISTS ` + role)
+		_, _ = admin.Exec(`REVOKE ALL ON incidents FROM ` + role)
+		_, _ = admin.Exec(`REVOKE ALL ON SCHEMA ` + pq(schema) + ` FROM ` + role)
+		_, _ = admin.Exec(`REVOKE ALL ON DATABASE ` + pq(dbName) + ` FROM ` + role)
+		_, _ = admin.Exec(`DROP ROLE IF EXISTS ` + role)
 	})
 
 	dsn := rewriteUser(t, os.Getenv("POSTGRES_DSN"), role, "rlstest", schema)
@@ -60,7 +75,8 @@ func asRestrictedRole(t *testing.T, s *PGStore) *PGStore {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	if err := db.PingContext(ctx); err != nil {
-		t.Skipf("cannot connect as %s (%v); the cluster's auth rules do not allow it", role, err)
+		t.Fatalf("cannot connect as %s (%v); the cluster's auth rules do not allow it, "+
+			"and these assertions are worthless without it", role, err)
 	}
 
 	var bypass bool
@@ -150,13 +166,28 @@ func TestPG_RLS_ForceAppliesToTheTableOwner(t *testing.T) {
 
 	mergeN(t, seed, Delta{Tenant: "acme", Class: "bola", Subject: "u1", First: t0, Last: t0, Count: 1}, DefaultWindow)
 
-	if _, err := seed.db.ExecContext(ctx, `ALTER TABLE incidents OWNER TO aegis_rls_test`); err != nil {
-		t.Skipf("cannot transfer table ownership here: %v", err)
+	// Ownership transfer needs a role that is a member of the target role, which
+	// the store's own connection is not once tests run unprivileged. Done over
+	// the admin connection so this assertion runs in both modes rather than
+	// skipping in the one that matters.
+	var schema string
+	if err := seed.db.QueryRowContext(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
+		t.Fatalf("current_schema: %v", err)
+	}
+	admin, err := sql.Open("pgx", pgtest.AdminDSN(t, schema))
+	if err != nil {
+		t.Fatalf("open admin connection: %v", err)
+	}
+	t.Cleanup(func() { _ = admin.Close() })
+
+	if _, err := admin.ExecContext(ctx, `ALTER TABLE incidents OWNER TO aegis_rls_test`); err != nil {
+		t.Fatalf("cannot transfer table ownership: %v; without it this test cannot "+
+			"tell FORCE ROW LEVEL SECURITY from ordinary RLS", err)
 	}
 	t.Cleanup(func() {
 		var owner string
-		if seed.db.QueryRow(`SELECT current_user`).Scan(&owner) == nil {
-			_, _ = seed.db.Exec(`ALTER TABLE incidents OWNER TO ` + pq(owner))
+		if admin.QueryRow(`SELECT current_user`).Scan(&owner) == nil {
+			_, _ = admin.Exec(`ALTER TABLE incidents OWNER TO ` + pq(owner))
 		}
 	})
 
