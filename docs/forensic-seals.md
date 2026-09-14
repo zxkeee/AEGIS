@@ -17,8 +17,8 @@ computed from.
 Every period — an hour by default — the gateway reads that period's entries in
 `id` order, hashes each one, folds them into a Merkle root, and writes a row:
 
-| tenant | period_start | period_end | entry_count | merkle_root | prev_root | signature |
-|---|---|---|---|---|---|---|
+| tenant | seq | period_start | period_end | entry_count | merkle_root | prev_root | signature |
+|---|---|---|---|---|---|---|---|
 
 `prev_root` is the previous seal's root, and it is inside the signed payload.
 That is what makes the seals a chain rather than a list of independent claims.
@@ -27,6 +27,29 @@ Delete an entry afterwards and the root recomputed from the surviving rows no
 longer matches what was sealed. Rewrite that seal to match, and the *next*
 seal's `prev_root` no longer matches — so covering up one period means
 rewriting every seal after it, and re-signing each one.
+
+### Why there is also a chain head
+
+A chain of back-references catches a seal that was *changed*. It cannot catch
+one that is simply *gone from the end*, because nothing that remains refers to
+it: delete the last three seals together with the entries they covered, and
+every surviving seal still recomputes perfectly. The worker then seals the
+emptied periods again, and the result is a shorter chain that verifies. That was
+cheaper than the attack seals exist to stop — no key, no rewriting, two
+`DELETE`s.
+
+So each tenant also has one row in `forensic_chain_head`: the highest seal
+number, the last root, and a signature over those. Seals carry a gapless `seq`,
+and the head is written in the same transaction as the seal it describes, so a
+seal can never exist that the head does not count. The head never moves
+backwards — re-sealing an emptied period leaves the head still pointing at the
+root the period used to have, which is what gives the rewrite away.
+
+Verification compares the two and reports any of: seals missing from the end,
+gaps in the middle, a head behind the chain, or a head whose root does not match
+the last seal. A head that is missing entirely while seals exist is reported
+too — "the anchor is gone" is what a cover-up looks like, and it must not read
+the same as "nothing is wrong".
 
 Seals are never deleted by retention. A seal is about 200 bytes, and outliving
 the entries it describes is the entire point: the question is asked *after* the
@@ -46,11 +69,17 @@ is missing, and it cannot recover it — a Merkle root is a commitment, not a
 backup.
 
 **An operator holding the signing key can forge a consistent chain.** The seals
-are signed with the same key that signs reports, which lives on the gateway the
-operator runs. Rewriting the chain and re-signing it produces something that
-verifies. What this buys is cost: tampering goes from one `DELETE` to rewriting
-and re-signing every subsequent seal. That is a real increase and it is not the
-same as proof.
+and the chain head are signed with the same key that signs reports, which lives
+on the gateway the operator runs. Rewriting the chain, moving the head back and
+re-signing both produces something that verifies. What this buys is cost:
+tampering goes from one `DELETE` to rewriting and re-signing every subsequent
+seal *and* the head. That is a real increase and it is not the same as proof.
+
+**An operator who deletes the head along with every seal** leaves a state that
+cannot be told apart from "seals were never switched on". The head makes
+truncation visible for as long as it is there; nothing held in the same database
+can make its own absence suspicious. Only a record kept elsewhere does that,
+which is the next point.
 
 **The gap that closes it is an external anchor**, and AEGIS does not ship one.
 Publishing a root where the operator cannot alter it — an RFC 3161 timestamp
@@ -105,6 +134,23 @@ and reports, per period, one of:
 - `the chain is broken: prev_root is …, expected …` — this period's entries are
   untouched, but a seal before it was rewritten, inserted or removed.
 
+It returns the per-period results together with one chain-level answer, in a
+single call. Completeness deliberately is not a second method somebody has to
+remember to call: "the check everyone runs does not cover this case" is how the
+truncation gap survived in the first place. The chain-level result is one of:
+
+- complete;
+- `N seals are missing from the end of the chain: the head records seal X, the
+  highest one present is Y`;
+- `the chain has gaps: seals are numbered up to X but only Y are present`;
+- `the head is behind the chain` — the head was rolled back, or a seal inserted;
+- `the head does not match the last seal` — the tail was removed and re-sealed;
+- `the chain head is missing while N seals exist`.
+
+Upgrading from a version without the head: existing seals are numbered by period
+order and a head is created for each tenant on first start. That head is
+unsigned and attests to the state at upgrade time, not to the history before it.
+
 ## What to tell a customer
 
 Say it plainly, because the precise version is more persuasive than the vague
@@ -112,6 +158,11 @@ one:
 
 > Every hour, we commit to what the log contained. If anything is removed or
 > changed afterwards, the commitment stops matching and we can show you exactly
-> which hour. We cannot stop someone with database access from deleting a row,
+> which hour — including whole hours deleted off the end, which is the easy way
+> to try it. We cannot stop someone with database access from deleting a row,
 > and we cannot get it back — what we can do is make it impossible to do
 > quietly.
+
+If they ask what would make it stronger, the honest answer is an external
+anchor, and we do not have one yet. Say that; it is a better answer than a
+confident one, and the question is a buying signal worth hearing accurately.

@@ -22,13 +22,19 @@
 //     a root is not a backup.
 //   - The seal is signed with the operator's own key, so an operator holding
 //     that key can forge a consistent chain. What defeats that is anchoring a
-//     root outside the operator's control (a timestamp authority, a public log,
-//     an email to the auditor). AnchorRoot exists for that and the shipping
-//     default anchors nothing.
+//     root outside the operator's control — a timestamp authority, a public
+//     log, an email to the auditor. THERE IS NO SUCH ANCHOR IN THIS CODE. An
+//     earlier version of this comment named an AnchorRoot function as if one
+//     existed; it never did, and the sentence survived long enough to be read
+//     as a capability. Anchoring is an open item, not a shipped feature.
+//   - An operator who deletes the chain head along with every seal leaves a
+//     state indistinguishable from "seals were never enabled". The head makes
+//     truncation visible while it is there; nothing inside one database can
+//     make its own absence suspicious.
 //
-// The last point matters most: without an external anchor this raises the cost
-// of tampering from "one DELETE" to "rewrite the chain and re-sign", which is a
-// real improvement and not the same as proof.
+// The last two points matter most: without an external anchor this raises the
+// cost of tampering from "one DELETE" to "rewrite the chain, move the head and
+// re-sign both", which is a real improvement and not the same as proof.
 package forensic
 
 import (
@@ -116,4 +122,21 @@ func sealPayload(tenant string, from, to time.Time, count int64, root, prevRoot 
 		root,
 		prevRoot,
 	))
+}
+
+// headPayload is what a chain head's signature covers.
+//
+// The head is the anchor of the whole count, so it is the thing most worth
+// forging: it states how many seals should exist and what the last root was.
+// Signing it means moving the head backwards — the exact shape of a truncation
+// — costs the signing key, where before it cost one DELETE.
+//
+// Deliberately a SEPARATE payload from sealPayload, not a bump of it. Making
+// the seal payload carry seq would invalidate every seal already issued and
+// force verifiers to understand two versions, and it would buy nothing: what
+// detects a missing tail is the head's commitment to the count, not a number
+// inside each link. The v1 seal format is therefore unchanged.
+func headPayload(tenant string, seq int64, lastRoot string, lastEnd time.Time) []byte {
+	return []byte(fmt.Sprintf("aegis-forensic-head-v1\n%s\n%d\n%s\n%s",
+		tenant, seq, lastRoot, lastEnd.UTC().Format(time.RFC3339Nano)))
 }
