@@ -42,11 +42,54 @@ ok()   { printf '   \033[32mok\033[0m %s\n' "$*"; }
 bad()  { printf '   \033[31mFAIL\033[0m %s\n' "$*"; fail=1; }
 
 # ── Integration environment ───────────────────────────────────────────────────
-# Without these the suite still passes, but six packages skip their integration
-# tests and the coverage gate then measures something CI does not.
+# Without reachable stores the suite still passes, but the packages backed by
+# Redis/PostgreSQL skip their integration tests and the coverage gate then
+# measures something CI does not.
+#
+# This used to be a warning, after which the gate ran anyway and the script
+# ended with "CI would reject this push" — on a commit CI had already accepted
+# with every check green. Reporting "I could not check" as "this is broken" is
+# the same class of defect as reporting a failure as a pass: both teach the
+# reader to stop believing the output. The stores are now PROBED, not merely
+# assumed from the environment, because a DSN pointing at a stopped container
+# fails in exactly the same way as an unset one.
+stores=ok
+store_why=""
+note() { printf '   \033[33m--\033[0m %s\n' "$*"; }
+
 if [ -z "${REDIS_ADDR:-}" ] || [ -z "${POSTGRES_DSN:-}" ]; then
-  printf '\033[33mwarning:\033[0m REDIS_ADDR / POSTGRES_DSN are unset — integration\n'
-  printf '         tests will skip and the coverage gate will not match CI.\n'
+  stores=missing
+  store_why="REDIS_ADDR / POSTGRES_DSN are unset"
+else
+  if command -v redis-cli >/dev/null 2>&1; then
+    redis-cli -u "redis://${REDIS_ADDR}" ping >/dev/null 2>&1 \
+      || { stores=missing; store_why="Redis at ${REDIS_ADDR} did not answer"; }
+  fi
+  if command -v pg_isready >/dev/null 2>&1; then
+    pg_isready -d "$POSTGRES_DSN" -q >/dev/null 2>&1 \
+      || { stores=missing; store_why="PostgreSQL in POSTGRES_DSN did not answer"; }
+  fi
+fi
+
+if [ "$stores" = missing ]; then
+  step "integration stores"
+  note "$store_why"
+  note "integration tests will skip; coverage cannot be compared with CI"
+  note "start them, e.g.: make stand-test"
+else
+  # Which role the tests run as decides whether RLS is exercised at all. A
+  # superuser (or any BYPASSRLS role) silently skips every tenant-isolation
+  # guarantee, so a green run under one proves strictly less than under an
+  # ordinary role — and that difference has already hidden a defect once.
+  if command -v psql >/dev/null 2>&1; then
+    rls=$(psql "$POSTGRES_DSN" -tAc \
+      "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user" 2>/dev/null || true)
+    if [ "$rls" = "t" ]; then
+      step "integration stores"
+      note "the PostgreSQL role bypasses row-level security"
+      note "RLS-dependent checks are NOT exercised in this run"
+    fi
+  fi
 fi
 
 step "golangci-lint $GOLANGCI_VERSION"
@@ -64,8 +107,15 @@ go test ./... -race -timeout 180s > /tmp/preflight-test.log 2>&1 \
 (cd web && go test ./... -race -timeout 180s >/dev/null 2>&1) && ok "web module" || bad "web module"
 
 step "coverage gate"
-./scripts/coverage-gate.sh > /tmp/preflight-cov.log 2>&1 \
-  && ok "floors held" || { bad "a package dropped below its floor"; grep BELOW /tmp/preflight-cov.log; }
+if [ "$stores" = missing ]; then
+  # Running it here would measure a suite with its integration tests skipped and
+  # report the shortfall as a regression. Not checked is not the same as failed.
+  note "not checked — needs the integration stores"
+  cov_unchecked=1
+else
+  ./scripts/coverage-gate.sh > /tmp/preflight-cov.log 2>&1 \
+    && ok "floors held" || { bad "a package dropped below its floor"; grep BELOW /tmp/preflight-cov.log; }
+fi
 
 # ── gosec / govulncheck ───────────────────────────────────────────────────────
 # These are the whole of security.yml, and this script claimed to mirror it
@@ -120,5 +170,13 @@ echo
 if [ "$fail" -ne 0 ]; then
   printf '\033[31mpreflight: FAILED\033[0m — CI would reject this push.\n'
   exit 1
+fi
+if [ "${cov_unchecked:-0}" -ne 0 ]; then
+  # Exit 2, not 0 and not 1: everything that could be checked passed, and one
+  # thing could not be. A caller that treats this as success is making the same
+  # mistake this script just stopped making.
+  printf '\033[33mpreflight: INCOMPLETE\033[0m — everything checked passed, but the\n'
+  printf '            coverage gate needs Redis and PostgreSQL (%s).\n' "$store_why"
+  exit 2
 fi
 printf '\033[32mpreflight: OK\033[0m\n'

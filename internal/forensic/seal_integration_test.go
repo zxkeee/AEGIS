@@ -3,6 +3,7 @@ package forensic
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,7 +51,7 @@ func TestSeal_DetectsADeletedEntry(t *testing.T) {
 	}
 
 	// Clean before tampering: the check must not be reporting pre-existing noise.
-	checks, err := s.VerifySeals(ctx, "acme")
+	checks, err := sealChecks(ctx, s, "acme")
 	if err != nil {
 		t.Fatalf("VerifySeals: %v", err)
 	}
@@ -70,7 +71,7 @@ func TestSeal_DetectsADeletedEntry(t *testing.T) {
 		t.Fatalf("delete: %v", err)
 	}
 
-	checks, err = s.VerifySeals(ctx, "acme")
+	checks, err = sealChecks(ctx, s, "acme")
 	if err != nil {
 		t.Fatalf("VerifySeals after delete: %v", err)
 	}
@@ -103,7 +104,7 @@ func TestSeal_DetectsAnAddedEntry(t *testing.T) {
 
 	seedEntries(t, s, "acme", start.Add(30*time.Minute), 1)
 
-	checks, err := s.VerifySeals(ctx, "acme")
+	checks, err := sealChecks(ctx, s, "acme")
 	if err != nil {
 		t.Fatalf("VerifySeals: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestSeal_ChainDetectsARewrittenSeal(t *testing.T) {
 		t.Fatalf("seal h2: %v", err)
 	}
 
-	checks, _ := s.VerifySeals(ctx, "acme")
+	checks, _ := sealChecks(ctx, s, "acme")
 	if len(checks) != 2 || !checks[0].Intact || !checks[1].Intact {
 		t.Fatalf("a clean two-period chain did not verify: %+v", checks)
 	}
@@ -148,7 +149,7 @@ func TestSeal_ChainDetectsARewrittenSeal(t *testing.T) {
 			SELECT id FROM forensic_logs WHERE tenant_id='acme' ORDER BY id LIMIT 1)`); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	recomputed, err := s.VerifySeals(ctx, "acme")
+	recomputed, err := sealChecks(ctx, s, "acme")
 	if err != nil {
 		t.Fatalf("VerifySeals: %v", err)
 	}
@@ -159,7 +160,7 @@ func TestSeal_ChainDetectsARewrittenSeal(t *testing.T) {
 		t.Fatalf("rewrite seal: %v", err)
 	}
 
-	checks, err = s.VerifySeals(ctx, "acme")
+	checks, err = sealChecks(ctx, s, "acme")
 	if err != nil {
 		t.Fatalf("VerifySeals after rewrite: %v", err)
 	}
@@ -225,7 +226,7 @@ func TestSeal_IsTenantScoped(t *testing.T) {
 		t.Fatal("two tenants with different logs produced the same root")
 	}
 
-	checks, err := s.VerifySeals(ctx, "acme")
+	checks, err := sealChecks(ctx, s, "acme")
 	if err != nil {
 		t.Fatalf("VerifySeals: %v", err)
 	}
@@ -267,7 +268,7 @@ func TestSealWorker_SealsClosedPeriodsAndSkipsTheOpenOne(t *testing.T) {
 	// now is inside the third hour, so only the first two have closed.
 	w.sealDue(ctx, h0.Add(2*time.Hour+30*time.Minute))
 
-	checks, err := s.VerifySeals(ctx, "acme")
+	checks, err := sealChecks(ctx, s, "acme")
 	if err != nil {
 		t.Fatalf("VerifySeals: %v", err)
 	}
@@ -309,7 +310,7 @@ func TestSealWorker_CatchesUpWithoutLeavingAHole(t *testing.T) {
 	// One tick, five hours after the first entry: all five periods have closed.
 	w.sealDue(ctx, h0.Add(5*time.Hour+10*time.Minute))
 
-	checks, err := s.VerifySeals(ctx, "acme")
+	checks, err := sealChecks(ctx, s, "acme")
 	if err != nil {
 		t.Fatalf("VerifySeals: %v", err)
 	}
@@ -349,7 +350,7 @@ func TestSealWorker_IsIdempotent(t *testing.T) {
 	w.sealDue(ctx, at)
 	w.sealDue(ctx, at)
 
-	checks, err := s.VerifySeals(ctx, "acme")
+	checks, err := sealChecks(ctx, s, "acme")
 	if err != nil {
 		t.Fatalf("VerifySeals: %v", err)
 	}
@@ -381,7 +382,7 @@ func TestSealWorker_RunAndStop(t *testing.T) {
 	// Run seals once immediately, before the first tick.
 	deadline := time.After(5 * time.Second)
 	for {
-		checks, err := s.VerifySeals(ctx, "acme")
+		checks, err := sealChecks(ctx, s, "acme")
 		if err != nil {
 			t.Fatalf("VerifySeals: %v", err)
 		}
@@ -454,7 +455,7 @@ func TestSealWorker_SkipsATenantWithNoEntries(t *testing.T) {
 		nopLogger{})
 	w.sealDue(ctx, time.Now())
 
-	checks, err := s.VerifySeals(ctx, "empty-tenant")
+	checks, err := sealChecks(ctx, s, "empty-tenant")
 	if err != nil {
 		t.Fatalf("VerifySeals: %v", err)
 	}
@@ -490,7 +491,7 @@ func TestSealPeriod_SignsWhenASignerIsGiven(t *testing.T) {
 		t.Fatalf("seal is unsigned: sig=%q keyID=%q", seal.Signature, seal.KeyID)
 	}
 	// And it survives the round trip through the database.
-	checks, err := s.VerifySeals(ctx, "acme")
+	checks, err := sealChecks(ctx, s, "acme")
 	if err != nil {
 		t.Fatalf("VerifySeals: %v", err)
 	}
@@ -503,4 +504,334 @@ type stubSigner struct{}
 
 func (stubSigner) SignBytes(payload []byte) (string, string) {
 	return "sig-" + string(payload[:8]), "key-1"
+}
+
+// The attack the chain does not catch: instead of deleting a row from a sealed
+// period — which changes that period's root — an operator deletes the last
+// seals along with the entries they covered. Nothing recomputes differently,
+// because what is gone is not referenced by anything that remains.
+//
+// The chain links each seal to its PREDECESSOR, so it can say "the seal before
+// this one changed". It cannot say "there should be three more after this one",
+// and that is the whole of the hole.
+func TestSeal_DetectsATruncatedChain(t *testing.T) {
+	s := sealSink(t)
+	ctx := context.Background()
+	const tenant = "truncate-co"
+	start := time.Date(2026, 9, 13, 10, 0, 0, 0, time.UTC)
+
+	// Three sealed periods. The third is the one an operator wants gone.
+	for i := 0; i < 3; i++ {
+		from := start.Add(time.Duration(i) * time.Hour)
+		seedEntries(t, s, tenant, from, 3)
+		if _, err := s.SealPeriod(ctx, tenant, from, from.Add(time.Hour), nil); err != nil {
+			t.Fatalf("SealPeriod %d: %v", i, err)
+		}
+	}
+
+	report, err := s.VerifySeals(ctx, tenant)
+	if err != nil {
+		t.Fatalf("VerifySeals: %v", err)
+	}
+	if len(report.Checks) != 3 {
+		t.Fatalf("checks = %d, want 3", len(report.Checks))
+	}
+	if !report.Intact || !report.Chain.Complete {
+		t.Fatalf("an untouched chain did not verify: %+v", report)
+	}
+	if report.Chain.HeadSeq != 3 {
+		t.Fatalf("head seq = %d, want 3", report.Chain.HeadSeq)
+	}
+
+	// The truncation: the last period's entries AND its seal, together. This is
+	// strictly easier than the deletion the seals were built to catch — it needs
+	// no key and no rewriting, only DELETE on two tables.
+	last := start.Add(2 * time.Hour)
+	if _, err := s.db.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, false)`, tenant); err != nil {
+		t.Fatalf("set_config: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM forensic_logs WHERE tenant_id = $1 AND ts >= $2`, tenant, last); err != nil {
+		t.Fatalf("delete entries: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM forensic_seals WHERE tenant_id = $1 AND period_start = $2`, tenant, last); err != nil {
+		t.Fatalf("delete seal: %v", err)
+	}
+
+	report, err = s.VerifySeals(ctx, tenant)
+	if err != nil {
+		t.Fatalf("VerifySeals after truncation: %v", err)
+	}
+
+	// Every surviving seal still recomputes — that is the whole difficulty, and
+	// pinning it here stops anyone "fixing" this by making the per-seal check
+	// noisier.
+	for i, c := range report.Checks {
+		if !c.Intact {
+			t.Fatalf("seal %d stopped recomputing; the truncation should leave the "+
+				"survivors untouched: %+v", i, c)
+		}
+	}
+	if report.Intact {
+		t.Fatalf("a truncated chain verified as intact: %d seals remain and every one "+
+			"reports clean, so removing the tail of the log is undetectable",
+			len(report.Checks))
+	}
+	if report.Chain.Complete {
+		t.Fatalf("the chain reported complete after its tail was removed: %+v", report.Chain)
+	}
+	if report.Chain.HeadSeq != 3 || report.Chain.HighestSeq != 2 {
+		t.Fatalf("chain check did not locate the gap: head says %d, highest present %d, want 3 and 2",
+			report.Chain.HeadSeq, report.Chain.HighestSeq)
+	}
+	if !strings.Contains(report.Chain.Detail, "missing from the end") {
+		t.Fatalf("the detail does not tell an operator what happened: %q", report.Chain.Detail)
+	}
+}
+
+// Deleting the head is the other half of the same attack: the head is what
+// counts the seals, so an operator who cannot forge it can try to remove it and
+// argue the count never existed.
+//
+// It cannot be made impossible from inside the same database — but it must not
+// be silent, because "the anchor is gone" and "nothing is wrong" have to be
+// distinguishable states.
+func TestSeal_DetectsADeletedChainHead(t *testing.T) {
+	s := sealSink(t)
+	ctx := context.Background()
+	const tenant = "headless-co"
+	start := time.Date(2026, 9, 13, 10, 0, 0, 0, time.UTC)
+
+	seedEntries(t, s, tenant, start, 4)
+	if _, err := s.SealPeriod(ctx, tenant, start, start.Add(time.Hour), nil); err != nil {
+		t.Fatalf("SealPeriod: %v", err)
+	}
+	report, err := s.VerifySeals(ctx, tenant)
+	if err != nil {
+		t.Fatalf("VerifySeals: %v", err)
+	}
+	if !report.Intact || !report.Chain.HeadPresent {
+		t.Fatalf("a freshly sealed period did not verify: %+v", report)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, false)`, tenant); err != nil {
+		t.Fatalf("set_config: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM forensic_chain_head WHERE tenant_id = $1`, tenant); err != nil {
+		t.Fatalf("delete head: %v", err)
+	}
+
+	report, err = s.VerifySeals(ctx, tenant)
+	if err != nil {
+		t.Fatalf("VerifySeals after head deletion: %v", err)
+	}
+	// The seal itself is untouched, so the per-seal check must stay clean: this
+	// failure has to come from the chain, or it is not testing what it claims.
+	if len(report.Checks) != 1 || !report.Checks[0].Intact {
+		t.Fatalf("the seal stopped recomputing; only the head was deleted: %+v", report.Checks)
+	}
+	if report.Chain.HeadPresent {
+		t.Fatalf("the head reported present after deletion: %+v", report.Chain)
+	}
+	if report.Chain.Complete || report.Intact {
+		t.Fatalf("a chain with no head verified as complete: %+v", report)
+	}
+	if !strings.Contains(report.Chain.Detail, "head is missing") {
+		t.Fatalf("the detail does not name the missing head: %q", report.Chain.Detail)
+	}
+}
+
+// The truncation carried through to its end, which is how it would actually be
+// done: delete the last seal and its entries, then let the worker catch up and
+// seal the now-empty period again. The chain that results is internally
+// perfect — same length, every link recomputing, every prev_root matching.
+//
+// Only the head survives the operation with a memory of what period 3 used to
+// contain, which is why it must never be allowed to move backwards.
+func TestSeal_DetectsATruncationTheWorkerResealed(t *testing.T) {
+	s := sealSink(t)
+	ctx := context.Background()
+	const tenant = "resealed-co"
+	start := time.Date(2026, 9, 13, 10, 0, 0, 0, time.UTC)
+
+	for i := 0; i < 3; i++ {
+		from := start.Add(time.Duration(i) * time.Hour)
+		seedEntries(t, s, tenant, from, 3)
+		if _, err := s.SealPeriod(ctx, tenant, from, from.Add(time.Hour), nil); err != nil {
+			t.Fatalf("SealPeriod %d: %v", i, err)
+		}
+	}
+
+	last := start.Add(2 * time.Hour)
+	if _, err := s.db.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, false)`, tenant); err != nil {
+		t.Fatalf("set_config: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM forensic_logs WHERE tenant_id = $1 AND ts >= $2`, tenant, last); err != nil {
+		t.Fatalf("delete entries: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM forensic_seals WHERE tenant_id = $1 AND period_start = $2`, tenant, last); err != nil {
+		t.Fatalf("delete seal: %v", err)
+	}
+
+	// The worker, doing its job: the period is unsealed again, so it seals it.
+	if _, err := s.SealPeriod(ctx, tenant, last, last.Add(time.Hour), nil); err != nil {
+		t.Fatalf("re-seal: %v", err)
+	}
+
+	report, err := s.VerifySeals(ctx, tenant)
+	if err != nil {
+		t.Fatalf("VerifySeals: %v", err)
+	}
+
+	// Everything local looks right, and that is the point of the test.
+	if len(report.Checks) != 3 {
+		t.Fatalf("checks = %d, want 3", len(report.Checks))
+	}
+	for i, c := range report.Checks {
+		if !c.Intact {
+			t.Fatalf("seal %d does not recompute; the re-seal should make every "+
+				"surviving link consistent: %+v", i, c)
+		}
+	}
+	if report.Chain.SealsFound != 3 || report.Chain.HighestSeq != 3 {
+		t.Fatalf("the re-sealed chain is not the same shape as the original: %+v", report.Chain)
+	}
+
+	if report.Intact || report.Chain.Complete {
+		t.Fatalf("a truncated-then-resealed chain verified as intact: three seals, "+
+			"all recomputing, and the deleted period is gone without trace: %+v", report)
+	}
+	if !strings.Contains(report.Chain.Detail, "does not match the last seal") {
+		t.Fatalf("the detail does not name what betrayed the rewrite: %q", report.Chain.Detail)
+	}
+}
+
+// A tenant that has never sealed anything has no head, and that is not
+// tampering. Without this the check would cry wolf on every fresh install, and
+// an alarm that fires on healthy systems is how operators learn to ignore it.
+func TestSeal_NoSealsYetIsNotTampering(t *testing.T) {
+	s := sealSink(t)
+	report, err := s.VerifySeals(context.Background(), "never-sealed-co")
+	if err != nil {
+		t.Fatalf("VerifySeals: %v", err)
+	}
+	if len(report.Checks) != 0 {
+		t.Fatalf("checks = %d, want 0", len(report.Checks))
+	}
+	if !report.Chain.Complete || !report.Intact {
+		t.Fatalf("a tenant with no seals was reported as tampered with: %+v", report)
+	}
+}
+
+// The upgrade path, which is the part of this change that runs on installs that
+// already have history and cannot be re-run if it is wrong.
+//
+// An install sealed by the previous version has seals with no seq and no head
+// at all. If the migration misses them, every one of those tenants reports "the
+// chain head is missing" on first verification after the upgrade — an
+// accusation against an operator who did nothing, and the fastest way to teach
+// everyone to ignore the check.
+func TestSeal_MigrationNumbersExistingSealsAndBuildsAHead(t *testing.T) {
+	s := sealSink(t)
+	ctx := context.Background()
+	const tenant = "legacy-co"
+	start := time.Date(2026, 9, 13, 10, 0, 0, 0, time.UTC)
+
+	for i := 0; i < 3; i++ {
+		from := start.Add(time.Duration(i) * time.Hour)
+		seedEntries(t, s, tenant, from, 2)
+		if _, err := s.SealPeriod(ctx, tenant, from, from.Add(time.Hour), nil); err != nil {
+			t.Fatalf("SealPeriod %d: %v", i, err)
+		}
+	}
+
+	// Wind the schema back to what the previous version wrote: numbered seals
+	// and the head are both post-upgrade artefacts.
+	if _, err := s.db.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, false)`, tenant); err != nil {
+		t.Fatalf("set_config: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE forensic_seals SET seq = NULL WHERE tenant_id = $1`, tenant); err != nil {
+		t.Fatalf("clear seq: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM forensic_chain_head WHERE tenant_id = $1`, tenant); err != nil {
+		t.Fatalf("drop head: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `SELECT set_config('app.tenant_id', '', false)`); err != nil {
+		t.Fatalf("reset set_config: %v", err)
+	}
+
+	// Without the migration this state is indistinguishable from a deleted head.
+	report, err := s.VerifySeals(ctx, tenant)
+	if err != nil {
+		t.Fatalf("VerifySeals before migration: %v", err)
+	}
+	if report.Chain.Complete {
+		t.Fatalf("a pre-upgrade install should not verify before it is migrated: %+v", report.Chain)
+	}
+
+	if err := backfillSeqAndHeads(ctx, s.db); err != nil {
+		t.Fatalf("backfillSeqAndHeads: %v", err)
+	}
+
+	report, err = s.VerifySeals(ctx, tenant)
+	if err != nil {
+		t.Fatalf("VerifySeals after migration: %v", err)
+	}
+	if !report.Intact || !report.Chain.Complete {
+		t.Fatalf("a migrated install does not verify; the upgrade accuses an honest "+
+			"operator: %+v", report)
+	}
+	if report.Chain.HeadSeq != 3 || report.Chain.HighestSeq != 3 || report.Chain.SealsFound != 3 {
+		t.Fatalf("the migration numbered the chain wrongly: %+v", report.Chain)
+	}
+
+	// Numbering must follow period order. Taking sealed_at instead would put a
+	// seal written late in the wrong place, and the next real seal would then
+	// collide with a number already issued.
+	for i, c := range report.Checks {
+		if c.Seal.Seq != int64(i+1) {
+			t.Fatalf("seal %d (period %s) got seq %d, want %d",
+				i, c.Seal.PeriodStart.Format(time.RFC3339), c.Seal.Seq, i+1)
+		}
+	}
+
+	// Idempotent: a second process start must not renumber anything.
+	if err := backfillSeqAndHeads(ctx, s.db); err != nil {
+		t.Fatalf("second backfillSeqAndHeads: %v", err)
+	}
+	again, err := s.VerifySeals(ctx, tenant)
+	if err != nil {
+		t.Fatalf("VerifySeals after second migration: %v", err)
+	}
+	if !again.Intact || again.Chain.HeadSeq != 3 {
+		t.Fatalf("running the migration twice changed the chain: %+v", again.Chain)
+	}
+
+	// And sealing continues from where the migration left off rather than
+	// re-issuing a number the unique index already holds.
+	next := start.Add(3 * time.Hour)
+	seedEntries(t, s, tenant, next, 2)
+	sealed, err := s.SealPeriod(ctx, tenant, next, next.Add(time.Hour), nil)
+	if err != nil {
+		t.Fatalf("SealPeriod after migration: %v", err)
+	}
+	if sealed.Seq != 4 {
+		t.Fatalf("the seal after migration got seq %d, want 4", sealed.Seq)
+	}
+}
+
+// sealChecks returns just the per-seal results of VerifySeals.
+//
+// For the tests that predate the chain check and assert on one period's
+// recomputation. A test about completeness must call VerifySeals itself —
+// routing it through here would hide the very field it is checking.
+func sealChecks(ctx context.Context, s *PGSink, tenant string) ([]SealCheck, error) {
+	r, err := s.VerifySeals(ctx, tenant)
+	return r.Checks, err
 }

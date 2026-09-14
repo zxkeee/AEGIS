@@ -77,6 +77,12 @@ CREATE POLICY tenant_isolation ON forensic_logs
 CREATE TABLE IF NOT EXISTS forensic_seals (
 	id           BIGSERIAL PRIMARY KEY,
 	tenant_id    TEXT        NOT NULL,
+	-- seq numbers a tenant's seals from 1 with no gaps, and exists because the
+	-- root chain alone cannot detect a TRUNCATED chain: delete the last three
+	-- seals together with the entries they covered and what remains recomputes
+	-- perfectly, since nothing surviving refers to what is gone. A sequence
+	-- turns "is anything missing from the end" into arithmetic.
+	seq          BIGINT,
 	period_start TIMESTAMPTZ NOT NULL,
 	period_end   TIMESTAMPTZ NOT NULL,
 	entry_count  BIGINT      NOT NULL,
@@ -89,6 +95,16 @@ CREATE TABLE IF NOT EXISTS forensic_seals (
 	-- let an operator keep the convenient one and drop the other.
 	UNIQUE (tenant_id, period_start)
 );
+-- Idempotent migration for installs sealed before the sequence existed.
+--
+-- Added nullable rather than with a DEFAULT: a constant default plus the unique
+-- index below collides on the second seal any existing tenant already has,
+-- which would fail the upgrade on exactly the deployments whose history is
+-- worth protecting. The values are filled in by backfillSeqAndHeads, which can
+-- set app.tenant_id — an UPDATE issued from this block would match zero rows
+-- under FORCE ROW LEVEL SECURITY and leave every existing seal unnumbered.
+ALTER TABLE forensic_seals ADD COLUMN IF NOT EXISTS seq BIGINT;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_forensic_seals_seq ON forensic_seals (tenant_id, seq);
 CREATE INDEX IF NOT EXISTS idx_forensic_seals_period
   ON forensic_seals (tenant_id, period_start DESC);
 
@@ -96,6 +112,47 @@ ALTER TABLE forensic_seals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE forensic_seals FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON forensic_seals;
 CREATE POLICY tenant_isolation ON forensic_seals
+  USING (tenant_id = current_setting('app.tenant_id', true)
+      OR current_setting('app.tenant_id', true) = '*')
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)
+      OR current_setting('app.tenant_id', true) = '*');
+
+-- The head of each tenant's seal chain: how far it is supposed to reach.
+--
+-- Without it, truncation is cheaper than the deletion the seals exist to catch.
+-- Removing a row from a sealed period changes that period's root and is caught;
+-- removing the last N seals AND their entries changes nothing that remains, and
+-- the worker then re-seals the emptied periods into a chain that verifies.
+--
+-- One row per tenant, written in the SAME transaction as the seal it describes,
+-- so a seal can never exist without the head that counts it. Verification
+-- compares the head against what is actually stored: fewer seals than last_seq
+-- means seals were removed, and a missing head where seals exist is itself
+-- reported rather than ignored, because "the anchor is gone" is what a cover-up
+-- looks like.
+--
+-- The head is signed on its own payload, so moving it backwards to match a
+-- truncated chain needs the signing key, where before it needed only DELETE.
+-- It does NOT defeat an operator who holds that key; nothing inside the same
+-- database can. See the anchoring note in seal.go.
+CREATE TABLE IF NOT EXISTS forensic_chain_head (
+	tenant_id       TEXT        PRIMARY KEY,
+	last_seq        BIGINT      NOT NULL,
+	last_root       TEXT        NOT NULL,
+	last_period_end TIMESTAMPTZ NOT NULL,
+	signature       TEXT        NOT NULL DEFAULT '',
+	key_id          TEXT        NOT NULL DEFAULT '',
+	updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- Heads for tenants sealed before this table existed are backfilled by
+-- backfillSeqAndHeads, not here: this statement block runs with no app.tenant_id
+-- set, and forensic_seals already has FORCE ROW LEVEL SECURITY by the time an
+-- upgrade reaches it, so a SELECT from it here reads zero rows and would
+-- silently migrate nothing on exactly the installs that have history.
+ALTER TABLE forensic_chain_head ENABLE ROW LEVEL SECURITY;
+ALTER TABLE forensic_chain_head FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON forensic_chain_head;
+CREATE POLICY tenant_isolation ON forensic_chain_head
   USING (tenant_id = current_setting('app.tenant_id', true)
       OR current_setting('app.tenant_id', true) = '*')
   WITH CHECK (tenant_id = current_setting('app.tenant_id', true)
@@ -127,6 +184,10 @@ func NewPGSink(dsn string, log Logger) (*PGSink, error) {
 	if _, err := db.ExecContext(ctx, createTableSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("forensic: pg migrate: %w", err)
+	}
+	if err := backfillSeqAndHeads(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("forensic: pg migrate seals: %w", err)
 	}
 
 	s := &PGSink{
