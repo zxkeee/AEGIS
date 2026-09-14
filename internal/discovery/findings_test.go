@@ -161,10 +161,10 @@ func TestDetectFindings_SeverityFollowsTheDataClass(t *testing.T) {
 	}
 
 	cases := []struct {
-		name     string
-		types    []string
-		want     string
-		because  string
+		name    string
+		types   []string
+		want    string
+		because string
 	}{
 		{"email alone", []string{"email"}, "warning",
 			"a public profile or a commit author is frequently deliberate"},

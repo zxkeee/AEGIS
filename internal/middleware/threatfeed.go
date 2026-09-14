@@ -88,7 +88,10 @@ func (tf *threatFeed) refresh() {
 	// (e.g. cloud metadata at 169.254.169.254), undermining that guarantee and
 	// enabling a blind SSRF. Only follow HTTPS redirects to non-private hosts,
 	// and cap the hop count.
-	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: checkFeedRedirect}
+	// Address-checked in the dialer. A feed URL is operator-configured, and a
+	// public feed that resolves to an internal address is the same blind-SSRF
+	// shape as a redirect to one — the string check could not see either.
+	client := safefetch.Client("threat_feed", 30*time.Second)
 	resp, err := client.Get(tf.url)
 	if err != nil {
 		tf.log.Error("threat_feed: fetch error", map[string]any{"error": err.Error()})
