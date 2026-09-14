@@ -67,12 +67,10 @@ func NewWithConfig(webhookURL, format, minSeverity string, log *logger.Logger) *
 		// against the gateway's own network. Alerts carry the detail of what
 		// was detected and about whom, so an unpinned destination leaks more
 		// than the fact that something fired.
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return safefetch.Redirect("alert_webhook", req, via)
-			},
-		},
+		// The address check lives in the dialer, not in the redirect policy: a
+		// host string does not determine where a connection goes, and a webhook
+		// host resolving to an internal address needs no redirect at all.
+		client: safefetch.Client("alert_webhook", 10*time.Second),
 	}
 }
 

@@ -7,11 +7,32 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"api-gateway/internal/logger"
+	"api-gateway/internal/safefetch"
 )
 
 func testLogger() *logger.Logger { return logger.New("error") }
+
+// loopbackDelivery points an Engine at a test server.
+//
+// The production client refuses to connect to an internal address — that is the
+// whole point of safefetch.Client, and httptest listens on loopback — so a test
+// that exercises DELIVERY has to dial loopback deliberately. The redirect policy
+// is left in place, because several tests below are about redirects.
+//
+// Nothing in production builds a client this way: the only constructor is
+// safefetch.Client, and it has no opt-out.
+func loopbackDelivery(e *Engine) *Engine {
+	e.client = &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return safefetch.Redirect("alert_webhook_test", req, via)
+		},
+	}
+	return e
+}
 
 // captureServer records the last POSTed body and counts delivered alerts.
 func captureServer(t *testing.T, last *atomic.Value, count *int32) *httptest.Server {
@@ -31,7 +52,7 @@ func TestFire_DeliversAboveThreshold(t *testing.T) {
 	srv := captureServer(t, &last, &count)
 	defer srv.Close()
 
-	e := NewWithConfig(srv.URL, "generic", SeverityWarning, testLogger())
+	e := loopbackDelivery(NewWithConfig(srv.URL, "generic", SeverityWarning, testLogger()))
 	e.Fire(context.Background(), SeverityCritical, "BOLA detected", "consumer x")
 
 	if atomic.LoadInt32(&count) != 1 {
@@ -52,7 +73,7 @@ func TestFire_SuppressedBelowThreshold(t *testing.T) {
 	srv := captureServer(t, &last, &count)
 	defer srv.Close()
 
-	e := NewWithConfig(srv.URL, "generic", SeverityCritical, testLogger())
+	e := loopbackDelivery(NewWithConfig(srv.URL, "generic", SeverityCritical, testLogger()))
 	e.Fire(context.Background(), SeverityWarning, "minor", "noise")
 
 	if atomic.LoadInt32(&count) != 0 {
@@ -66,7 +87,7 @@ func TestFire_SlackFormat(t *testing.T) {
 	srv := captureServer(t, &last, &count)
 	defer srv.Close()
 
-	e := NewWithConfig(srv.URL, "slack", SeverityInfo, testLogger())
+	e := loopbackDelivery(NewWithConfig(srv.URL, "slack", SeverityInfo, testLogger()))
 	e.Fire(context.Background(), SeverityCritical, "BFLA", "admin path")
 
 	var payload map[string]string
@@ -124,7 +145,7 @@ func TestFire_DoesNotFollowRedirectOffThePin(t *testing.T) {
 	}))
 	defer redirector.Close()
 
-	e := NewWithConfig(redirector.URL, "generic", SeverityWarning, testLogger())
+	e := loopbackDelivery(NewWithConfig(redirector.URL, "generic", SeverityWarning, testLogger()))
 	e.Fire(context.Background(), SeverityCritical, "bola detected",
 		"consumer sub=alice enumerated 300 objects")
 

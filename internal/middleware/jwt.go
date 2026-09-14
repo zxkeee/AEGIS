@@ -64,10 +64,14 @@ const jwksMaxBackoff = 5 * time.Minute
 // the gateway accepts, an unpinned redirect is a full authentication bypass
 // for anyone who controls the configured host or the path to it.
 func jwksClient() *http.Client {
-	return &http.Client{
-		Timeout:       30 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error { return safefetch.Redirect("jwks", req, via) },
-	}
+	// safefetch.Client, not a bare client with a redirect policy: the redirect
+	// policy alone inspects the URL STRING, and the string is not what gets
+	// dialled. https://localhost./jwks, https://2130706433/jwks and
+	// https://127.1/jwks all passed the string check and connected to loopback
+	// — demonstrated, not theorised. The check now runs on the resolved
+	// address, which also covers the FIRST request, i.e. the URL the operator
+	// configured, which nothing checked at all before.
+	return safefetch.Client("jwks", 30*time.Second)
 }
 
 // initJWKS fetches and caches JWKS keys from the configured URL, retrying
