@@ -53,6 +53,39 @@ written: see [`demo/sample-report/`](./demo/sample-report/).
 **Want the one-thing-a-WAF-cannot-do version?** `./demo/idor-demo.sh` is a
 90-second walkthrough of a single IDOR being detected and then blocked.
 
+**Not ready to put anything in front of your traffic?** You do not have to.
+AEGIS also runs on a **mirror**: your nginx sends a copy of each request, the
+reply is discarded, and your traffic never passes through this process — you can
+stop AEGIS mid-pilot and watch nothing change. See
+[Mirror mode](#58-mirror-mode--observing-without-standing-in-the-path).
+
+---
+
+## What this is, in three stages
+
+AEGIS is three things that are usually bought separately, and they are meant to
+be adopted **in this order** — each one earns the trust the next one needs.
+`docs/PRODUCT.md` is the authoritative statement of this; the summary:
+
+| Stage | What it does | How it is deployed | Who cares |
+|---|---|---|---|
+| **See** | Passive discovery: every endpoint actually called, shadow/undocumented ones, PII/PCI in traffic, posture score, who calls what | **Mirror** — zero risk, or inline | Platform team |
+| **Protect** | BOLA/BFLA with confirmed object ownership, schema enforcement, OWASP CRS v4, JWT, DLP, rate limiting | Inline (`observe: true` first) | Security team |
+| **Prove** | NIS2 / DORA / ISO 27001 mapping, incident register with reporting deadlines, Ed25519-signed reports with a standalone verifier, tamper-evident log seals | Any | CISO, compliance |
+
+The differentiator is not any one of those — competitors do each of them, some
+better. It is **where they execute**: one self-hosted binary, no external
+control plane, no traffic leaving for anyone's cloud. That matters to the
+segment for which SaaS is not a preference but a legal problem.
+
+**What is deliberately not claimed** is in
+[§5 of `docs/PRODUCT.md`](./docs/PRODUCT.md) — read it before quoting anything
+here to a customer. The short version for the evidence layer: seals make
+deletion **detectable, not impossible**, they cover a period rather than a row,
+and the signing key is held by the party being audited — so a signature proves
+"this document was not altered after it was produced", not "it was not assembled
+from tidied-up data". Tamper-*evident*, never tamper-proof.
+
 ---
 
 > This document is the authoritative technical reference for AEGIS. It is written
@@ -85,6 +118,8 @@ written: see [`demo/sample-report/`](./demo/sample-report/).
    - 5.5 [Consumer Analytics](#55-consumer-analytics)
    - 5.6 [Coverage and Effectiveness](#56-coverage-and-effectiveness)
    - 5.7 [Reporting](#57-reporting)
+   - 5.8 [Mirror Mode](#58-mirror-mode--observing-without-standing-in-the-path)
+   - 5.9 [Evidence and Log Integrity](#59-evidence-and-log-integrity)
 6. [Security Capabilities](#6-security-capabilities)
    - 6.1 [Web Application Firewall](#61-web-application-firewall)
    - 6.2 [Rate Limiting](#62-rate-limiting)
@@ -145,6 +180,11 @@ sold separately:
    bot mitigation, IP reputation, data loss prevention, zero-trust authentication.
 3. **An API Security Posture Management (ASPM) platform** — discovery, posture,
    risk, consumer analytics and reporting.
+
+Those are the categories. The way they are *adopted* is the See → Protect →
+Prove progression described above: discovery first (on a mirror, at no risk to
+the traffic), enforcement once that has earned the hop, and regulatory evidence
+once there is something worth evidencing.
 
 AEGIS is self-hosted. There is no external control plane and no mandatory SaaS
 dependency. State is kept in Redis (hot path) and PostgreSQL (durable catalog and
@@ -623,6 +663,84 @@ the CSV form is a flat table suitable for spreadsheets and audit evidence, with
 one row per endpoint carrying method, path template, posture, risk score, request
 and error counts, authenticated and anonymous counts, PII count, average latency
 and last-seen timestamp.
+
+### 5.8 Mirror Mode — observing without standing in the path
+
+The objection that ends a first deployment is *"I am not putting your process in
+front of my traffic"*, and it is a fair one. Mirror mode answers it.
+
+Set `mirror_sink: true` (which requires `observe: true`, and is refused together
+with `tls.enabled` — see below) and AEGIS stops being a proxy. Your load balancer sends
+it a **copy** of each request — `mirror` in nginx, `RequestMirrorPolicy` in
+Gateway API, a Traffic Mirroring rule in Envoy — AEGIS drains the body, builds
+its catalog from it, and answers `204`. It never forwards anything and never
+returns anything to a client. Stop the process mid-pilot and nothing about the
+production path changes, because it was never on it.
+
+**What mirror mode cannot do, by construction.** A mirrored copy carries no
+response. So there are:
+
+- **no PII or PCI findings** — "this endpoint returns card numbers to anonymous
+  callers" requires the response body;
+- **no object-ownership (BOLA/IDOR) findings** — same reason;
+- **no status codes and no latency.**
+
+That honesty is enforced in code rather than left to documentation. Mirrored
+observations are marked `RequestOnly`, and the catalog counts `responsesSeen`
+separately, so a zero in `pii_count` reads as *"responses were never examined"*
+rather than *"nothing was found"*. Those two are not the same claim and the
+catalog does not let them be confused.
+
+Everything else works: the endpoint inventory, path normalisation, shadow and
+undocumented endpoint detection, consumer attribution by JWT subject, and
+OpenAPI drift.
+
+**Two configurations are refused rather than allowed to mislead**, and both
+refusals are in `config.Validate`:
+
+- `mirror_sink` without `observe: true`. Mirrored traffic has already been
+  answered by the real path, so a control that "blocks" here stops nothing and
+  would record a denial that never happened.
+- `mirror_sink` with `tls.enabled`. The mirroring proxy already terminated TLS,
+  so there is no ClientHello to fingerprint and the JA3 signal would describe
+  this process rather than the caller.
+
+The progression is **mirror** (`mirror_sink` + `observe`, off the traffic path)
+→ **inline observe** (`observe: true` alone — in the path, inspects and records,
+blocks nothing, gets the response body and therefore PII and BOLA findings) →
+**enforcement**. Each step asks for more trust and returns more signal. Full
+detail in [`docs/mirror-mode.md`](./docs/mirror-mode.md) and
+[`docs/pilot-mode.md`](./docs/pilot-mode.md).
+
+### 5.9 Evidence and Log Integrity
+
+Findings and runtime abuse are mapped onto **NIS2** Art. 21(2), **DORA**
+Art. 8/9/10 and 17–19, and **ISO/IEC 27001:2022** Annex A through the OWASP API
+Top-10, and exposed at `GET /api/compliance`. Correlated incidents carry the
+regulator's reporting deadlines. Reports can be returned as a signed envelope
+(`?sign=1`) verified by the standalone `reportverify` binary, which refuses to
+run against a key taken from the document it is checking.
+
+The forensic log itself is sealed: every period gets a Merkle root over its
+entries, each seal commits to its predecessor's root, and a signed per-tenant
+chain head records how far the chain is supposed to reach — so removing entries
+from a sealed period and removing whole seals from the end of the chain are both
+detectable.
+
+**Read the limits before repeating any of this to a customer:**
+
+- Seals make deletion **detectable, not impossible**. Nothing stops a `DELETE`.
+- A seal covers a **period, not a row**: an auditor learns that an hour was
+  altered, not which entry is gone, and a Merkle root is not a backup.
+- The signing key is held by **the party being audited**. A signature proves
+  "this document was not altered after it was produced" — not "it was not
+  assembled from tidied-up data". Closing that needs an anchor outside the
+  operator's control, and **AEGIS does not ship one**.
+- The accurate word is tamper-**evident**. Never tamper-proof.
+
+[`docs/forensic-seals.md`](./docs/forensic-seals.md) and
+[`docs/compliance-evidence.md`](./docs/compliance-evidence.md) state what is and
+is not proved, in more detail.
 
 ---
 
@@ -1520,13 +1638,19 @@ roadmap priority.
 
 ## 19. Roadmap
 
-The detailed, prioritised roadmap lives in [ROADMAP.md](./ROADMAP.md). In summary,
-the path from a strong implementation to a commercial product runs through:
-proving reliability (comprehensive tests and CI gates); real console identity
-(RBAC, SSO, MFA) and multi-tenancy; the flagship detection capability — OWASP API
-Top-10 abuse detection starting with object-level authorisation (BOLA/BFLA) built
-on the existing consumer graph; integrations (SIEM, alerting, OpenAPI drift); and
-out-of-band deployment and high-availability hardening.
+The detailed, prioritised roadmap lives in [ROADMAP.md](./ROADMAP.md), ordered by
+the See → Protect → Prove stage each item unblocks — because an item's priority
+is how far it moves a deal, not how interesting it is. Positioning and the
+deliberate limits belong to [`docs/PRODUCT.md`](./docs/PRODUCT.md); ROADMAP.md
+answers only "what is done and what is next".
+
+In summary: reliability (tests and CI gates) and console identity (RBAC, SSO,
+MFA) plus multi-tenancy are the release blockers; **See** is extended by OpenAPI
+drift and data classification; **Protect** by the flagship detection — OWASP API
+Top-10 abuse starting with object-level authorisation (BOLA/BFLA) on the existing
+consumer graph — plus per-consumer baselines and false-positive control;
+**Prove** by an entry point for seal verification, incident UI and report export.
+Integrations (SIEM, alerting) and HA hardening run across all three.
 
 ---
 
