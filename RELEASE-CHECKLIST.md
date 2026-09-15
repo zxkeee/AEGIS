@@ -9,6 +9,13 @@ be competitive; **P2** items are post-launch improvements.
 
 Legend: `[ ]` open · `[x]` done · `[~]` partially done
 
+Positioning belongs to [`docs/PRODUCT.md`](./docs/PRODUCT.md) and implementation
+status to [`ROADMAP.md`](./ROADMAP.md); this file answers only "may we ship
+v1.0". Reviewed 2026-09-15 against the code — it had drifted four PRs behind,
+and the drift was in the direction that flatters: work that had shipped was
+still listed as open, and a whole third of the product (Prove) was not gated on
+at all.
+
 ---
 
 ## Pillar 1 — No security holes
@@ -66,9 +73,21 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
 - [x] **Catalog cardinality cap.** The PostgreSQL catalog bounds the total number
       of distinct endpoints (mirroring the Redis inventory cap), so a path-flood
       through a catch-all route cannot grow `api_endpoints` without limit.
-- [x] **Threat-feed redirect safety.** Feed fetches follow only HTTPS redirects to
-      non-private hosts, closing a blind-SSRF path (redirect to `http://` or an
-      internal address such as cloud metadata).
+- [x] **Outbound fetch safety (`internal/safefetch`).** Supersedes the earlier
+      redirect-only fix, which checked the host STRING in the URL. That could not
+      be the control: `https://127.1/`, `https://2130706433/`,
+      `https://0x7f.0.0.1/` and `https://localhost./` all passed it and then
+      connected to loopback anyway, because the resolver accepts forms
+      `net.ParseIP` rejects and the resolver decides where the connection goes —
+      as does any DNS name with a private A record, for which anyone can obtain a
+      genuine certificate. The decision now happens in `net.Dialer.Control`,
+      after resolution, against the address actually dialled: that closes the
+      numeric forms, the trailing dot, DNS names and DNS rebinding in one place,
+      and covers the FIRST request as well as redirects — the URL an operator
+      configured had never been checked at all. `safefetch.Client` is the only
+      way to build one of these clients and has no opt-out. Guards the JWKS
+      document (the trust root for every RSA/ECDSA token), the threat feed and
+      the alert webhook.
 - [x] **CIDR-aware IPGuard.** Whitelist/blacklist used to match only exact IP
       strings, so a configured subnet (`10.0.0.0/8`) silently matched nothing;
       now parses IPs/CIDRs and matches by containment, and `config.Validate`
@@ -357,8 +376,76 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
       escape hatch. Config: `retention` (interval + `forensic_days` / `audit_days`
       / `consumer_idle_days`; 0 keeps a table forever). Remaining: rollup of aged
       rows into summaries, backups/PITR (ops), batching for very large deletes.
-- [ ] Out-of-band deployment (traffic mirroring) in addition to inline.
+- [x] **Out-of-band deployment (traffic mirroring) in addition to inline.**
+      `mirror_sink: true` turns the gateway into a terminal sink: the customer's
+      load balancer sends a copy of each request, AEGIS drains the body, builds
+      its catalog and answers 204, forwarding nothing. Their traffic never passes
+      through this process, so it can be stopped mid-pilot with nothing changing
+      — which is the objection that ends most first deployments. Refused without
+      `observe: true` (a control that "blocks" a copy stops nothing and would
+      record a denial that never happened) and refused with `tls.enabled` (the
+      mirroring proxy already terminated TLS, so the JA3 would describe this
+      process, not the caller). Honest by construction: a copy carries no
+      response, so observations are marked `RequestOnly` and the catalog counts
+      `responsesSeen` separately — a zero `pii_count` reads as "responses were
+      never examined", not "nothing was found". `docs/mirror-mode.md`.
 - [ ] Compliance report templates (PCI-DSS, HIPAA, GDPR).
+
+#### Prove — the evidence layer
+
+This block did not exist until 2026-09-15, which was itself the problem:
+`docs/PRODUCT.md` names Prove as one of the three stages of the product, several
+sessions of work went into it, and the release gate did not mention it at all.
+A gate that ignores a third of the product cannot say whether that third is
+shippable.
+
+- [~] **Regulatory mapping.** Findings and runtime abuse map onto NIS2
+      Art. 21(2), DORA Art. 8/9/10 and 17–19, and ISO/IEC 27001:2022 Annex A via
+      the OWASP API Top-10; `GET /api/compliance` + console tab. The report names
+      what it does NOT evidence (`not_evidenced`), and DORA Art. 10(1) counts
+      only observed events — a static finding says an endpoint *can* be abused,
+      not that detection fired. Remaining: PCI-DSS/HIPAA/GDPR templates (above),
+      PDF/CSV export.
+- [~] **Incident register.** `internal/incident` correlates events into
+      incidents by verified caller identity (not address — a changing address
+      would shatter one campaign into hundreds of incidents), tracks
+      open→contained→closed, NIS2 Art. 23(4) deadlines measured from submission
+      rather than detection, DORA Art. 18 classification, and an append-only
+      notification history. Closing an incident does not clear a missed deadline.
+      Remaining: console page, export.
+- [~] **Signed reports.** `GET /api/report?sign=1` and `/api/compliance?sign=1`
+      return `{document, attestation}` with an Ed25519 signature over
+      `aegis-attest-v1\n<signed_at>\n<document>` on a dedicated key
+      (`AEGIS_REPORT_SIGNING_KEY`; reusing another secret is refused in
+      `config.Validate`). `cmd/reportverify` is standalone and refuses to run
+      against a key taken from the document it is checking. `format=csv&sign=1`
+      and a missing key return 400 rather than a silently unsigned document.
+- [~] **Log integrity (tamper-evidence).** Hourly Merkle root per period, each
+      seal committing to its predecessor, plus a gapless `seq` and a signed
+      per-tenant chain head — so deleting entries inside a sealed period and
+      removing whole seals from the end of the chain are both detectable.
+      `docs/forensic-seals.md`.
+- [ ] **RELEASE BLOCKER: seal verification has no entry point.** `VerifySeals`
+      has no production caller — no admin endpoint, no `reportverify` command,
+      nothing. An operator cannot run the check without writing Go. Detection
+      that cannot be invoked does not detect anything, and shipping the claim
+      without the path is precisely the over-promise this project keeps fixing
+      elsewhere. Half a day.
+- [ ] **The data feeding a signed document has no integrity protection.** The
+      `incidents` table decides what the signed compliance report says about DORA
+      Art. 17/18/19 (`incident_handlers.go:410` → `catalog_handlers.go:385`), and
+      it carries no commitment of its own: deleting a row changes a signed
+      document with nothing detecting it. `admin_audit_log` — the insider trail
+      that `docs/ARCHITECTURE.md` names as the mitigation for the operator threat
+      — has neither integrity protection nor RLS. Sealing is already generic
+      enough to extend; do it once rather than twice.
+- [ ] **No independent witness, and this must never be overstated.** The signing
+      key is held by the party being audited, so a signature proves "this
+      document was not altered after it was produced" and not "it was not
+      assembled from tidied-up data". An external anchor (RFC 3161, a
+      transparency log) is not shipped. Ship only the word tamper-**evident**;
+      never tamper-proof. Not a release blocker — an honesty blocker, and the
+      wording is the deliverable.
 - [~] **Licensing / metering.** Done: repo relicensed MIT → **BUSL 1.1**
       (`LICENSE`) — production use now requires a commercial license or
       written agreement, converting to Apache 2.0 four years after each
@@ -408,6 +495,21 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
 ## Pillar 3 — Works excellently
 
 ### P0 — release blockers
+- [x] **The test suite exercises row-level security.** CI connected to
+      PostgreSQL as the service container's superuser, which ignores RLS
+      entirely — so every tenant-isolation policy was dead code for the whole
+      run, and a query that forgot its tenant filter passed exactly like one
+      that did not. Measured, not assumed: two mutations that removed real
+      protections in the seal chain stayed GREEN under a superuser and went red
+      immediately under an ordinary role. The mirror image was as bad — the five
+      tests that build their own restricted role were the only RLS assertions
+      running, and pointing `POSTGRES_DSN` at an unprivileged role made all five
+      SKIP, so the stronger environment proved strictly less than the weaker one.
+      `POSTGRES_APP_DSN` now names an unprivileged role that ordinary tests
+      connect as; the few that must `CREATE ROLE` ask for `pgtest.AdminDSN`
+      explicitly; those five run in both modes and their skips are fatals. Both
+      `pgtest` and the CI step refuse a role that can bypass RLS, because a
+      silently privileged "unprivileged" role is how this returns.
 - [x] **Test coverage.** Regression tests for every recent security fix
       (JA3 spoof, IP-guard/rate-limit fail-closed, identity signature/replay).
       A CI coverage gate (`scripts/coverage-gate.sh`, wired into `test.yml`)
@@ -495,13 +597,26 @@ Legend: `[ ]` open · `[x]` done · `[~]` partially done
 
 ## Suggested sequence
 
-1. **Tests (P3-P0)** — establish reliability and lock in the security fixes with
-   regression tests. *In progress.*
-2. **Console authentication (P1-P0)** — close the last release-blocking hole.
-3. **BOLA/BFLA detection (P2-P1)** — the competitive flagship.
-4. **SIEM/alerting + Prometheus (P2-P1)** — fit into customer stacks.
-5. **Benchmarks + HA hardening (P3-P0/P1)** — prove "works excellently".
+Revised 2026-09-15. The first three steps of the previous version were done and
+still written as upcoming, which is how a checklist stops being read.
 
-Realistic effort: roughly 2–4 focused iterations. The foundation is solid; this
-checklist is the disciplined path from a strong implementation to a shippable
-product.
+1. ~~Tests~~ ✅ — coverage gate in CI with per-package floors, and the suite now
+   runs under a role that cannot bypass RLS (Pillar 3 P0).
+2. ~~Console authentication~~ ✅ — sessions, RBAC, OIDC SSO.
+3. ~~BOLA/BFLA detection~~ ✅ — confirmed object ownership from the response
+   body, proactive block before forward.
+4. **Seal verification entry point** — half a day, and it is a release blocker:
+   the integrity claim currently cannot be exercised by anyone who is not
+   writing Go.
+5. **Benchmarks (P3)** — the one open item a *sales conversation* needs rather
+   than a customer. "Plus N ms" answers half the objections on a call; the
+   present numbers are noise off a Wi-Fi link.
+6. **SIEM/alerting** — the webhook exists and is validated; Splunk/Elastic
+   export and routing do not.
+7. **HA hardening** — Redis Sentinel/Cluster and PostgreSQL failover.
+
+Ordering note: steps 4–7 are listed by what unblocks a deal, not by what is
+technically interesting — the same rule `ROADMAP.md` now uses. And the honest
+caveat that belongs on any release gate: nothing here is validated by a customer,
+because there has not been one. A checklist proves the product is shippable, not
+that it should be shipped.
