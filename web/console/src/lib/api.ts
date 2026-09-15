@@ -137,6 +137,52 @@ export interface AuditEntry {
   detail?: string;
 }
 
+// The answer to "has the forensic log been tampered with", as GET
+// /api/forensic/seals returns it.
+//
+// `intact` is the whole answer and requires both halves: every sealed period
+// still recomputes AND no seal is missing. A chain can be internally perfect and
+// three periods short, which is the cheap attack the chain head exists to catch.
+export interface SealChainCheck {
+  complete: boolean;
+  head_present: boolean;
+  head_seq: number;
+  seals_found: number;
+  highest_seq: number;
+  head_key_id?: string;
+  detail?: string;
+}
+
+export interface SealCheck {
+  seal: {
+    tenant_id: string;
+    seq: number;
+    period_start: string;
+    period_end: string;
+    entry_count: number;
+    merkle_root: string;
+    prev_root: string;
+    sealed_at: string;
+  };
+  actual_count: number;
+  actual_root: string;
+  intact: boolean;
+  detail?: string;
+}
+
+export interface SealReport {
+  generated_at: string;
+  tenant: string;
+  intact: boolean;
+  chain: SealChainCheck;
+  seals: SealCheck[];
+  summary: { periods: number; intact: number; altered: number };
+  // What this document does NOT establish, carried with the result rather than
+  // left in the API docs. Rendered, not hidden behind a link: a green
+  // verification result is exactly the thing a reader over-interprets.
+  limits: string[];
+}
+
 export type Metrics = Record<string, number>;
 
 export interface PostureSummary {

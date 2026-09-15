@@ -1,4 +1,5 @@
 import { ErrorNote, PageHeader, Row, Table, Td, Th } from "@/components/PageBits";
+import { SealIntegrity } from "@/components/SealIntegrity";
 import { MethodBadge, SeverityBadge } from "@/components/badges";
 import { Badge, EmptyState, Skeleton } from "@/components/ui";
 import { api, type BlockEntry } from "@/lib/api";
@@ -31,6 +32,11 @@ export function Forensics() {
         title="Forensics"
         desc="Recent security events, newest first — WAF blocks and authorization-abuse detections (BOLA/IDOR, BFLA)."
       />
+
+      {/* Whether this record can still be trusted, shown above the record
+          itself. The seals were verifiable by nothing reachable until the
+          endpoint existed; a check nobody runs is not a check. */}
+      <SealIntegrity />
 
       {error ? (
         <ErrorNote error={error} />
