@@ -174,6 +174,11 @@ func (s *Server) registerRoutes() {
 	// Admin action audit trail (per-tenant; super-admin can span with ?all=true).
 	s.mux.HandleFunc("GET /api/audit", h.getAudit)
 
+	// Forensic log integrity: recompute every seal for the tenant and report
+	// what no longer matches, including seals missing from the chain. Signable,
+	// so the result can be verified away from the system that produced it.
+	s.mux.HandleFunc("GET /api/forensic/seals", h.getSealReport)
+
 	// IP management
 	s.mux.HandleFunc("GET /api/blocked-ips", h.getBlockedIPs)
 	s.mux.HandleFunc("POST /api/blocked-ips", h.blockIPHandler)

@@ -405,7 +405,11 @@ RLS = ["forensic_logs", "forensic_seals", "forensic_chain_head", "incidents",
        "api_endpoints", "api_endpoint_status", "api_consumers",
        "api_endpoint_consumers", "api_specs"]
 write = re.compile(r"\b(UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+\"?(" + "|".join(RLS) + r")\b", re.I)
-call = re.compile(r"\.db\.(Exec|Query|QueryRow)(Context)?\(")
+# Two spellings of the same mistake: a field (s.db.Exec) and a bare handle
+# (db.Exec on a *sql.DB opened locally, which a test naturally writes). The
+# first version of this check matched only the field form, so the second would
+# have walked straight past it.
+call = re.compile(r"(?:\.|(?:^|[^A-Za-z0-9_.]))(?:db|sqlDB|conn|pool)\.(Exec|Query|QueryRow)(Context)?\(")
 
 out = []
 for f in sorted(pathlib.Path("internal").rglob("*.go")):
