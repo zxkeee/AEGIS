@@ -123,8 +123,24 @@ transaction per period while the request path waits on the same connection pool.
 
 ## Verifying
 
-`VerifySeals` recomputes every seal for a tenant against the log as it stands
-and reports, per period, one of:
+**`GET /api/forensic/seals`** is how an operator asks the question. It
+recomputes every seal for the caller's tenant and returns the per-period results
+together with the chain-level answer. Add `?sign=1` and the result comes back as
+an Ed25519-signed envelope that `cmd/reportverify` checks against a key pinned
+out of band — which is what makes it an artifact somebody can hand over rather
+than a page somebody looks at.
+
+The document carries its own limits in a `limits` field, inside the signed body.
+A verification result is exactly the sort of artifact a reader over-interprets,
+and the limits are the part that stops "verified" from being quoted as "proved".
+
+This endpoint did not exist until 2026-09-15. The seals were written by a worker
+and read by nothing reachable — `VerifySeals` had no production caller at all,
+so the only way to ask whether the log had been tampered with was to write Go
+against the database. A detection nobody can invoke does not detect anything.
+
+Underneath, `VerifySeals` recomputes every seal for a tenant against the log as
+it stands and reports, per period, one of:
 
 - intact;
 - `N entries are missing: sealed X, found Y`;

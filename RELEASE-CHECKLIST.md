@@ -425,12 +425,18 @@ shippable.
       per-tenant chain head — so deleting entries inside a sealed period and
       removing whole seals from the end of the chain are both detectable.
       `docs/forensic-seals.md`.
-- [ ] **RELEASE BLOCKER: seal verification has no entry point.** `VerifySeals`
-      has no production caller — no admin endpoint, no `reportverify` command,
-      nothing. An operator cannot run the check without writing Go. Detection
-      that cannot be invoked does not detect anything, and shipping the claim
-      without the path is precisely the over-promise this project keeps fixing
-      elsewhere. Half a day.
+- [x] **Seal verification has an entry point.** Was a release blocker:
+      `VerifySeals` had no production caller at all — no admin endpoint, no
+      `reportverify` command — so the only way to ask whether the log had been
+      tampered with was to write Go against the database, and a detection nobody
+      can invoke detects nothing. `GET /api/forensic/seals` now recomputes every
+      seal for the caller's tenant and returns the per-period results with the
+      chain-level answer; `?sign=1` returns a signed envelope `cmd/reportverify`
+      verifies against an out-of-band key, which is what makes it an artifact to
+      hand over rather than a page to look at. The document carries its own
+      `limits` field **inside the signed body** — a verification result is
+      exactly the artifact a reader over-interprets, so the limits travel with
+      it. Remaining (not blocking): a console page.
 - [ ] **The data feeding a signed document has no integrity protection.** The
       `incidents` table decides what the signed compliance report says about DORA
       Art. 17/18/19 (`incident_handlers.go:410` → `catalog_handlers.go:385`), and

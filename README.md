@@ -727,6 +727,12 @@ chain head records how far the chain is supposed to reach — so removing entrie
 from a sealed period and removing whole seals from the end of the chain are both
 detectable.
 
+`GET /api/forensic/seals` runs that verification and returns the per-period
+results together with the chain-level answer; `?sign=1` returns it as a signed
+envelope `cmd/reportverify` can check away from this system. The document
+carries its own `limits` field inside the signed body, because a verification
+result is the sort of artifact a reader over-interprets.
+
 **Read the limits before repeating any of this to a customer:**
 
 - Seals make deletion **detectable, not impossible**. Nothing stops a `DELETE`.

@@ -17,7 +17,17 @@ import (
 // how the gateway runs whenever forensic_dsn is set.
 func durableHandlers(t *testing.T) (*handlers, *forensic.PGSink) {
 	t.Helper()
-	sink, err := forensic.NewPGSink(pgDSN(t), logger.New("error"))
+	return durableHandlersAt(t, pgDSN(t))
+}
+
+// durableHandlersAt is durableHandlers for a DSN the caller already holds.
+//
+// pgtest.DSN DROPs and recreates the schema on every call, so a test that needs
+// a second connection of its own must reuse the string rather than ask for
+// another one — asking again deletes the tables it is about to inspect.
+func durableHandlersAt(t *testing.T, dsn string) (*handlers, *forensic.PGSink) {
+	t.Helper()
+	sink, err := forensic.NewPGSink(dsn, logger.New("error"))
 	if err != nil {
 		t.Fatalf("NewPGSink: %v", err)
 	}
