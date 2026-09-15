@@ -182,6 +182,14 @@ upstream-supplied JA3 header, but **only from a `trusted_proxies` peer**.
   `internal/middleware/ports.go`; tests use the fakes in `fakes_test.go`.
 - RealIP trusts `X-Forwarded-For` only from `trusted_proxies` (right-to-left
   walk). Misconfiguring `trusted_proxies` breaks every per-IP control.
+- **Positioning lives in `docs/PRODUCT.md`, status in `ROADMAP.md`, the release
+  gate in `RELEASE-CHECKLIST.md`, and none of them may contradict the code.**
+  They drifted apart four times in one session — README described a product
+  without the mirror mode the sales offer leads with; the roadmap and the
+  checklist both listed that mirror as unstarted after it shipped. `make
+  doc-drift` (`scripts/check-doc-drift.py`, wired into preflight and CI) now
+  checks it. When you ship something a buyer or an operator is told about, add
+  it to `docs/capabilities.json` — the check only knows what is listed there.
 
 
 

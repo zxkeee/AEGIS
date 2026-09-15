@@ -170,6 +170,8 @@ step "repo invariants"
 ./scripts/check-no-binaries.sh >/dev/null 2>&1 && ok "no tracked binaries" || bad "no tracked binaries"
 ./scripts/check-weak-secrets.sh >/dev/null 2>&1 && ok "no weak secrets" || bad "no weak secrets"
 ./scripts/check-image-pins.sh  >/dev/null 2>&1 && ok "images pinned" || bad "images pinned"
+python3 ./scripts/check-doc-drift.py >/tmp/preflight-drift.log 2>&1 \
+  && ok "docs match the code" || { bad "docs and code disagree about what exists"; cat /tmp/preflight-drift.log; }
 
 echo
 if [ "$fail" -ne 0 ]; then

@@ -1,0 +1,160 @@
+{
+  "_comment": [
+    "Capabilities whose existence in code and description in the docs must not drift apart.",
+    "",
+    "This file exists because they did, four times in one session: README carried no mention",
+    "of mirror mode, seals, NIS2 or DORA while the sales offer led with the first and two",
+    "sessions of work had gone into the rest (#73); ROADMAP listed the mirror as 4-8 weeks of",
+    "unstarted work after it had shipped, and its P1 table contradicted its own phase tables",
+    "(#73, #74); the release checklist listed the mirror as open for the same reason (#75).",
+    "",
+    "Every one was found by a human reading two documents side by side and noticing. That is",
+    "not a control. scripts/check-doc-drift.py is.",
+    "",
+    "Fields:",
+    "  name        - what it is called in conversation",
+    "  proof       - {file, contains}: the thing in the CODE that settles whether it exists",
+    "  keywords    - how the docs refer to it; any one counts as a mention",
+    "  must_mention- documents that would be lying by omission without it",
+    "",
+    "Add a capability here when it becomes something a buyer or an operator is told about."
+  ],
+  "capabilities": [
+    {
+      "name": "mirror mode",
+      "proof": {
+        "file": "internal/config/config.go",
+        "contains": "mirror_sink"
+      },
+      "keywords": [
+        "mirror_sink",
+        "mirror mode",
+        "Mirror Mode",
+        "mirroring",
+        "зеркал"
+      ],
+      "must_mention": [
+        "README.md",
+        "ROADMAP.md",
+        "docs/PRODUCT.md",
+        "RELEASE-CHECKLIST.md"
+      ]
+    },
+    {
+      "name": "forensic log seals",
+      "proof": {
+        "file": "internal/forensic/seal_store.go",
+        "contains": "func (s *PGSink) SealPeriod"
+      },
+      "keywords": [
+        "seal",
+        "печат"
+      ],
+      "must_mention": [
+        "README.md",
+        "ROADMAP.md",
+        "docs/PRODUCT.md",
+        "RELEASE-CHECKLIST.md"
+      ]
+    },
+    {
+      "name": "seal verification endpoint",
+      "proof": {
+        "file": "internal/api/server.go",
+        "contains": "GET /api/forensic/seals"
+      },
+      "keywords": [
+        "/api/forensic/seals"
+      ],
+      "must_mention": [
+        "README.md",
+        "docs/forensic-seals.md",
+        "RELEASE-CHECKLIST.md"
+      ]
+    },
+    {
+      "name": "signed compliance reports",
+      "proof": {
+        "file": "internal/api/sign.go",
+        "contains": "func (h *handlers) writeSignable"
+      },
+      "keywords": [
+        "sign=1",
+        "reportverify",
+        "signed report",
+        "подписанн"
+      ],
+      "must_mention": [
+        "README.md",
+        "ROADMAP.md",
+        "docs/PRODUCT.md",
+        "RELEASE-CHECKLIST.md"
+      ]
+    },
+    {
+      "name": "NIS2 / DORA mapping",
+      "proof": {
+        "file": "internal/api/compliance.go",
+        "contains": "fwDORA"
+      },
+      "keywords": [
+        "NIS2",
+        "DORA"
+      ],
+      "must_mention": [
+        "README.md",
+        "ROADMAP.md",
+        "docs/PRODUCT.md",
+        "RELEASE-CHECKLIST.md"
+      ]
+    },
+    {
+      "name": "observe / pilot mode",
+      "proof": {
+        "file": "internal/config/config.go",
+        "contains": "Observe bool"
+      },
+      "keywords": [
+        "observe",
+        "pilot mode",
+        "observe-режим"
+      ],
+      "must_mention": [
+        "README.md",
+        "ROADMAP.md",
+        "docs/PRODUCT.md"
+      ]
+    },
+    {
+      "name": "incident register",
+      "proof": {
+        "file": "internal/incident/store_pg.go",
+        "contains": "incidents"
+      },
+      "keywords": [
+        "incident",
+        "инцидент"
+      ],
+      "must_mention": [
+        "README.md",
+        "ROADMAP.md",
+        "docs/PRODUCT.md",
+        "RELEASE-CHECKLIST.md"
+      ]
+    },
+    {
+      "name": "unprivileged database role in tests",
+      "proof": {
+        "file": "internal/pgtest/pgtest.go",
+        "contains": "POSTGRES_APP_DSN"
+      },
+      "keywords": [
+        "POSTGRES_APP_DSN"
+      ],
+      "must_mention": [
+        ".claude/CLAUDE.md",
+        "RELEASE-CHECKLIST.md"
+      ]
+    }
+  ]
+}
