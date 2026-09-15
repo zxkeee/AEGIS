@@ -235,6 +235,9 @@ func (h *handlers) getReport(w http.ResponseWriter, r *http.Request) {
 		"posture":      sum,
 		"endpoints":    eps,
 		"count":        len(eps),
+		// An inventory built from observed traffic cannot say what was never
+		// called, and that is the reading a reader most wants from it.
+		"limits": catalogReportLimits(),
 	})
 }
 

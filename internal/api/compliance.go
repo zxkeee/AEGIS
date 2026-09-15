@@ -244,7 +244,11 @@ type complianceReport struct {
 	Tenant      string                `json:"tenant"`
 	Evidence    evidenceProvenance    `json:"evidence"`
 	Frameworks  []complianceFramework `json:"frameworks"`
-	Summary     struct {
+	// Limits states what a mapped control does and does not mean. A framework
+	// mapping is the document most likely to be read as a compliance claim, and
+	// it is not one.
+	Limits  []string `json:"limits"`
+	Summary struct {
 		Critical         int `json:"critical"`
 		Warning          int `json:"warning"`
 		ControlsAffected int `json:"controls_affected"`
@@ -270,7 +274,9 @@ func severityRank(s string) int {
 func buildCompliance(rows []findingRow, abuse map[string]int, ev incidentEvidence) complianceReport {
 	type key struct{ framework, control string }
 	agg := map[key]*complianceControl{}
-	var rep complianceReport
+	// Limits first: a framework mapping is the document most likely to be read
+	// as a compliance claim, and writeSignable refuses to sign one without them.
+	rep := complianceReport{Limits: complianceReportLimits()}
 
 	// observed says the evidence is a detected event rather than a static
 	// finding. Controls marked runtimeOnly accept nothing else.

@@ -43,7 +43,14 @@ func callSignable(t *testing.T, h *handlers, query string, doc any) *httptest.Re
 	return rec
 }
 
-var docFixture = map[string]any{"count": 2, "posture": "partial"}
+// docFixture carries limits because every signable document must: writeSignable
+// refuses to sign one that does not state what it fails to establish, so a
+// fixture without them would be testing a path production cannot reach.
+var docFixture = map[string]any{
+	"count":   2,
+	"posture": "partial",
+	"limits":  []string{"this is a test fixture and establishes nothing at all"},
+}
 
 // The refusal that matters. A caller asking for a signature on a gateway with
 // no key must be told; handing back an unsigned document would leave a script
@@ -269,5 +276,67 @@ func TestGetCompliance_IsSignable(t *testing.T) {
 	}
 	if !strings.Contains(env.Document, "frameworks") {
 		t.Errorf("the signed document is not the compliance report: %s", env.Document)
+	}
+}
+
+// Every signed document must state what it fails to establish.
+//
+// Three documents can be signed here, and until this was enforced only one of
+// them did. That asymmetry is the dangerous kind: a signature makes a document
+// look authoritative whatever is in it, so the artifacts most likely to be
+// over-read are exactly the ones a reader will not qualify on their own.
+func TestWriteSignable_RefusesADocumentWithNoStatedLimits(t *testing.T) {
+	h := &handlers{log: logger.New("error"), reportSigner: signerFixture(t)}
+
+	rec := callSignable(t, h, "sign=1", map[string]any{"finding": "everything is fine"})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: a document with no limits was signed anyway:\n%s",
+			rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "fails to establish") {
+		t.Errorf("the refusal does not say why: %s", rec.Body.String())
+	}
+
+	// An empty list is the same omission wearing a field name.
+	rec = callSignable(t, h, "sign=1", map[string]any{"limits": []string{}})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: an empty limits list passed as a statement of limits", rec.Code)
+	}
+
+	rec = callSignable(t, h, "sign=1", map[string]any{"limits": signingLimits()})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: a document that states its limits was refused:\n%s",
+			rec.Code, rec.Body.String())
+	}
+}
+
+// Unsigned responses are not gated: the guard is about what a signature would
+// imply, and an operator reading JSON in a console is not holding an artifact.
+func TestWriteSignable_UnsignedIsNotGatedOnLimits(t *testing.T) {
+	h := &handlers{log: logger.New("error"), reportSigner: signerFixture(t)}
+	rec := callSignable(t, h, "", map[string]any{"finding": "everything is fine"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for an unsigned read", rec.Code)
+	}
+}
+
+// The three documents must not drift back to three different vocabularies for
+// the same caveat: the key belongs to the audited party, and there is no
+// independent witness. Both apply to all of them.
+func TestSignedDocuments_ShareTheSameUniversalLimits(t *testing.T) {
+	for name, got := range map[string][]string{
+		"catalog report":    catalogReportLimits(),
+		"compliance report": complianceReportLimits(),
+		"seal report":       sealReportLimits(),
+	} {
+		joined := strings.ToLower(strings.Join(got, "\n"))
+		for _, must := range []string{"party being audited", "no external anchor"} {
+			if !strings.Contains(joined, must) {
+				t.Errorf("%s omits %q; it applies to every document signed with this key", name, must)
+			}
+		}
+		if len(got) < 3 {
+			t.Errorf("%s states only %d limits, which reads as a formality", name, len(got))
+		}
 	}
 }

@@ -40,27 +40,6 @@ type sealReportSummaryCounts struct {
 	Altered int `json:"altered"`
 }
 
-// sealReportLimits is what a reader must not conclude from a green result.
-//
-// Every line is a claim the mechanism cannot support, written out because the
-// alternative is that somebody quotes "verified" and means something stronger
-// than the code can deliver.
-func sealReportLimits() []string {
-	return []string{
-		"Seals make deletion detectable, not impossible. Nothing here prevents a DELETE.",
-		"A seal covers a period, not a row: an altered period is named, the missing entry is not, " +
-			"and a Merkle root is not a backup.",
-		"The signing key is held by the operator of this gateway — the party being audited. " +
-			"A signature proves this document was not altered after it was produced; it does not " +
-			"prove the log it describes was never tidied up before sealing.",
-		"There is no external anchor (RFC 3161 timestamp authority, transparency log). " +
-			"An operator holding the signing key can rewrite the chain, move the head and re-sign both.",
-		"An operator who deletes the chain head together with every seal leaves a state that " +
-			"cannot be distinguished from a deployment where sealing was never enabled.",
-		"The accurate word is tamper-evident, never tamper-proof.",
-	}
-}
-
 // GET /api/forensic/seals?sign=1
 //
 // Recomputes every seal for the caller's tenant against the log as it stands

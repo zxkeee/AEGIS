@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -31,6 +33,23 @@ func (h *handlers) writeSignable(w http.ResponseWriter, r *http.Request, doc any
 				"(see docs/compliance-evidence.md) and restart")
 		return
 	}
+	// Every signed document has to say what it does NOT establish, and this is
+	// where that is enforced rather than remembered. The limits are the half a
+	// reader skips and the half that stops "signed" being quoted as "proved" —
+	// and a document that leaves them out is most dangerous exactly when it is
+	// most authoritative-looking.
+	//
+	// Checked on the marshalled form so it holds for a struct and a map alike,
+	// and it is a 500 rather than a silent pass: refusing to sign is recoverable,
+	// an over-claiming artifact in an auditor's hands is not.
+	if err := hasLimits(doc); err != nil {
+		h.log.Error("admin: refusing to sign a document with no stated limits",
+			map[string]any{"error": err.Error()})
+		writeError(w, http.StatusInternalServerError,
+			"this document cannot be signed: it does not state what it fails to establish")
+		return
+	}
+
 	env, err := h.reportSigner.Attest(doc)
 	if err != nil {
 		h.log.Error("admin: report signing failed", map[string]any{"error": err.Error()})
@@ -75,4 +94,26 @@ func (h *handlers) getSigningKey(w http.ResponseWriter, r *http.Request) {
 		"note": "pin this key_id out of band; the public_key embedded in a signed report " +
 			"proves only that the report is self-consistent",
 	})
+}
+
+// hasLimits reports whether a document carries a non-empty "limits" list.
+//
+// The check is on the JSON because that is what gets signed and what the reader
+// receives; a Go field that marshals away would pass a type check and fail the
+// person holding the printout.
+func hasLimits(doc any) error {
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("marshal document: %w", err)
+	}
+	var probe struct {
+		Limits []string `json:"limits"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return fmt.Errorf("read limits: %w", err)
+	}
+	if len(probe.Limits) == 0 {
+		return errors.New("the document has no \"limits\" field, or it is empty")
+	}
+	return nil
 }
