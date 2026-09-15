@@ -18,6 +18,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Один прогон на ветку и workflow. Более старые отменяются, а не ждут очереди.
+#
+# На одноразовых раннерах GitHub это экономия; на self-hosted это условие
+# работоспособности: пятнадцать поставленных в очередь прогонов при одном
+# исполнителе загнали домашний сервер в load average 12.88 на четырёх ядрах.
+# Отменять устаревшее — единственный способ, при котором быстрый push подряд не
+# превращается в часы молотьбы по коду, который уже никого не интересует.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -73,14 +84,56 @@ jobs:
       - name: Build gateway
         run: go build -ldflags "-X api-gateway/internal/license.publicKeyB64=$CI_LICENSE_PUBKEY" -o bin/gateway ./cmd/gateway
 
+      # Where this job runs decides how it reaches the containers it starts,
+      # and getting it wrong fails quietly rather than loudly.
+      #
+      # On a GitHub-hosted runner the job executes directly on the VM: a
+      # container published to loopback is reachable, and fixed ports are free
+      # because the machine is empty and thrown away afterwards.
+      #
+      # Under a self-hosted act_runner the job is ITSELF a container. Siblings
+      # started through the mounted docker socket are not on its loopback, so
+      # 127.0.0.1 reaches nothing — and publishing 5432 on the host collides
+      # with whatever that machine already runs. It did, on a box that also
+      # serves a password manager and a photo library:
+      #   Bind for 192.168.31.116:5432 failed: port is already allocated
+      # Worse, "-p 5432:5432" binds every interface, so each run put a
+      # throwaway database with a guessable password on a home LAN.
+      - name: Work out how to reach the service containers
+        run: |
+          if NET=$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' "$(hostname)" 2>/dev/null) \
+             && [ -n "$NET" ]; then
+            echo "job is containerised — joining services to network '$NET', addressing them by name"
+            {
+              echo "E2E_OPTS_REDIS=--network $NET"
+              echo "E2E_OPTS_PG=--network $NET"
+              echo "E2E_OPTS_ECHO=--network $NET"
+              echo "E2E_REDIS_ADDR=aegis-e2e-redis:6379"
+              echo "E2E_PG_HOST=aegis-e2e-postgres"
+              echo "E2E_ECHO_URL=http://aegis-e2e-echo:8080"
+            } >> "$GITHUB_ENV"
+          else
+            echo "job runs on the host — publishing to loopback only"
+            {
+              echo "E2E_OPTS_REDIS=-p 127.0.0.1:6379:6379"
+              echo "E2E_OPTS_PG=-p 127.0.0.1:5432:5432"
+              echo "E2E_OPTS_ECHO=-p 127.0.0.1:3000:8080"
+              echo "E2E_REDIS_ADDR=127.0.0.1:6379"
+              echo "E2E_PG_HOST=127.0.0.1"
+              echo "E2E_ECHO_URL=http://127.0.0.1:3000"
+            } >> "$GITHUB_ENV"
+          fi
+
       - name: Start Redis (password-protected)
         run: |
-          docker run -d --name aegis-e2e-redis -p 6379:6379 \
+          # shellcheck disable=SC2086 -- the options are meant to word-split
+          docker run -d --name aegis-e2e-redis $E2E_OPTS_REDIS \
             redis:7-alpine@sha256:9702d01c1f10c3ea9f48211b4362e44f154ff02d063e6f7268eba804059f53bf redis-server --requirepass scanpass
 
       - name: Start PostgreSQL
         run: |
-          docker run -d --name aegis-e2e-postgres -p 5432:5432 \
+          # shellcheck disable=SC2086
+          docker run -d --name aegis-e2e-postgres $E2E_OPTS_PG \
             -e POSTGRES_USER=aegis -e POSTGRES_PASSWORD=aegis -e POSTGRES_DB=aegis \
             postgres:15-alpine@sha256:cae15a3b718f23497a60b7cafdcf205216d7949680972da0584db00fb68bf3e6
           # Wait for the database to accept connections.
@@ -93,13 +146,25 @@ jobs:
 
       - name: Start echo backend
         run: |
-          docker run -d --name aegis-e2e-echo -p 3000:8080 \
+          # shellcheck disable=SC2086
+          docker run -d --name aegis-e2e-echo $E2E_OPTS_ECHO \
             mendhak/http-https-echo:31@sha256:64208b871594c0eeb2a3c88736b6eb170dcb8edaa7a748c047f7fd62006e65ed
+
+      # The checked-in config names 127.0.0.1 for Redis and the upstream, which
+      # is right on a hosted runner and wrong inside a container. Rewrite those
+      # two lines rather than keeping a second config that would drift.
+      - name: Point the gateway config at the services
+        run: |
+          sed -i \
+            -e "s|addr: \"127.0.0.1:6379\"|addr: \"$E2E_REDIS_ADDR\"|" \
+            -e "s|- \"http://127.0.0.1:3000\"|- \"$E2E_ECHO_URL\"|" \
+            tests/dynamic/gateway.e2e.yaml
+          grep -E "addr:|http" tests/dynamic/gateway.e2e.yaml | head -4
 
       - name: Launch AEGIS (catalog enabled)
         env:
           AEGIS_REDIS_PASSWORD: scanpass
-          AEGIS_FORENSIC_DSN: postgres://aegis:aegis@127.0.0.1:5432/aegis?sslmode=disable
+          AEGIS_FORENSIC_DSN: postgres://aegis:aegis@${{ env.E2E_PG_HOST }}:5432/aegis?sslmode=disable
           AEGIS_LICENSE_PATH: /tmp/ci-license.lic
         run: |
           AEGIS_ADMIN_SECRET="$(openssl rand -hex 32)"
