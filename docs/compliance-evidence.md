@@ -8,6 +8,30 @@ Both `GET /api/report` and `GET /api/compliance` can be signed. Signing is
 opt-in per request (`?sign=1`); without it, both endpoints behave exactly as
 before.
 
+## What a signed document does not establish
+
+Every document this gateway signs — the catalog report, the compliance report
+and the seal verification — carries a `limits` array saying what it fails to
+prove. It is inside the signed body, so it travels with the artifact rather than
+living in documentation the holder never sees.
+
+`writeSignable` **refuses to sign a document without it** (500, logged). That is
+deliberate: refusing to sign is recoverable, an over-claiming artifact in an
+auditor's hands is not. Two limits are on every document, because they follow
+from the signing model rather than from any particular report:
+
+- the signing key is held by the operator — the party being audited — so a
+  signature proves the document was not altered after production, not that the
+  data behind it was complete or untouched beforehand;
+- there is no external anchor, so nothing here is independent of the operator.
+
+The rest are per document: an inventory built from observed traffic cannot say
+what was never called; a mapped control is evidence a check ran and not an
+assessment of compliance; a seal makes deletion detectable and not impossible.
+
+The wording lives in `internal/api/limits.go` and is pinned by tests, because
+here the wording is the deliverable.
+
 ## The trust model, in one paragraph
 
 The gateway signs a report with an Ed25519 key that only the operator holds.
