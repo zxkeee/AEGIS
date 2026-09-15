@@ -40,7 +40,23 @@ via service containers:
 ```bash
 REDIS_ADDR=host:6379 \
 POSTGRES_DSN='postgres://aegis:aegis@host:5432/aegis?sslmode=disable' \
+POSTGRES_APP_DSN='postgres://aegis_app:aegis_app@host:5432/aegis?sslmode=disable' \
 go test ./internal/store/ ./internal/discovery/ -v
+```
+
+**Two DSNs, and the second one is not optional in CI.** `POSTGRES_DSN` names a
+superuser; `POSTGRES_APP_DSN` names an unprivileged role (`NOSUPERUSER
+NOBYPASSRLS`) and is what `pgtest.DSN` connects as when it is set. A superuser
+ignores row-level security entirely, so every tenant-isolation policy is dead
+code during a run without it — measured, not assumed: two mutations that removed
+real protections in the seal chain stayed green under a superuser and went red
+under an ordinary role. The few tests that must `CREATE ROLE` ask for
+`pgtest.AdminDSN` explicitly. Create the role once:
+
+```sql
+CREATE ROLE aegis_app LOGIN PASSWORD 'aegis_app' NOSUPERUSER NOBYPASSRLS;
+GRANT CREATE, CONNECT ON DATABASE aegis TO aegis_app;
+GRANT ALL ON SCHEMA public TO aegis_app;
 ```
 
 `internal/store` (Redis) and `internal/discovery` (PostgreSQL catalog) have such

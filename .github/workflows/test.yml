@@ -57,6 +57,40 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      # An unprivileged role for the tests to connect as.
+      #
+      # A superuser — which is what the service container's `postgres` is —
+      # ignores row-level security completely. Every tenant-isolation policy in
+      # this repo was therefore inert for the whole test run, and a query that
+      # forgot its tenant filter passed exactly like one that did not. Measured,
+      # not assumed: two mutations that removed real protections in the seal
+      # chain stayed green under `postgres` and went red immediately under a
+      # role like this one.
+      #
+      # POSTGRES_DSN stays superuser because a few tests must CREATE ROLE to
+      # build a restricted connection of their own. Those ask for it explicitly
+      # (pgtest.AdminDSN); everything else gets POSTGRES_APP_DSN.
+      - name: Create the unprivileged application role
+        run: |
+          psql "$POSTGRES_DSN" -v ON_ERROR_STOP=1 <<'SQL'
+          DROP ROLE IF EXISTS aegis_app;
+          CREATE ROLE aegis_app LOGIN PASSWORD 'aegis_app' NOSUPERUSER NOBYPASSRLS;
+          GRANT CREATE, CONNECT ON DATABASE aegis TO aegis_app;
+          GRANT ALL ON SCHEMA public TO aegis_app;
+          SQL
+          # Fail the job rather than the assertions if the role is not what it
+          # claims to be: a silently-privileged "unprivileged" role would put us
+          # back where we started, with green checks that prove nothing.
+          actual=$(psql "$POSTGRES_APP_DSN" -tAc \
+            "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user")
+          if [ "$actual" != "f" ]; then
+            echo "aegis_app bypasses RLS ($actual); the isolation tests would prove nothing"
+            exit 1
+          fi
+        env:
+          POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/aegis?sslmode=disable
+          POSTGRES_APP_DSN: postgres://aegis_app:aegis_app@localhost:5432/aegis?sslmode=disable
+
       # -timeout 180s (default is 600s): a deadlocked test should report as a
       # failure, not as a ten-minute mystery. A cross-test goroutine leak once
       # hung internal/api for the full default window, and the job read as an
@@ -68,6 +102,7 @@ jobs:
         env:
           REDIS_ADDR: localhost:6379
           POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/aegis?sslmode=disable
+          POSTGRES_APP_DSN: postgres://aegis_app:aegis_app@localhost:5432/aegis?sslmode=disable
 
       # Coverage gate: fail if a critical package regresses below its floor.
       # Floors ratchet toward the >=70% release target (see the script).
@@ -78,6 +113,7 @@ jobs:
         env:
           REDIS_ADDR: localhost:6379
           POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/aegis?sslmode=disable
+          POSTGRES_APP_DSN: postgres://aegis_app:aegis_app@localhost:5432/aegis?sslmode=disable
 
       - name: Upload coverage
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0

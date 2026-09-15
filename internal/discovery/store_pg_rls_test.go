@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"api-gateway/internal/pgtest"
 )
 
 // asRestrictedRole returns a store connected as a freshly-created role that
@@ -42,6 +44,17 @@ func asRestrictedRole(t *testing.T, s *pgStore) *pgStore {
 		t.Fatalf("current_database: %v", err)
 	}
 
+	// Admin connection for the role DDL. When ordinary tests run as an
+	// unprivileged role (POSTGRES_APP_DSN), CREATE ROLE over the store's own
+	// connection fails, and the old code skipped on that — so the environment
+	// that actually enforces RLS ran fewer RLS assertions than the one that
+	// does not.
+	admin, err := sql.Open("pgx", pgtest.AdminDSN(t, schema))
+	if err != nil {
+		t.Fatalf("open admin connection: %v", err)
+	}
+	t.Cleanup(func() { _ = admin.Close() })
+
 	// Every catalog table, not just api_endpoints: a policy that holds on one
 	// table and not its neighbours is the gap this is meant to close.
 	tables := []string{
@@ -58,17 +71,18 @@ func asRestrictedRole(t *testing.T, s *pgStore) *pgStore {
 		stmts = append(stmts, `GRANT SELECT, INSERT, UPDATE, DELETE ON `+pq(tbl)+` TO `+role)
 	}
 	for _, stmt := range stmts {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-			t.Skipf("cannot create a non-privileged role here (%v); RLS assertions need one", err)
+		if _, err := admin.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("cannot create a non-privileged role (%v); RLS assertions need one, "+
+				"and skipping here is how they came to verify nothing", err)
 		}
 	}
 	t.Cleanup(func() {
 		for _, tbl := range tables {
-			_, _ = s.db.Exec(`REVOKE ALL ON ` + pq(tbl) + ` FROM ` + role)
+			_, _ = admin.Exec(`REVOKE ALL ON ` + pq(tbl) + ` FROM ` + role)
 		}
-		_, _ = s.db.Exec(`REVOKE ALL ON SCHEMA ` + pq(schema) + ` FROM ` + role)
-		_, _ = s.db.Exec(`REVOKE ALL ON DATABASE ` + pq(dbName) + ` FROM ` + role)
-		_, _ = s.db.Exec(`DROP ROLE IF EXISTS ` + role)
+		_, _ = admin.Exec(`REVOKE ALL ON SCHEMA ` + pq(schema) + ` FROM ` + role)
+		_, _ = admin.Exec(`REVOKE ALL ON DATABASE ` + pq(dbName) + ` FROM ` + role)
+		_, _ = admin.Exec(`DROP ROLE IF EXISTS ` + role)
 	})
 
 	db, err := sql.Open("pgx", rewriteUser(t, os.Getenv("POSTGRES_DSN"), role, "rlstest", schema))

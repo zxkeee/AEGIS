@@ -60,16 +60,9 @@ func TestSeal_DetectsADeletedEntry(t *testing.T) {
 	}
 
 	// The deletion an operator would actually perform.
-	if _, err := s.db.ExecContext(ctx, `
-		SELECT set_config('app.tenant_id', 'acme', false)`); err != nil {
-		t.Fatalf("set_config: %v", err)
-	}
-	if _, err := s.db.ExecContext(ctx,
+	tamper(t, s, "acme", stmt(
 		`DELETE FROM forensic_logs WHERE tenant_id = 'acme' AND id = (
-			SELECT id FROM forensic_logs WHERE tenant_id = 'acme' ORDER BY id OFFSET 3 LIMIT 1)`,
-	); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
+			SELECT id FROM forensic_logs WHERE tenant_id = 'acme' ORDER BY id OFFSET 3 LIMIT 1)`))
 
 	checks, err = sealChecks(ctx, s, "acme")
 	if err != nil {
@@ -141,24 +134,17 @@ func TestSeal_ChainDetectsARewrittenSeal(t *testing.T) {
 
 	// An operator deletes an entry from the FIRST period and rewrites that
 	// seal's root to match — the obvious cover-up.
-	if _, err := s.db.ExecContext(ctx, `SELECT set_config('app.tenant_id', 'acme', false)`); err != nil {
-		t.Fatalf("set_config: %v", err)
-	}
-	if _, err := s.db.ExecContext(ctx,
+	tamper(t, s, "acme", stmt(
 		`DELETE FROM forensic_logs WHERE tenant_id='acme' AND id = (
-			SELECT id FROM forensic_logs WHERE tenant_id='acme' ORDER BY id LIMIT 1)`); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
+			SELECT id FROM forensic_logs WHERE tenant_id='acme' ORDER BY id LIMIT 1)`))
 	recomputed, err := sealChecks(ctx, s, "acme")
 	if err != nil {
 		t.Fatalf("VerifySeals: %v", err)
 	}
-	if _, err := s.db.ExecContext(ctx,
+	tamper(t, s, "acme", stmt(
 		`UPDATE forensic_seals SET merkle_root = $1, entry_count = $2
 		 WHERE tenant_id='acme' AND period_start = $3`,
-		recomputed[0].ActualRoot, recomputed[0].ActualCount, h1); err != nil {
-		t.Fatalf("rewrite seal: %v", err)
-	}
+		recomputed[0].ActualRoot, recomputed[0].ActualCount, h1))
 
 	checks, err = sealChecks(ctx, s, "acme")
 	if err != nil {
@@ -547,17 +533,9 @@ func TestSeal_DetectsATruncatedChain(t *testing.T) {
 	// strictly easier than the deletion the seals were built to catch — it needs
 	// no key and no rewriting, only DELETE on two tables.
 	last := start.Add(2 * time.Hour)
-	if _, err := s.db.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, false)`, tenant); err != nil {
-		t.Fatalf("set_config: %v", err)
-	}
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM forensic_logs WHERE tenant_id = $1 AND ts >= $2`, tenant, last); err != nil {
-		t.Fatalf("delete entries: %v", err)
-	}
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM forensic_seals WHERE tenant_id = $1 AND period_start = $2`, tenant, last); err != nil {
-		t.Fatalf("delete seal: %v", err)
-	}
+	tamper(t, s, tenant,
+		stmt(`DELETE FROM forensic_logs WHERE tenant_id = $1 AND ts >= $2`, tenant, last),
+		stmt(`DELETE FROM forensic_seals WHERE tenant_id = $1 AND period_start = $2`, tenant, last))
 
 	report, err = s.VerifySeals(ctx, tenant)
 	if err != nil {
@@ -615,13 +593,8 @@ func TestSeal_DetectsADeletedChainHead(t *testing.T) {
 		t.Fatalf("a freshly sealed period did not verify: %+v", report)
 	}
 
-	if _, err := s.db.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, false)`, tenant); err != nil {
-		t.Fatalf("set_config: %v", err)
-	}
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM forensic_chain_head WHERE tenant_id = $1`, tenant); err != nil {
-		t.Fatalf("delete head: %v", err)
-	}
+	tamper(t, s, tenant,
+		stmt(`DELETE FROM forensic_chain_head WHERE tenant_id = $1`, tenant))
 
 	report, err = s.VerifySeals(ctx, tenant)
 	if err != nil {
@@ -665,17 +638,9 @@ func TestSeal_DetectsATruncationTheWorkerResealed(t *testing.T) {
 	}
 
 	last := start.Add(2 * time.Hour)
-	if _, err := s.db.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, false)`, tenant); err != nil {
-		t.Fatalf("set_config: %v", err)
-	}
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM forensic_logs WHERE tenant_id = $1 AND ts >= $2`, tenant, last); err != nil {
-		t.Fatalf("delete entries: %v", err)
-	}
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM forensic_seals WHERE tenant_id = $1 AND period_start = $2`, tenant, last); err != nil {
-		t.Fatalf("delete seal: %v", err)
-	}
+	tamper(t, s, tenant,
+		stmt(`DELETE FROM forensic_logs WHERE tenant_id = $1 AND ts >= $2`, tenant, last),
+		stmt(`DELETE FROM forensic_seals WHERE tenant_id = $1 AND period_start = $2`, tenant, last))
 
 	// The worker, doing its job: the period is unsealed again, so it seals it.
 	if _, err := s.SealPeriod(ctx, tenant, last, last.Add(time.Hour), nil); err != nil {
@@ -751,20 +716,9 @@ func TestSeal_MigrationNumbersExistingSealsAndBuildsAHead(t *testing.T) {
 
 	// Wind the schema back to what the previous version wrote: numbered seals
 	// and the head are both post-upgrade artefacts.
-	if _, err := s.db.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, false)`, tenant); err != nil {
-		t.Fatalf("set_config: %v", err)
-	}
-	if _, err := s.db.ExecContext(ctx,
-		`UPDATE forensic_seals SET seq = NULL WHERE tenant_id = $1`, tenant); err != nil {
-		t.Fatalf("clear seq: %v", err)
-	}
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM forensic_chain_head WHERE tenant_id = $1`, tenant); err != nil {
-		t.Fatalf("drop head: %v", err)
-	}
-	if _, err := s.db.ExecContext(ctx, `SELECT set_config('app.tenant_id', '', false)`); err != nil {
-		t.Fatalf("reset set_config: %v", err)
-	}
+	tamper(t, s, tenant,
+		stmt(`UPDATE forensic_seals SET seq = NULL WHERE tenant_id = $1`, tenant),
+		stmt(`DELETE FROM forensic_chain_head WHERE tenant_id = $1`, tenant))
 
 	// Without the migration this state is indistinguishable from a deleted head.
 	report, err := s.VerifySeals(ctx, tenant)
@@ -834,4 +788,57 @@ func TestSeal_MigrationNumbersExistingSealsAndBuildsAHead(t *testing.T) {
 func sealChecks(ctx context.Context, s *PGSink, tenant string) ([]SealCheck, error) {
 	r, err := s.VerifySeals(ctx, tenant)
 	return r.Checks, err
+}
+
+// tamper performs the edits an operator would make to cover something up, with
+// app.tenant_id pinned for the duration.
+//
+// One transaction, is_local=true — deliberately NOT the older shape of
+// `s.db.Exec(set_config(..., false))` followed by a separate s.db.Exec. That
+// sets the GUC on whichever pooled connection happened to serve it; the next
+// statement may land on a different connection, where RLS matches zero rows and
+// the tampering silently does not happen. The test then asserts against a log
+// nobody touched — and the ones that expect a clean result would PASS.
+//
+// The effect only shows up under a role that does not bypass RLS, which is why
+// it survived: under a superuser the GUC was irrelevant either way.
+func tamper(t *testing.T, s *PGSink, tenant string, stmts ...tamperStmt) {
+	t.Helper()
+	ctx := context.Background()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("tamper: begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenant); err != nil {
+		t.Fatalf("tamper: set_config: %v", err)
+	}
+	for i, st := range stmts {
+		res, err := tx.ExecContext(ctx, st.q, st.args...)
+		if err != nil {
+			t.Fatalf("tamper: statement %d: %v", i, err)
+		}
+		// A tampering statement that changed nothing means the test is about to
+		// assert on an untouched database. Louder here than three assertions later.
+		if n, err := res.RowsAffected(); err == nil && n == 0 && st.wantRows {
+			t.Fatalf("tamper: statement %d affected no rows; the edit this test "+
+				"depends on did not happen: %s", i, st.q)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("tamper: commit: %v", err)
+	}
+}
+
+type tamperStmt struct {
+	q        string
+	args     []any
+	wantRows bool
+}
+
+// stmt is a tampering statement that must change at least one row.
+func stmt(q string, args ...any) tamperStmt {
+	return tamperStmt{q: q, args: args, wantRows: true}
 }

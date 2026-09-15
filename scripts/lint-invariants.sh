@@ -375,6 +375,60 @@ if hits=$(grep -rn --include='*.go' 'reportSigner\.Attest(' internal/api \
   fail=1
 fi
 
+# ── Invariant 9: writes to RLS tables go through a transaction ───────────────
+#
+# Every catalog/forensic table has FORCE ROW LEVEL SECURITY, and the policy
+# reads app.tenant_id, which is set with set_config(..., is_local => true) — a
+# TRANSACTION-local setting. A write issued on a pooled *sql.DB handle therefore
+# has no tenant pinned: under an unprivileged role the policy matches zero rows,
+# the statement reports success, and nothing happened.
+#
+# This has shipped twice. Once in discovery, where a test UPDATE ran outside
+# withTenantTx and the test then asserted on data it had never written — green,
+# for years, because the connected role was a superuser and RLS never engaged.
+# Once nearly again in the seal migration, where the same shape would have left
+# every existing seal unnumbered on upgrade and migrated nothing, silently.
+#
+# The sibling trap is set_config(..., false) on a *sql.DB followed by a separate
+# Exec: session scope applies to whichever pooled connection served it, and the
+# next statement may land on another. Both shapes are caught by requiring the
+# executing receiver to be a transaction.
+#
+# Test files are included deliberately — the first instance was in one, and a
+# test that fails to write what it is about to assert on is worse than
+# production code that fails loudly.
+echo "invariant: writes to RLS-protected tables run inside a transaction"
+if hits=$(python3 - <<'PYEOF'
+import pathlib, re, sys
+
+RLS = ["forensic_logs", "forensic_seals", "forensic_chain_head", "incidents",
+       "api_endpoints", "api_endpoint_status", "api_consumers",
+       "api_endpoint_consumers", "api_specs"]
+write = re.compile(r"\b(UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+\"?(" + "|".join(RLS) + r")\b", re.I)
+call = re.compile(r"\.db\.(Exec|Query|QueryRow)(Context)?\(")
+
+out = []
+for f in sorted(pathlib.Path("internal").rglob("*.go")):
+    lines = f.read_text().splitlines()
+    for i, line in enumerate(lines):
+        if not call.search(line):
+            continue
+        m = write.search("\n".join(lines[i:i + 12]))
+        if m:
+            out.append("%s:%d: %s %s issued on a pooled DB handle, not a transaction"
+                       % (f, i + 1, m.group(1).upper(), m.group(2)))
+for o in out:
+    print(o)
+sys.exit(0)
+PYEOF
+) && [ -n "$hits" ]; then
+  echo "ERROR: a write to an RLS-protected table runs outside a transaction."
+  echo "       app.tenant_id is transaction-local, so this statement has no tenant"
+  echo "       pinned: under a non-superuser role it matches zero rows and succeeds."
+  echo "$hits"
+  fail=1
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo
   echo "lint-invariants: FAILED — a security invariant regressed (see above)."

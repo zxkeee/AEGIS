@@ -209,9 +209,19 @@ forensic) **RLS-политики** как fail-closed backstop.
 - `TenantResolve` (самый внешний) — резолвинг + срез клиентских `X-Tenant-*`,
   регистронезависимое сравнение маршрута/Host.
 - Redis — префикс `gw:t:<tenant>:`.
-- PostgreSQL — `tenant_id` в каждой таблице, `WHERE tenant_id` в каждом запросе,
-  + RLS (`FORCE ROW LEVEL SECURITY`, GUC `app.tenant_id` через `set_config` в
-  транзакции) как backstop.
+- PostgreSQL — `tenant_id` в каждой таблице, `WHERE tenant_id` в каждом запросе.
+  RLS (`FORCE ROW LEVEL SECURITY`, GUC `app.tenant_id` через `set_config` в
+  транзакции) как backstop — **на таблицах каталога и forensic**, то есть
+  `api_endpoints`, `api_endpoint_status`, `api_consumers`,
+  `api_endpoint_consumers`, `api_specs`, `forensic_logs`, `forensic_seals`,
+  `forensic_chain_head`, `incidents`.
+
+  **Без RLS: `admin_audit_log`, `admin_users`, `tenants`.** У них изоляция
+  держится только на `WHERE` в коде, без fail-closed подстраховки. Здесь
+  написано явно, потому что раньше этот абзац утверждал RLS «в каждой таблице»,
+  а §5 того же документа — верную, более узкую версию; ADR-001 (фаза 2b) тоже
+  говорит только про каталог и forensic. Из трёх формулировок неверной была
+  ровно эта.
 - Admin-сессия несёт `tenant_id` + `role`; `AdminAuth` пинит запрос к tenant'у
   сессии (перекрывает то, что мог поставить TenantResolve).
 - Брутфорс-гейт логина (`internal/api/auth_handlers.go`) считает попытки и

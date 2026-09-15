@@ -81,13 +81,18 @@ else
   # superuser (or any BYPASSRLS role) silently skips every tenant-isolation
   # guarantee, so a green run under one proves strictly less than under an
   # ordinary role — and that difference has already hidden a defect once.
+  #
+  # POSTGRES_APP_DSN is what CI sets: tests connect as that unprivileged role,
+  # while POSTGRES_DSN stays superuser for the few that must CREATE ROLE.
   if command -v psql >/dev/null 2>&1; then
-    rls=$(psql "$POSTGRES_DSN" -tAc \
+    probe_dsn="${POSTGRES_APP_DSN:-$POSTGRES_DSN}"
+    rls=$(psql "$probe_dsn" -tAc \
       "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user" 2>/dev/null || true)
     if [ "$rls" = "t" ]; then
       step "integration stores"
-      note "the PostgreSQL role bypasses row-level security"
+      note "the PostgreSQL role the tests connect as bypasses row-level security"
       note "RLS-dependent checks are NOT exercised in this run"
+      note "set POSTGRES_APP_DSN to an unprivileged role, as CI does"
     fi
   fi
 fi
