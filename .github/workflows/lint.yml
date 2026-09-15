@@ -70,6 +70,15 @@ jobs:
       - name: Check container image pinning
         run: ./scripts/check-image-pins.sh
 
+      # The documents describing this product drifted apart from the code four
+      # times in one session — README carried no mention of mirror mode, seals,
+      # NIS2 or DORA while the sales offer led with the first; the roadmap and
+      # the release checklist both listed the mirror as unstarted work after it
+      # had shipped. Every one was caught by a person reading two files side by
+      # side, which is not a control. This is.
+      - name: Check docs against the code
+        run: python3 ./scripts/check-doc-drift.py
+
   # The console bundle is committed so `go build` works without Node. Nothing
   # checked that the committed bytes were built from the committed lockfile, so
   # a dependency bump could change the console's inputs while the embedded

@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker loadgen demo demo-auto check-binaries check-secrets check-image-pins lint-invariants hooks console console-dev sample-report render-pdf preflight stand stand-down stand-test
+.PHONY: build run test clean docker loadgen demo demo-auto doc-drift check-binaries check-secrets check-image-pins lint-invariants hooks console console-dev sample-report render-pdf preflight stand stand-down stand-test
 
 build:
 	go build -ldflags="-s -w" -o bin/gateway ./cmd/gateway
@@ -85,6 +85,12 @@ render-pdf:
 # before pushing; `make lint` alone has missed real failures three times.
 preflight:
 	./scripts/preflight.sh
+
+# Do the documents still describe the product the code implements? Answers the
+# question that needed a person reading two files side by side four times in one
+# session. See docs/capabilities.json for what it knows about.
+doc-drift:
+	python3 ./scripts/check-doc-drift.py
 
 # A complete, disposable AEGIS on this machine: PostgreSQL, Redis, a throwaway
 # license, an upstream and the gateway itself — the stand the dynamic security
