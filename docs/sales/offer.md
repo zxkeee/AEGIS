@@ -1,7 +1,13 @@
 # The first offer
 
 What is being sold, to whom, for how much, and what is deliberately not
-promised. Everything else in this directory inherits its wording from here.
+promised. Everything else in this directory inherits its wording from here — and
+this file inherits its positioning from [`docs/PRODUCT.md`](../PRODUCT.md), which
+is where a change to what the product *is* goes first.
+
+The offer below sells **stage one of three** (See). Protect is the second
+conversation and Prove the third; PRODUCT.md §3 explains why that order is not
+negotiable.
 
 ## The offer
 
