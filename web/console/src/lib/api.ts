@@ -286,6 +286,10 @@ export interface ComplianceFramework {
 export interface ComplianceReport {
   frameworks: ComplianceFramework[];
   summary: { critical: number; warning: number; controls_affected: number };
+  // What a mapped control does and does not mean. The gateway refuses to sign a
+  // document without these, so they are always present on a current backend;
+  // optional here only so an older one degrades instead of crashing.
+  limits?: string[];
 }
 
 export interface Effectiveness {

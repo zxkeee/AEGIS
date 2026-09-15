@@ -2,6 +2,7 @@ import { motion } from "framer-motion";
 import { ShieldCheck } from "@phosphor-icons/react";
 import { ErrorNote, PageHeader, StatCard } from "@/components/PageBits";
 import { Card, EmptyState, Skeleton } from "@/components/ui";
+import { DocumentLimits } from "@/components/DocumentLimits";
 import { api, type ComplianceFramework, type ComplianceReport } from "@/lib/api";
 import { useData } from "@/lib/hooks";
 import { fmt } from "@/lib/utils";
@@ -27,6 +28,16 @@ export function Compliance() {
           <StatCard label="Frameworks mapped" value={data ? fmt(data.frameworks.length) : undefined} loading={loading} />
         </div>
       )}
+
+      {/* A framework mapping is the document most likely to be read as a
+          compliance claim, and it is not one. The caveats ship inside the
+          signed body; showing them only there would leave them unread by
+          everyone who meets the report on this screen. */}
+      <DocumentLimits
+        limits={data?.limits}
+        label="What a mapped control does and does not mean"
+        className="mt-3"
+      />
 
       <div className="mt-4">
         {loading ? (

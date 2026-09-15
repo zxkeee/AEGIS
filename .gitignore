@@ -93,6 +93,13 @@ demo/fp-assessment/out/
 # PostgreSQL data directory. Never anything that should be committed.
 .stand/
 
-# Local working notes and third-party linter scratch state.
-handoff.md
+# Third-party linter scratch state.
+#
+# handoff.md used to be ignored here as "local working notes". It stopped being
+# that: it accumulated the patterns that took several sessions to learn — which
+# tests were green for the wrong reason, which mutations survive under a
+# superuser, which claims the product cannot back — and none of it existed
+# anywhere else. An unversioned file holding the most expensive knowledge in the
+# repository is a single disk failure away from being relearned. The repository
+# is private; if that ever changes, read handoff.md before flipping the switch.
 .aislop/
