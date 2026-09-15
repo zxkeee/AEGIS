@@ -1,6 +1,7 @@
-import { CheckCircle, Warning, Info } from "@phosphor-icons/react";
+import { CheckCircle, Warning } from "@phosphor-icons/react";
 import { Badge, Card, Skeleton } from "@/components/ui";
 import { ErrorNote } from "@/components/PageBits";
+import { DocumentLimits } from "@/components/DocumentLimits";
 import { api, type SealReport } from "@/lib/api";
 import { useData } from "@/lib/hooks";
 
@@ -66,19 +67,8 @@ export function SealIntegrity() {
           {/* The limits travel with the result. A green badge is exactly what a
               reader over-reads, and "intact" here means something narrower than
               the word suggests. */}
-          <details className="mt-2">
-            <summary className="cursor-pointer text-xs text-muted hover:text-fg">
-              <Info size={13} className="mr-1 inline align-[-2px]" />
-              What this does and does not prove
-            </summary>
-            <ul className="mt-1.5 space-y-1 pl-4 text-xs text-muted">
-              {data.limits.map((l, i) => (
-                <li key={i} className="list-disc">
-                  {l}
-                </li>
-              ))}
-            </ul>
-          </details>
+          <DocumentLimits limits={data.limits} />
+
         </div>
       </div>
     </Card>
