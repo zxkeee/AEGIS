@@ -12,13 +12,19 @@ import (
 
 // testStore connects to the test Redis or skips when REDIS_ADDR is unset (local
 // runs without Redis). CI provides REDIS_ADDR via the redis service.
+//
+// The password comes from AEGIS_REDIS_PASSWORD, the same variable the gateway
+// reads, because the project's own one-command stand (scripts/pentest-stand.sh)
+// runs Redis with `requirepass`. Hardcoding an empty password made every test
+// here fail against that stand with NOAUTH — an environment failure that reads
+// exactly like nine broken tests, which is the expensive kind.
 func testStore(t *testing.T) *Store {
 	t.Helper()
 	addr := os.Getenv("REDIS_ADDR")
 	if addr == "" {
 		t.Skip("REDIS_ADDR not set; skipping Redis integration test")
 	}
-	s, err := New(addr, "", 0)
+	s, err := New(addr, os.Getenv("AEGIS_REDIS_PASSWORD"), 0)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}

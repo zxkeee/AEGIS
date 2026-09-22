@@ -574,14 +574,29 @@ POSTGRES_DSN='postgres://aegis_app:aegis@127.0.0.1:5432/aegis?sslmode=disable'
 `CREATE ROLE aegis_app LOGIN PASSWORD 'aegis' NOSUPERUSER NOBYPASSRLS;`
 плюс `GRANT CREATE, CONNECT ON DATABASE aegis` и `GRANT ALL ON SCHEMA public`.
 
-**На текущем `main` (`20393b0`) preflight не прогонялся.** Проверено 18.09:
-Docker Desktop не запущен, Redis и PostgreSQL на 6379/5432 не отвечают, поэтому
-сильный режим недоступен без подъёма стенда. Последний известный зелёный полный
-прогон — `73f017f`, то есть **до** восьми влитых с тех пор PR. Перед тем как
-что-то считать проверенным, подними стенд и прогони. Про CI за этот промежуток
-сказать нечего: GitHub Actions к 15.09 не стартовали из-за биллинга, Gitea #2
-влита без прогона (§0k), а состояние проверок на #72–#79 из этой сессии
-недоступно — репозиторий на GitHub приватный, API отдаёт 404 без токена.
+**Полный preflight на `main` зелёный — прогнан 23.09** в сильном режиме
+(роль `aegis_app`, `NOSUPERUSER NOBYPASSRLS`): golangci-lint обоих модулей,
+`go test -race`, coverage gate, gosec, govulncheck, npm audit обоих lockfile'ов,
+все инварианты репозитория. До этого прогона последний известный зелёный был на
+`73f017f`, то есть **на восемь PR раньше**, и промежуток не проверял никто: CI
+на GitHub к 15.09 не стартовал из-за биллинга, Gitea #2 влита без прогона (§0k).
+
+**Стенд теперь годится для интеграционных тестов — раньше не годился.** Две
+правки 23.09:
+
+- `internal/store/redis_integration_test.go` подключался как `New(addr, "", 0)`,
+  а стенд поднимает Redis с `requirepass`. Девять тестов падали с `NOAUTH` —
+  и выглядело это как девять сломанных тестов, а не как непригодная среда.
+  Пароль теперь берётся из `AEGIS_REDIS_PASSWORD`, как у самого гейтвея.
+- `pentest-stand.sh` создаёт роль `aegis_app` сам и печатает
+  `AEGIS_REDIS_PASSWORD` и `POSTGRES_APP_DSN` в `env`. До этого сильный режим
+  собирался руками каждый раз, а §0h требует гонять именно под этой ролью.
+
+Отсюда рабочая команда на один шаг вместо трёх:
+
+```
+eval "$(./scripts/pentest-stand.sh env)" && make preflight
+```
 
 ### Стенд и окружение
 
