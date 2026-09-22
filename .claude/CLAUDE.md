@@ -138,8 +138,14 @@ through `context.Context`:
 - **PostgreSQL** tables carry `tenant_id` (composite primary keys); every query
   filters by it. Schema migrations are idempotent with a `default` backfill.
 - When `multitenancy.enabled: false`, everything runs as the `default` tenant
-  (legacy single-tenant behaviour). Phases 4–6 (admin/session scoping, tenant
-  CRUD, RLS) are still open — see the ADR's implementation plan.
+  (legacy single-tenant behaviour).
+- **All six ADR phases are closed** (verified 2026-09-23, not assumed): sessions
+  carry `tenant_id` + role and `AdminAuth` pins the request to them
+  (`internal/iam`), tenant/user CRUD is live (`GET/POST /api/tenants`,
+  `/api/users` in `internal/api/server.go`), and RLS policies are on the catalog,
+  forensic and incident tables. This line read "phases 4–6 are still open" for
+  weeks after they shipped; the ADR's implementation plan is the older document,
+  so trust the code.
 
 ### Identity propagation (`sdk/gatewayverify`)
 

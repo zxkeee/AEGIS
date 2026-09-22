@@ -69,7 +69,8 @@
       "must_mention": [
         "README.md",
         "docs/forensic-seals.md",
-        "RELEASE-CHECKLIST.md"
+        "RELEASE-CHECKLIST.md",
+        "ROADMAP.md"
       ]
     },
     {
@@ -154,6 +155,24 @@
       "must_mention": [
         ".claude/CLAUDE.md",
         "RELEASE-CHECKLIST.md"
+      ]
+    },
+    {
+      "name": "multitenancy phases complete",
+      "proof": {
+        "file": "internal/api/server.go",
+        "contains": "/api/tenants"
+      },
+      "keywords": [
+        "tenant CRUD",
+        "/api/tenants",
+        "six ADR phases",
+        "6/6",
+        "мультитенантность"
+      ],
+      "must_mention": [
+        ".claude/CLAUDE.md",
+        "ROADMAP.md"
       ]
     }
   ]
