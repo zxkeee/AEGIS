@@ -172,6 +172,31 @@ step "repo invariants"
 ./scripts/check-image-pins.sh  >/dev/null 2>&1 && ok "images pinned" || bad "images pinned"
 python3 ./scripts/check-doc-drift.py >/tmp/preflight-drift.log 2>&1 \
   && ok "docs match the code" || { bad "docs and code disagree about what exists"; cat /tmp/preflight-drift.log; }
+# Exit 2 from this check means "could not answer" (a shallow clone), which is
+# neither a pass nor a contradiction — reporting it as FAILED would put a lie in
+# the output of the tool whose whole job is not to lie about verdicts.
+python3 ./scripts/check-handoff.py >/tmp/preflight-handoff.log 2>&1
+case $? in
+  0) ok "handoff matches the merge history" ;;
+  2) note "handoff check could not run"; cat /tmp/preflight-handoff.log ;;
+  *) bad "handoff contradicts the repository"; cat /tmp/preflight-handoff.log ;;
+esac
+
+# Not a gate: a forge being down does not make the code wrong, so this never
+# sets `fail`. It exists because the primary forge was unreachable for five days
+# and nobody noticed — the work sat on one laptop while both copies of the
+# history were assumed to be fine. A push that cannot land is worth one line of
+# output before the run that produces it.
+step "where this push can land"
+for remote in $(git remote 2>/dev/null); do
+  url=$(git remote get-url "$remote" 2>/dev/null)
+  if GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code "$remote" HEAD >/dev/null 2>&1; then
+    ahead=$(git rev-list --count "$remote/$(git rev-parse --abbrev-ref HEAD)"..HEAD 2>/dev/null || echo "?")
+    if [ "$ahead" = "0" ]; then ok "$remote up to date"; else note "$remote reachable, $ahead commit(s) not pushed"; fi
+  else
+    note "$remote UNREACHABLE ($url) — history is not backed up there"
+  fi
+done
 
 echo
 if [ "$fail" -ne 0 ]; then

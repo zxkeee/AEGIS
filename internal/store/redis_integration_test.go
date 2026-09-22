@@ -26,11 +26,27 @@ func testStore(t *testing.T) *Store {
 	}
 	s, err := New(addr, os.Getenv("AEGIS_REDIS_PASSWORD"), 0)
 	if err != nil {
-		t.Fatalf("connect: %v", err)
+		// Name the environment, not just the error. "connect: NOAUTH
+		// Authentication required" repeated nine times reads like nine broken
+		// tests; it is one unusable environment, and the difference is an hour
+		// of looking for a regression that is not there.
+		t.Fatalf("cannot reach the test Redis at %s: %v\n"+
+			"\tREDIS_ADDR names it; AEGIS_REDIS_PASSWORD carries its password (currently %s).\n"+
+			"\tThe project's own stand prints both: eval \"$(./scripts/pentest-stand.sh env)\"",
+			addr, err, passwordState())
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	_ = s.client.FlushDB(context.Background()).Err()
 	return s
+}
+
+// passwordState describes the credential without printing it: whether one was
+// supplied is the whole diagnostic, and its value never belongs in test output.
+func passwordState() string {
+	if os.Getenv("AEGIS_REDIS_PASSWORD") == "" {
+		return "unset"
+	}
+	return "set"
 }
 
 func ctxFor(tn string) context.Context { return tenant.With(context.Background(), tn) }

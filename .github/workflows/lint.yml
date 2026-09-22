@@ -31,6 +31,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # check-handoff.py compares the document against merge commits, and
+          # the default shallow clone has none. It would then report "skipped
+          # (no merge history available)" and pass — green for the reason this
+          # repository has been burned by more than once.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -89,6 +95,14 @@ jobs:
       # side, which is not a control. This is.
       - name: Check docs against the code
         run: python3 ./scripts/check-doc-drift.py
+
+      # Same class, different reader. doc-drift watches what a buyer reads;
+      # handoff.md is what the next session reads before touching anything, and
+      # it is the file that drifted furthest — describing main as of #71 while
+      # main carried #79. Needs full history: the check compares against merge
+      # commits, and a shallow clone has none.
+      - name: Check handoff against the merge history
+        run: python3 ./scripts/check-handoff.py
 
   # The console bundle is committed so `go build` works without Node. Nothing
   # checked that the committed bytes were built from the committed lockfile, so
