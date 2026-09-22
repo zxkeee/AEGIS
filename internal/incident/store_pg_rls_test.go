@@ -55,6 +55,13 @@ func asRestrictedRole(t *testing.T, s *PGStore) *PGStore {
 		`GRANT CONNECT ON DATABASE ` + pq(dbName) + ` TO ` + role,
 		`GRANT USAGE ON SCHEMA ` + pq(schema) + ` TO ` + role,
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON incidents TO ` + role,
+		// Every write to incidents appends to the ledger in the same
+		// transaction, so a role that can write one and not the other cannot
+		// write at all. The sequence is granted separately: BIGSERIAL needs
+		// USAGE on its sequence, and without it an INSERT fails with a
+		// permission error that names the sequence rather than the table.
+		`GRANT SELECT, INSERT, UPDATE, DELETE ON incident_ledger TO ` + role,
+		`GRANT USAGE, SELECT ON SEQUENCE incident_ledger_seq_seq TO ` + role,
 	} {
 		if _, err := admin.ExecContext(ctx, stmt); err != nil {
 			t.Fatalf("cannot create a non-privileged role (%v); RLS assertions need one, "+
@@ -63,6 +70,8 @@ func asRestrictedRole(t *testing.T, s *PGStore) *PGStore {
 	}
 	t.Cleanup(func() {
 		_, _ = admin.Exec(`REVOKE ALL ON incidents FROM ` + role)
+		_, _ = admin.Exec(`REVOKE ALL ON incident_ledger FROM ` + role)
+		_, _ = admin.Exec(`REVOKE ALL ON SEQUENCE incident_ledger_seq_seq FROM ` + role)
 		_, _ = admin.Exec(`REVOKE ALL ON SCHEMA ` + pq(schema) + ` FROM ` + role)
 		_, _ = admin.Exec(`REVOKE ALL ON DATABASE ` + pq(dbName) + ` FROM ` + role)
 		_, _ = admin.Exec(`DROP ROLE IF EXISTS ` + role)

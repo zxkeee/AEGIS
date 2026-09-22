@@ -437,14 +437,23 @@ shippable.
       `limits` field **inside the signed body** — a verification result is
       exactly the artifact a reader over-interprets, so the limits travel with
       it. Remaining (not blocking): a console page.
-- [ ] **The data feeding a signed document has no integrity protection.** The
-      `incidents` table decides what the signed compliance report says about DORA
-      Art. 17/18/19 (`incident_handlers.go:410` → `catalog_handlers.go:385`), and
-      it carries no commitment of its own: deleting a row changes a signed
-      document with nothing detecting it. `admin_audit_log` — the insider trail
-      that `docs/ARCHITECTURE.md` names as the mitigation for the operator threat
-      — has neither integrity protection nor RLS. Sealing is already generic
-      enough to extend; do it once rather than twice.
+- [~] **The data feeding a signed document has no integrity protection.**
+      Half done, and the half that is done is the one that fed the signed report.
+      `incidents` now keeps an append-only ledger (`incident_ledger`): every
+      write records the digest of the incident's state in the same transaction,
+      each row is chained to the one before it, and
+      `GET /api/incidents/ledger?sign=1` recomputes the register against it —
+      naming deleted incidents, edited ones, incidents with no ledger entry, and
+      broken chain positions. The seal mechanism could not be reused unchanged:
+      a Merkle root over a period assumes rows never change, and an incident's
+      whole point is a lifecycle, so a period root would fail on the first
+      legitimate status transition.
+      Remaining, and neither is closed by the above: **the ledger has no signed
+      head**, so deleting an incident together with every ledger row that
+      mentions it is still undetected (the forensic chain solved the same
+      problem with a signed head; the shape transfers). And **`admin_audit_log`
+      still has neither integrity protection nor RLS** — the insider trail
+      `docs/ARCHITECTURE.md` names as the mitigation for the operator threat.
 - [ ] **No independent witness, and this must never be overstated.** The signing
       key is held by the party being audited, so a signature proves "this
       document was not altered after it was produced" and not "it was not

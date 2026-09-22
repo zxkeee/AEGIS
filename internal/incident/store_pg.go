@@ -60,6 +60,35 @@ CREATE POLICY tenant_isolation ON incidents
 	    OR current_setting('app.tenant_id', true) = '*')
 	WITH CHECK (tenant_id = current_setting('app.tenant_id', true)
 	    OR current_setting('app.tenant_id', true) = '*');
+
+-- Append-only record of every state the register has held. See ledger.go for
+-- why the forensic seal mechanism does not transfer unchanged: a forensic row
+-- is written once, an incident's whole point is that it changes.
+--
+-- seq is a database-assigned sequence, and the chain covers it, so two
+-- gateways writing concurrently cannot produce two rows claiming one position.
+CREATE TABLE IF NOT EXISTS incident_ledger (
+	tenant_id    TEXT        NOT NULL DEFAULT 'default',
+	seq          BIGSERIAL,
+	incident_id  TEXT        NOT NULL,
+	op           TEXT        NOT NULL,
+	recorded_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	state_digest TEXT        NOT NULL,
+	chain        TEXT        NOT NULL,
+	PRIMARY KEY (tenant_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_incident_ledger_incident
+	ON incident_ledger (tenant_id, incident_id, seq DESC);
+
+ALTER TABLE incident_ledger ENABLE ROW LEVEL SECURITY;
+ALTER TABLE incident_ledger FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON incident_ledger;
+CREATE POLICY tenant_isolation ON incident_ledger
+	USING (tenant_id = current_setting('app.tenant_id', true)
+	    OR current_setting('app.tenant_id', true) = '*')
+	WITH CHECK (tenant_id = current_setting('app.tenant_id', true)
+	    OR current_setting('app.tenant_id', true) = '*');
 `
 
 // pgTypeMap adapts pgx's array codecs to database/sql's Scanner interface, the
@@ -149,15 +178,19 @@ ORDER BY last_event_at DESC LIMIT 1`,
 }
 
 func (s *PGStore) insert(ctx context.Context, tx *sql.Tx, d Delta) error {
+	id := newID(d)
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO incidents
 	(tenant_id, id, title, class, subject, status, severity, detected_at,
 	 last_event_at, event_count, endpoints, sources, reasons, evidence_truncated)
 VALUES ($1,$2,$3,$4,$5,'open','minor',$6,$7,$8,$9,$10,$11,$12)`,
-		tenantOr(d.Tenant), newID(d), Title(d.Class, d.Subject), d.Class, d.Subject,
+		tenantOr(d.Tenant), id, Title(d.Class, d.Subject), d.Class, d.Subject,
 		d.First, d.Last, d.Count,
 		arr(d.Endpoints), arr(d.Sources), arr(d.Reasons), d.Truncated)
-	return err
+	if err != nil {
+		return err
+	}
+	return appendLedger(ctx, tx, d.Tenant, id, opOpen)
 }
 
 func (s *PGStore) update(ctx context.Context, tx *sql.Tx, id string, d Delta) error {
@@ -193,7 +226,10 @@ UPDATE incidents SET
 WHERE tenant_id = $1 AND id = $2`,
 		tenantOr(d.Tenant), id, d.Last, d.First, d.Count,
 		arr(d.Endpoints), arr(d.Sources), arr(d.Reasons), d.Truncated)
-	return err
+	if err != nil {
+		return err
+	}
+	return appendLedger(ctx, tx, d.Tenant, id, opMerge)
 }
 
 // newID is deterministic in the incident's identity and its start, so a retried
@@ -437,7 +473,7 @@ WHERE tenant_id = $1 AND id = $2`
 		if n == 0 {
 			return ErrNotFound
 		}
-		return nil
+		return appendLedger(ctx, tx, tenant, id, opApply)
 	})
 }
 
@@ -518,7 +554,7 @@ WHERE tenant_id = $1 AND id = $2`, tenantOr(tenant), id, string(raw))
 		if rows == 0 {
 			return ErrNotFound
 		}
-		return nil
+		return appendLedger(ctx, tx, tenant, id, opNotify)
 	})
 }
 

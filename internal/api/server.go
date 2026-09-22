@@ -160,6 +160,11 @@ func (s *Server) registerRoutes() {
 	// Incident record (NIS2 Art. 23, DORA Art. 17-19). Registered whatever the
 	// store's state: without one they answer 503, which tells an operator the
 	// feature exists and is switched off — a 404 would say it does not exist.
+	// Before the {id} routes: Go's pattern matching would otherwise be fine
+	// here, but a literal segment that could be read as an id is the shape that
+	// has caused path-confusion bugs in this file before, and stating the order
+	// costs nothing.
+	s.mux.HandleFunc("GET /api/incidents/ledger", h.getIncidentLedgerReport)
 	s.mux.HandleFunc("GET /api/incidents", h.getIncidents)
 	s.mux.HandleFunc("GET /api/incidents/{id}", h.getIncident)
 	s.mux.HandleFunc("PATCH /api/incidents/{id}", h.patchIncident)
