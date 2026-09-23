@@ -1386,6 +1386,16 @@ logging system. Security block events are also written to PostgreSQL
 counters are available as JSON through the admin API and can be scraped or
 forwarded into your metrics stack; native Prometheus exposition is available at
 `GET /metrics` on the admin plane (text format 0.0.4, behind the admin bearer).
+**Per-consumer behavioural profiling** (`security.profile`) watches each
+consumer against its own online baseline on four named dimensions — request
+volume, authorisation failures, missing paths, and how many distinct endpoints
+it touches. It is deliberately not a trained model: a model needs labelled
+traffic that does not exist before a deployment does, and it cannot explain a
+finding. Every finding here names the dimension, the observed value and the
+norm it departed from, and none of them ever blocks a request — a statistical
+departure is not proof of anything. See
+[`docs/behaviour-profile.md`](docs/behaviour-profile.md).
+
 The `alerting` config block delivers those detections — BOLA/BFLA, behavioural
 auto-bans, blocks — to a webhook (generic or Slack format) **and to a SIEM**:
 Splunk HTTP Event Collector and Elasticsearch are both first-class sinks, each

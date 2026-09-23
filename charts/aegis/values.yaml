@@ -6,6 +6,13 @@ replicaCount: 2
 image:
   repository: aegis/gateway
   tag: "2.1.0"
+  # digest pins the exact image bytes, e.g.
+  #   digest: "sha256:0f1e2d..."
+  # A tag is a name and a name can be moved; a digest cannot. When set, the tag
+  # is kept in the reference for readability and Kubernetes resolves by digest.
+  # Empty means tag-only, which is fine for a development cluster and is not
+  # what a production install should run.
+  digest: ""
   pullPolicy: IfNotPresent
 
 nameOverride: ""

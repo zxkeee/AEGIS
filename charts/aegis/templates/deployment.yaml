@@ -38,7 +38,19 @@ spec:
           type: RuntimeDefault
       containers:
         - name: gateway
+          # A digest pins the exact bytes; a tag pins a name somebody can move.
+          # CI already requires digest pinning for every third-party image in
+          # this repository, and the gateway's own image was the one exception —
+          # which is backwards, since it is the image with the most privilege.
+          # The tag stays in the reference when a digest is set: Kubernetes
+          # resolves by digest and ignores the tag, and a human reading
+          # `kubectl describe` sees which release it is instead of 64 hex
+          # characters.
+          {{- if .Values.image.digest }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}@{{ .Values.image.digest }}"
+          {{- else }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          {{- end }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["--config", "/etc/aegis/gateway.yaml"]
           env:

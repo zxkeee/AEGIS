@@ -88,6 +88,14 @@ type RevocationChecker interface {
 type AbuseStore interface {
 	TrackObjectAccess(ctx context.Context, consumer, endpoint, objectID string, window time.Duration) (int64, error)
 	TrackBaseline(ctx context.Context, consumer, endpoint string, current int64, learn bool, ttl time.Duration) (float64, error)
+
+	// Per-consumer behavioural profile (P1-2). Same EWMA machinery as
+	// TrackBaseline, applied to named dimensions rather than to one endpoint's
+	// distinct-object count. See internal/middleware/profile.go for why these
+	// dimensions and why no model.
+	IncrProfileWindow(ctx context.Context, consumer, metric string, window time.Duration) (int64, error)
+	TrackProfileDistinct(ctx context.Context, consumer, metric, value string, window time.Duration) (int64, error)
+	TrackProfileBaseline(ctx context.Context, consumer, metric string, current int64, learn bool, ttl time.Duration) (float64, error)
 	// TrackObjectOwner backs single-object BOLA/IDOR detection: it records the
 	// accessing consumer against an object and returns how many distinct consumers
 	// had accessed it before (priorOwners) and whether this consumer already had

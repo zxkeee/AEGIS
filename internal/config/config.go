@@ -533,6 +533,7 @@ type SecurityConfig struct {
 	WAF        WAFConfig          `yaml:"waf"`
 	Bot        BotConfig          `yaml:"bot"`
 	Behavior   BehaviorConfig     `yaml:"behavior"`
+	Profile    ProfileConfig      `yaml:"profile"`
 	IPGuard    IPGuardConfig      `yaml:"ip_guard"`
 	DLP        DLPConfig          `yaml:"dlp"`
 	CORS       CORSConfig         `yaml:"cors"`
@@ -701,6 +702,36 @@ type BehaviorConfig struct {
 	// self-expiring ban bounds that blast radius without needing an operator to
 	// notice and manually unblock. Default 30m.
 	AutoBanTTL time.Duration `yaml:"auto_ban_ttl"`
+}
+
+// ProfileConfig is per-consumer behavioural profiling.
+//
+// Deliberately not called "anomaly detection with machine learning", because it
+// is not that and the difference matters to the person reading the config: each
+// consumer is compared against its own online baseline on four named
+// dimensions, and every finding says which dimension and by how much. There is
+// no model, no training set, and nothing that cannot be explained in a
+// sentence. See internal/middleware/profile.go.
+type ProfileConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Window is the observation window. Default 5m.
+	Window time.Duration `yaml:"window"`
+	// BaselineTTL is how long a consumer's norm survives without traffic.
+	// Default 30 days: an integration that runs monthly should still be
+	// compared against itself rather than treated as new.
+	BaselineTTL time.Duration `yaml:"baseline_ttl"`
+	// Sensitivity is the multiple of its own norm at which a consumer is
+	// reported. Default 4. Below 1 every consumer is permanently anomalous, so
+	// values under 1 are coerced.
+	Sensitivity float64 `yaml:"sensitivity"`
+	// MinObservations is the floor below which a window is noise rather than a
+	// departure. Default 20 — a consumer whose norm is 0.4 must not be
+	// "anomalous" at three requests.
+	MinObservations int `yaml:"min_observations"`
+	// Allowlist names consumers excluded entirely: the batch job, the indexer,
+	// the monitoring probe. They look anomalous by nature and are the main
+	// source of noise in a profile like this.
+	Allowlist []string `yaml:"allowlist"`
 }
 
 type IPGuardConfig struct {

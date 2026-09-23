@@ -49,6 +49,21 @@ func (nopStore) TrackObjectAccess(context.Context, string, string, string, time.
 func (nopStore) TrackBaseline(context.Context, string, string, int64, bool, time.Duration) (float64, error) {
 	return 0, nil
 }
+
+// Behavioural profile (P1-2). Zero baselines mean nothing is ever reported,
+// which is what a chain test wants: it is asserting the ORDER of the chain, not
+// what the profiler concludes.
+func (nopStore) IncrProfileWindow(context.Context, string, string, time.Duration) (int64, error) {
+	return 0, nil
+}
+
+func (nopStore) TrackProfileDistinct(context.Context, string, string, string, time.Duration) (int64, error) {
+	return 0, nil
+}
+
+func (nopStore) TrackProfileBaseline(context.Context, string, string, int64, bool, time.Duration) (float64, error) {
+	return 0, nil
+}
 func (nopStore) TrackObjectOwner(context.Context, string, string, string, time.Duration) (int64, bool, error) {
 	return 0, true, nil
 }

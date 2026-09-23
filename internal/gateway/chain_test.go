@@ -50,6 +50,11 @@ func TestChainOrder(t *testing.T) {
 		"AbuseDetection",
 		"DLP",
 		"BehaviorAnalysis",
+		// Innermost: it judges a FINISHED request, because three of its four
+		// dimensions are status codes. Inside ConsumerID for the same reason
+		// AbuseDetection is — without a stable consumer identity, "this
+		// consumer is behaving unlike itself" has no referent.
+		"BehaviorProfile",
 	}
 
 	cfg := config.GatewayConfig{}

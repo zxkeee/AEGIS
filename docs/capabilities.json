@@ -247,6 +247,25 @@
         "RELEASE-CHECKLIST.md",
         "docs/ARCHITECTURE.md"
       ]
+    },
+    {
+      "name": "per-consumer behavioural profiling",
+      "proof": {
+        "file": "internal/middleware/profile.go",
+        "contains": "func BehaviorProfile"
+      },
+      "keywords": [
+        "BehaviorProfile",
+        "behavioural profil",
+        "behavioral profil",
+        "профил",
+        "endpoint_spread",
+        "auth_failures"
+      ],
+      "must_mention": [
+        "ROADMAP.md",
+        "README.md"
+      ]
     }
   ]
 }

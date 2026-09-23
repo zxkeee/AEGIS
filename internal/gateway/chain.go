@@ -141,6 +141,11 @@ func chainSteps(cfg config.GatewayConfig, log *logger.Logger, st middleware.Stor
 		{"AbuseDetection", middleware.AbuseDetection(cfg.Security.Abuse, cfg.Security.Inventory.GraphQLPath, log, st, al)}, // BOLA/BFLA (needs verified roles)
 		{"DLP", dlpMW},
 		{"BehaviorAnalysis", middleware.BehaviorAnalysis(cfg.Security.Behavior, log, st, al)},
+		// Innermost of the observers: it reads the response status, so it can
+		// only judge a request that has finished. Inside ConsumerID for the
+		// reason AbuseDetection is — with no stable consumer identity, "unlike
+		// itself" has no meaning, because every caller is the same "ip:" one.
+		{"BehaviorProfile", middleware.BehaviorProfile(cfg.Security.Profile, log, st, al)},
 	}
 }
 

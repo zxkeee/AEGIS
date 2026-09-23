@@ -932,3 +932,67 @@ func min64(a, b int64) int64 {
 	}
 	return b
 }
+
+// ── Per-consumer behavioural profile (P1-2) ─────────────────────────────────
+//
+// The same EWMA machinery the BOLA baseline uses (A2), applied to a small set
+// of dimensions a consumer's own history can establish online. No training
+// data, no labels, no model: each consumer is compared against its own norm,
+// which is the only baseline that exists before there is production traffic to
+// learn from.
+
+// IncrProfileWindow counts one occurrence of a metric for a consumer in the
+// current window and returns the running count.
+//
+// A plain counter rather than a sliding window: the comparison is against the
+// consumer's own EWMA over many windows, so the edge effects of a fixed window
+// wash out, and a sliding window would cost a sorted set per consumer per
+// metric for accuracy nobody would notice.
+func (s *Store) IncrProfileWindow(ctx context.Context, consumer, metric string, window time.Duration) (int64, error) {
+	key := tkey(ctx, "prof:"+keyPart(consumer)+":"+keyPart(metric))
+	pipe := s.client.Pipeline()
+	n := pipe.Incr(ctx, key)
+	pipe.Expire(ctx, key, window)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return 0, err
+	}
+	return n.Val(), nil
+}
+
+// TrackProfileDistinct counts distinct values of a metric for a consumer in the
+// window — distinct endpoints touched, distinct status classes seen.
+// HyperLogLog, so memory stays bounded whatever a scanner does.
+func (s *Store) TrackProfileDistinct(ctx context.Context, consumer, metric, value string, window time.Duration) (int64, error) {
+	key := tkey(ctx, "profd:"+keyPart(consumer)+":"+keyPart(metric))
+	pipe := s.client.Pipeline()
+	pipe.PFAdd(ctx, key, value)
+	pipe.Expire(ctx, key, window)
+	cnt := pipe.PFCount(ctx, key)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return 0, err
+	}
+	return cnt.Val(), nil
+}
+
+// TrackProfileBaseline is TrackBaseline for an arbitrary metric: it returns the
+// consumer's established norm for that metric and, when learn is true, folds
+// the current observation into it.
+//
+// learn=false on an anomalous window is what stops an attack from becoming the
+// new normal — the same guard the BOLA baseline needed, for the same reason.
+func (s *Store) TrackProfileBaseline(ctx context.Context, consumer, metric string, current int64, learn bool, ttl time.Duration) (float64, error) {
+	key := tkey(ctx, "profbase:"+keyPart(consumer)+":"+keyPart(metric))
+	learnFlag := "0"
+	if learn {
+		learnFlag = "1"
+	}
+	secs := int(ttl.Seconds())
+	if secs < 1 {
+		secs = 1
+	}
+	v, err := baselineScript.Run(ctx, s.client, []string{key}, learnFlag, current, secs).Text()
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseFloat(v, 64)
+}

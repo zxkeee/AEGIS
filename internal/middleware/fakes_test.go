@@ -46,6 +46,16 @@ type fakeStore struct {
 	forensic []store.ForensicEntry
 	// baseline is the EWMA value TrackBaseline returns (adaptive BOLA tests).
 	baseline float64
+
+	// Behavioural profile. Maps are lazily created by newFakeStore; a test sets
+	// profileWindow/profileDistinct to stage an observation and profileBaseline
+	// to stage the consumer's norm.
+	profileWindow   map[string]int64
+	profileDistinct map[string]int64
+	profileBaseline map[string]float64
+	profileCounts   map[string]int64
+	profileNoLearn  []string
+	profileErr      error
 	// metrics counts IncrMetric calls by name (schema/WAF skip-visibility assertions).
 	metrics map[string]int
 }
@@ -136,6 +146,45 @@ func (f *fakeStore) TrackObjectAccess(_ context.Context, _, _, _ string, _ time.
 
 func (f *fakeStore) TrackBaseline(_ context.Context, _, _ string, _ int64, _ bool, _ time.Duration) (float64, error) {
 	return f.baseline, nil
+}
+
+// Behavioural profile (P1-2). profileWindow and profileDistinct are what the
+// next observation will see; profileBaseline is the consumer's norm. learn=false
+// calls are recorded so a test can assert the baseline is not poisoned by the
+// anomaly that was just reported.
+func (f *fakeStore) IncrProfileWindow(_ context.Context, _, metric string, _ time.Duration) (int64, error) {
+	if f.profileErr != nil {
+		// A non-zero value WITH the error on purpose. Returning zero would let
+		// the caller's "cur == 0" branch mask a missing error check, and a
+		// mutation proved it did: removing the error check left the outage test
+		// green. A pipelined Redis call can also return a partial value beside
+		// an error, so this is the realistic shape as well as the strict one.
+		return 50, f.profileErr
+	}
+	// Lazily created: every test constructs &fakeStore{} directly, so a write
+	// to a nil map here would panic in a test that never mentions profiling.
+	if f.profileCounts == nil {
+		f.profileCounts = map[string]int64{}
+	}
+	f.profileCounts[metric]++
+	if v, ok := f.profileWindow[metric]; ok {
+		return v, nil
+	}
+	return f.profileCounts[metric], nil
+}
+
+func (f *fakeStore) TrackProfileDistinct(_ context.Context, _, metric, _ string, _ time.Duration) (int64, error) {
+	if f.profileErr != nil {
+		return 50, f.profileErr
+	}
+	return f.profileDistinct[metric], nil
+}
+
+func (f *fakeStore) TrackProfileBaseline(_ context.Context, _, metric string, _ int64, learn bool, _ time.Duration) (float64, error) {
+	if !learn {
+		f.profileNoLearn = append(f.profileNoLearn, metric)
+	}
+	return f.profileBaseline[metric], nil
 }
 func (f *fakeStore) TrackObjectOwner(_ context.Context, _, _, consumer string, _ time.Duration) (int64, bool, error) {
 	// Recorded so a test can assert WHICH consumer an access was attributed to —
