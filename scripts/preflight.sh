@@ -170,6 +170,9 @@ step "repo invariants"
 ./scripts/check-no-binaries.sh >/dev/null 2>&1 && ok "no tracked binaries" || bad "no tracked binaries"
 ./scripts/check-weak-secrets.sh >/dev/null 2>&1 && ok "no weak secrets" || bad "no weak secrets"
 ./scripts/check-image-pins.sh  >/dev/null 2>&1 && ok "images pinned" || bad "images pinned"
+./scripts/check-support-bundle.sh >/tmp/preflight-bundle.log 2>&1 \
+  && ok "support bundle leaks no secrets" \
+  || { bad "the support bundle carries secrets"; cat /tmp/preflight-bundle.log; }
 python3 ./scripts/check-doc-drift.py >/tmp/preflight-drift.log 2>&1 \
   && ok "docs match the code" || { bad "docs and code disagree about what exists"; cat /tmp/preflight-drift.log; }
 # Exit 2 from this check means "could not answer" (a shallow clone), which is

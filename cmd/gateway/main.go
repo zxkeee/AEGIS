@@ -46,6 +46,8 @@ var (
 
 func main() {
 	cfgPath := flag.String("config", "config/gateway.yaml", "path to gateway config")
+	printVersion := flag.Bool("version", false,
+		"print the version, commit and build time, then exit")
 	printFingerprint := flag.Bool("print-fingerprint", false,
 		"print this machine's license hardware fingerprint and exit (run this BEFORE requesting a license, "+
 			"on the box that will actually run the gateway — see docs/licensing.md)")
@@ -58,6 +60,14 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println(fp)
+		return
+	}
+
+	// Before the config is loaded, deliberately: "which version am I running"
+	// is the first question of every support conversation, and it must be
+	// answerable on a box whose configuration is the reason for the call.
+	if *printVersion {
+		fmt.Printf("aegis %s (commit %s, built %s)\n", version, commit, buildTime)
 		return
 	}
 

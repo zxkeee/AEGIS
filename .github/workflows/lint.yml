@@ -87,6 +87,13 @@ jobs:
       - name: Check container image pinning
         run: ./scripts/check-image-pins.sh
 
+      # The support bundle leaves the customer's network by design, so what it
+      # carries is a security property. Canaries rather than review: the same
+      # method that settled the ConfigMap leak, after three separate arguments
+      # concluded that leak was impossible while it was shipping.
+      - name: The support bundle must not carry secrets
+        run: ./scripts/check-support-bundle.sh
+
       # The documents describing this product drifted apart from the code four
       # times in one session — README carried no mention of mirror mode, seals,
       # NIS2 or DORA while the sales offer led with the first; the roadmap and

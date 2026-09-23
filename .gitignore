@@ -103,3 +103,6 @@ demo/fp-assessment/out/
 # repository is a single disk failure away from being relearned. The repository
 # is private; if that ever changes, read handoff.md before flipping the switch.
 .aislop/
+
+# Support bundles are generated on a customer host and contain their data.
+support-bundle-*.tar.gz

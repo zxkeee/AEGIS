@@ -202,7 +202,7 @@ file (with hot-reload) and the administrative API.
 | Default listeners | `:8080` data plane, `:8081` admin plane |
 | Configuration | YAML file with environment-variable overrides and hot-reload |
 | Packaging | Static binary, Docker image, Helm chart |
-| License | MIT |
+| License | Business Source License 1.1 (converts to Apache 2.0 four years after each release) |
 
 ---
 
@@ -1673,7 +1673,21 @@ Contributions are welcome. Please read `CONTRIBUTING.md` before opening a pull
 request. Report security issues privately through the repository's security
 advisory mechanism rather than in public issues; see `SECURITY.md`.
 
-AEGIS is released under the MIT License; see `LICENSE`.
+**Support and service levels** are described in [`docs/support.md`](docs/support.md):
+severity definitions, response targets, what is covered and what is not, and how
+to produce a diagnostic bundle (`make support-bundle`) whose secrets are
+redacted and whose redaction is verified by a canary check in CI. It says
+plainly that AEGIS is maintained by one engineer and that the targets are
+intentions rather than contractual terms — a buyer who needs an SLA backed by a
+company should ask early.
+
+AEGIS is released under the **Business Source License 1.1**; see `LICENSE`.
+Self-hosting for your own traffic is granted; offering AEGIS to third parties as
+a service requires a commercial licence. Each release converts to Apache 2.0
+four years after its publication.
+
+(This paragraph said "MIT" for some time after the relicensing, which is the
+kind of drift that matters most: the front door stating the wrong terms of use.)
 
 ---
 
@@ -1973,7 +1987,7 @@ YAML (з гарячим перезавантаженням) та адмініс�
 | Слухачі за замовчуванням | `:8080` площина даних, `:8081` площина адміністрування |
 | Конфігурація | Файл YAML з перевизначенням через змінні середовища та гарячим перезавантаженням |
 | Пакування | Статичний бінарний файл, образ Docker, чарт Helm |
-| Ліцензія | MIT |
+| Ліцензія | Business Source License 1.1 (через чотири роки після кожного релізу — Apache 2.0) |
 
 ## 2. Проблематика
 
@@ -2381,4 +2395,4 @@ SSO, MFA) і мультитенантність; флагманську можл
 Внески вітаються. Прочитайте `CONTRIBUTING.md` перед відкриттям pull request. Про
 проблеми безпеки повідомляйте приватно через механізм security advisory
 репозиторію, а не в публічних issue; див. `SECURITY.md`. AEGIS випущено за
-ліцензією MIT; див. `LICENSE`.
+ліцензією **Business Source License 1.1**; див. `LICENSE`. Самостійний хостинг для власного трафіку дозволено; надання AEGIS третім особам як сервісу потребує комерційної ліцензії.
