@@ -27,7 +27,20 @@ for the whole-chain enforce-vs-observe comparison).
 | WAF off | 10 | 429.0 req/s | 15.74 ms | 31.61 ms | 0.00 % |
 | WAF off | 50 | 451.5 req/s | 80.89 ms | 156.78 ms | 0.00 % |
 | WAF off | 100 | 451.2 req/s | 166.96 ms | 318.05 ms | 0.00 % |
-| WAF off | 200 | 4413.9 req/s | 18.70 ms | 62.09 ms | **96.36 %** |
+| WAF off | 200 | ~~4413.9 req/s~~ | ~~18.70 ms~~ | ~~62.09 ms~~ | **96.36 %** |
+
+> **The last row is not a result — struck through 2026-09-23.** At 96% errors
+> it measured how fast the gateway can refuse, not how fast it can serve:
+> 4413 req/s at 18 ms next to 451 req/s at 167 ms is the signature of requests
+> being rejected, not of a configuration that got ten times faster.
+>
+> The cause is known and was never hidden — the shared demo backend saturated
+> and the circuit breaker opened with no second upstream configured, which is
+> correct behaviour and not an AEGIS number. It is written out in
+> `RELEASE-CHECKLIST.md` under "Load and latency benchmarks", together with the
+> two re-runs that followed. What was missing is the one place it mattered: the
+> table itself, where a reader who never opens the checklist sees a row that
+> flatters. Every other row here stands.
 
 ## Reading
 

@@ -541,7 +541,18 @@ shippable.
       outside the "every critical package" claim above rather than meeting it.
       Needs an integration test against `pgtest` before this bullet can honestly
       say "every critical package."
-- [~] **Load and latency benchmarks.** k6 scripts + guide under `tests/load/`
+- [~] **Load and latency benchmarks.** **The per-request cost is now measured**
+      (`tests/load/overhead-results-2026-09-23.md`): observe mode adds
+      +1.1…+1.6 ms at p50, full enforcement +1.8…+2.7 ms, three runs each,
+      reported as a range because two identical runs differed by 0.9 ms. That
+      question was unanswerable before: every earlier run went over Wi-Fi, whose
+      jitter is an order of magnitude larger than the thing being measured. The
+      new harness (`tests/load/overhead.sh`) puts client, gateway and upstream
+      on loopback and runs a direct control scenario that cancels everything
+      but the gateway. It is explicitly not a capacity benchmark and not what a
+      remote client sees. Below, the throughput work, which answers a different
+      question:
+      k6 scripts + guide under `tests/load/`
       (single-tenant + multi-tenant + attack-mix scenarios, CI-able
       thresholds). First on-hardware run in `tests/load/results-2026-06-21.md`:
       single-tenant 373.6 RPS / p50 33.5 ms, multi-tenant 375.7 RPS / p50
