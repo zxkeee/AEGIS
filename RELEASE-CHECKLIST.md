@@ -475,12 +475,22 @@ shippable.
       a Merkle root over a period assumes rows never change, and an incident's
       whole point is a lifecycle, so a period root would fail on the first
       legitimate status transition.
-      Remaining, and neither is closed by the above: **the ledger has no signed
-      head**, so deleting an incident together with every ledger row that
-      mentions it is still undetected (the forensic chain solved the same
-      problem with a signed head; the shape transfers). And **`admin_audit_log`
-      still has neither integrity protection nor RLS** — the insider trail
-      `docs/ARCHITECTURE.md` names as the mitigation for the operator threat.
+      **Both remaining halves are now done.** The ledger has a signed head
+      (`incident_ledger_head`) committing to how far it reaches, so deleting an
+      incident together with every ledger row that mentions it — which breaks
+      no link, because nothing surviving refers to it — is visible. And
+      `admin_audit_log`, the insider trail `docs/ARCHITECTURE.md` names as the
+      mitigation for the operator threat, has RLS it never had, a per-row
+      digest, a chain and a signed head of its own.
+      The hard part there was retention: it deletes from that trail on a
+      schedule, and a naive chain would report every lawful sweep as tampering,
+      which trains an operator to ignore the one alert that matters. Pruning is
+      therefore RECORDED in the head — a deletion the head knows about verifies
+      clean, one it does not still fails.
+      What is left is the same for all three mechanisms and is not a task: they
+      live in the database they attest, so an operator holding the signing key
+      can rewrite the record, recompute the chain and re-sign the head. Only an
+      external anchor defeats that. Ship the word tamper-**evident**.
 - [ ] **No independent witness, and this must never be overstated.** The signing
       key is held by the party being audited, so a signature proves "this
       document was not altered after it was produced" and not "it was not

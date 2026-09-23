@@ -13,6 +13,7 @@ package audit
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -89,6 +90,20 @@ type Store struct {
 	// dropped counts entries discarded because the buffer was full, reported
 	// periodically by worker. See Record.
 	dropped atomic.Int64
+	// signer signs the integrity head. nil when no report signing key is
+	// configured, in which case the head still commits to the trail for a
+	// reader and stops being evidence against the operator holding the
+	// database. See integrity.go.
+	signer Signer
+}
+
+// WithSigner attaches the key that signs the audit head.
+//
+// Separate from New so a deployment without a signing key behaves exactly as it
+// did before integrity existed.
+func (s *Store) WithSigner(sg Signer) *Store {
+	s.signer = sg
+	return s
 }
 
 // dropReportInterval is how often the worker reports accumulated drops.
@@ -111,7 +126,7 @@ func New(dsn string, log Logger) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("audit: pg ping: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, schema); err != nil {
+	if _, err := db.ExecContext(ctx, schema+integritySchema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("audit: pg migrate: %w", err)
 	}
@@ -184,17 +199,68 @@ func (s *Store) worker() {
 	}
 }
 
+// insert writes one entry, its chain link and the head, in ONE transaction.
+//
+// A transaction rather than a pooled Exec for two reasons, and both are
+// load-bearing. app.tenant_id is transaction-scoped, so a write on the pool has
+// no tenant pinned and under a role that cannot bypass RLS matches zero rows
+// while reporting success — the exact trap invariant 9 exists to catch. And a
+// row whose chain link or head update could fail separately would produce the
+// state this mechanism is meant to detect, by accident.
 func (s *Store) insert(e Entry) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO admin_audit_log
-		   (ts, tenant_id, actor_id, actor_email, role, super_admin, action, method, path, status, ip, detail)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-		e.Time, e.TenantID, e.ActorID, e.ActorEmail, e.Role, e.SuperAdmin,
-		e.Action, e.Method, e.Path, e.Status, e.IP, e.Detail)
+
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		s.log.Error("audit: begin failed", map[string]any{"error": err.Error(), "action": e.Action})
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`SELECT set_config('app.tenant_id', $1, true)`, tenantOr(e.TenantID)); err != nil {
+		s.log.Error("audit: tenant scope failed", map[string]any{"error": err.Error()})
+		return
+	}
+
+	var id int64
+	if err := tx.QueryRowContext(ctx,
+		`INSERT INTO admin_audit_log
+		   (ts, tenant_id, actor_id, actor_email, role, super_admin, action, method, path, status, ip, detail, chain)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'')
+		 RETURNING id`,
+		e.Time, tenantOr(e.TenantID), e.ActorID, e.ActorEmail, e.Role, e.SuperAdmin,
+		e.Action, e.Method, e.Path, e.Status, e.IP, e.Detail).Scan(&id); err != nil {
 		s.log.Error("audit: insert failed", map[string]any{"error": err.Error(), "action": e.Action})
+		return
+	}
+
+	// The previous link for this tenant, excluding the row just written.
+	var prev string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT chain FROM admin_audit_log WHERE tenant_id = $1 AND id < $2 ORDER BY id DESC LIMIT 1`,
+		tenantOr(e.TenantID), id).Scan(&prev); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		s.log.Error("audit: chain read failed", map[string]any{"error": err.Error()})
+		return
+	}
+
+	// The chain covers the id, which the database assigns, so it is a second
+	// statement rather than a guess in the first.
+	digest := entryDigest(id, e)
+	chain := chainValue(prev, digest, id)
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE admin_audit_log SET digest = $3, chain = $4 WHERE tenant_id = $1 AND id = $2`,
+		tenantOr(e.TenantID), id, digest, chain); err != nil {
+		s.log.Error("audit: chain write failed", map[string]any{"error": err.Error()})
+		return
+	}
+	if err := advanceHead(ctx, tx, e.TenantID, id, chain, s.signer); err != nil {
+		s.log.Error("audit: head update failed", map[string]any{"error": err.Error()})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		s.log.Error("audit: commit failed", map[string]any{"error": err.Error(), "action": e.Action})
 	}
 }
 
@@ -226,7 +292,26 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Entry, error) {
 	q += fmt.Sprintf(" LIMIT $%d", len(args)+1) // #nosec G202 -- parameterized; only $N placeholders concatenated
 	args = append(args, limit)
 
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	// A read-only transaction with the tenant pinned, because the table now
+	// carries row-level security. On a pooled handle the GUC is unset, the
+	// policy matches nothing, and the listing comes back empty while reporting
+	// success — the same shape that made a discovery test assert about rows it
+	// had never written (handoff §0c, item 5). The application-level WHERE
+	// stays: RLS is the backstop, not the filter.
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	scope := tenantOr(f.TenantID)
+	if f.TenantID == "*" {
+		scope = "*" // super-admin listing; the policy's documented escape hatch
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, true)`, scope); err != nil {
+		return nil, err
+	}
+
+	rows, err := tx.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

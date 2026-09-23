@@ -265,6 +265,17 @@ DELETE FROM incident_ledger WHERE tenant_id = $1 AND seq = (
 	if len(rep.Missing) != 0 || len(rep.Altered) != 0 || len(rep.Unledgered) != 0 {
 		t.Fatalf("the register itself is untouched; only the chain should complain: %+v", rep)
 	}
+	// The head must also notice, by a different route: an interior deletion
+	// leaves the highest sequence number untouched and lowers the COUNT. The
+	// count comparison is the only thing that sees it, and without this
+	// assertion that branch was never exercised — removing it left the whole
+	// suite green, found by mutation.
+	if rep.Head.FoundEntries >= rep.Head.HeadEntries {
+		t.Errorf("head = %+v, want fewer entries found than the head records", rep.Head)
+	}
+	if rep.Head.Complete {
+		t.Errorf("the head reported complete while an entry is missing: %+v", rep.Head)
+	}
 }
 
 // The limits travel with the answer. A report that says "intact" and nothing
@@ -280,13 +291,183 @@ func TestPG_Ledger_ReportStatesItsLimits(t *testing.T) {
 	if len(rep.Limits) == 0 {
 		t.Fatal("a verification result with no stated limits reads as proof")
 	}
-	var mentionsHead bool
+	// The gap a reader would otherwise assume closed. It used to be the missing
+	// head; the head now exists, so the remaining one is that the ledger and
+	// its head share a database with the register they attest — an operator who
+	// can rewrite all three can make them agree, and only an external anchor
+	// defeats that.
+	var mentionsAnchor bool
 	for _, l := range rep.Limits {
-		if strings.Contains(l, "signed head") {
-			mentionsHead = true
+		if strings.Contains(l, "external anchor") {
+			mentionsAnchor = true
 		}
 	}
-	if !mentionsHead {
-		t.Fatalf("the missing signed head is the gap a reader would assume closed; limits=%v", rep.Limits)
+	if !mentionsAnchor {
+		t.Fatalf("the limits do not name the remaining gap; limits=%v", rep.Limits)
 	}
+}
+
+// --- the head ---
+
+// The case the head exists for, and the only one a back-reference chain
+// structurally cannot see: delete the incident AND every ledger row that
+// mentions it. Nothing surviving refers to what is gone, so every remaining
+// link recomputes perfectly and every remaining incident matches its digest.
+// Only a commitment to the COUNT notices.
+func TestPG_LedgerHead_DetectsIncidentDeletedWithItsLedgerRows(t *testing.T) {
+	s := ledgerTestStore(t)
+	ctx := context.Background()
+	seeded := seedIncidents(t, s, "acme", 3)
+	victim := seeded[0].ID // the newest: its ledger row is the tail
+
+	before, err := s.VerifyLedger(ctx, "acme")
+	if err != nil || !before.Intact {
+		t.Fatalf("ledger before = %+v, %v", before, err)
+	}
+	if !before.Head.Present || before.Head.HeadEntries != 3 {
+		t.Fatalf("head before = %+v, want 3 entries recorded", before.Head)
+	}
+
+	// Two statements, no key, exactly what the cheap attack looks like.
+	tamper(t, s, "acme", "DELETE FROM incident_ledger WHERE tenant_id = $1 AND incident_id = $2",
+		"acme", victim)
+	tamper(t, s, "acme", "DELETE FROM incidents WHERE tenant_id = $1 AND id = $2",
+		"acme", victim)
+
+	rep, err := s.VerifyLedger(ctx, "acme")
+	if err != nil {
+		t.Fatalf("VerifyLedger: %v", err)
+	}
+	if rep.Intact {
+		t.Fatalf("an incident deleted together with its ledger rows went undetected: %+v", rep)
+	}
+	// The per-incident checks see nothing, which is the point of the test.
+	if len(rep.Missing) != 0 || len(rep.Altered) != 0 || len(rep.Unledgered) != 0 || len(rep.ChainBroken) != 0 {
+		t.Errorf("the per-incident checks should be silent here; only the head knows: %+v", rep)
+	}
+	if rep.Head.Complete {
+		t.Fatalf("the head reported complete after a truncation: %+v", rep.Head)
+	}
+	if rep.Head.HeadEntries != 3 || rep.Head.FoundEntries != 2 {
+		t.Errorf("head = %+v, want it to claim 3 entries against 2 found", rep.Head)
+	}
+}
+
+// Deleting the head itself is the other half: it leaves the ledger internally
+// perfect and removes the record of how far it should reach.
+func TestPG_LedgerHead_DetectsADeletedHead(t *testing.T) {
+	s := ledgerTestStore(t)
+	ctx := context.Background()
+	seedIncidents(t, s, "acme", 2)
+
+	tamper(t, s, "acme", "DELETE FROM incident_ledger_head WHERE tenant_id = $1", "acme")
+
+	rep, err := s.VerifyLedger(ctx, "acme")
+	if err != nil {
+		t.Fatalf("VerifyLedger: %v", err)
+	}
+	if rep.Intact || rep.Head.Present {
+		t.Fatalf("a deleted head went undetected: %+v", rep.Head)
+	}
+	if !strings.Contains(rep.Head.Detail, "missing") {
+		t.Errorf("detail = %q, want it to say the head is missing", rep.Head.Detail)
+	}
+}
+
+// The head must never move backwards: lowering last_seq is what a truncation
+// looks like, and letting a late write do it would erase the evidence that
+// later entries existed.
+//
+// THIS TEST ONLY MEANS ANYTHING UNDER A ROLE THAT CANNOT BYPASS RLS. Under a
+// superuser the policy is skipped and the guard is never exercised — handoff
+// §0h records two mutations that survived exactly that way.
+func TestPG_LedgerHead_NeverMovesBackwards(t *testing.T) {
+	s := ledgerTestStore(t)
+	ctx := context.Background()
+	seedIncidents(t, s, "acme", 3)
+
+	before, err := s.VerifyLedger(ctx, "acme")
+	if err != nil {
+		t.Fatalf("VerifyLedger: %v", err)
+	}
+	highest := before.Head.HeadSeq
+
+	// A write that tries to lower the head, through the same path the store
+	// uses. The guard must refuse it.
+	err = s.withTenantTx(ctx, "acme", func(tx *sql.Tx) error {
+		return advanceHead(ctx, tx, "acme", highest-2, "rolled-back-chain", nil)
+	})
+	if err != nil {
+		t.Fatalf("advanceHead: %v", err)
+	}
+
+	after, err := s.VerifyLedger(ctx, "acme")
+	if err != nil {
+		t.Fatalf("VerifyLedger: %v", err)
+	}
+	if after.Head.HeadSeq != highest {
+		t.Fatalf("the head moved backwards: %d -> %d", highest, after.Head.HeadSeq)
+	}
+	if !after.Intact {
+		t.Errorf("a refused rollback left the ledger reported as tampered: %+v", after)
+	}
+}
+
+// An unsigned head still commits to the count, and the report must say plainly
+// that it proves nothing to a third party. A reader who is not told will assume
+// the opposite, because every other verification artifact here is signed.
+func TestPG_LedgerHead_SaysWhenItIsNotSigned(t *testing.T) {
+	s := ledgerTestStore(t)
+	rep, err := s.VerifyLedger(context.Background(), "acme")
+	if err != nil {
+		t.Fatalf("VerifyLedger: %v", err)
+	}
+	var said bool
+	for _, l := range rep.Limits {
+		if strings.Contains(l, "NOT signed") {
+			said = true
+		}
+	}
+	if !said {
+		t.Errorf("an unsigned head did not say so; limits = %v", rep.Limits)
+	}
+}
+
+// With a signer attached the head carries a signature and a key id, so an
+// auditor can pin the key out of band and check the claim away from this
+// system — which is the only thing that makes the head evidence rather than
+// bookkeeping.
+func TestPG_LedgerHead_IsSignedWhenAKeyIsConfigured(t *testing.T) {
+	s := ledgerTestStore(t).WithSigner(fakeSigner{})
+	ctx := context.Background()
+	seedIncidents(t, s, "acme", 2)
+
+	rep, err := s.VerifyLedger(ctx, "acme")
+	if err != nil {
+		t.Fatalf("VerifyLedger: %v", err)
+	}
+	if rep.Head.Signature == "" || rep.Head.KeyID == "" {
+		t.Fatalf("head = %+v, want a signature and a key id", rep.Head)
+	}
+	for _, l := range rep.Limits {
+		if strings.Contains(l, "NOT signed") {
+			t.Errorf("a signed head still claims to be unsigned: %q", l)
+		}
+	}
+}
+
+// fakeSigner stands in for internal/attest. The signature's cryptography is
+// that package's business and is tested there; what matters here is that the
+// head carries one and that it covers the head's own claim.
+type fakeSigner struct{}
+
+func (fakeSigner) SignBytes(payload []byte) (string, string) {
+	return "sig:" + string(payload[:min(len(payload), 24)]), "test-key"
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

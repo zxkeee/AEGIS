@@ -13,6 +13,7 @@
 package retention
 
 import (
+	"api-gateway/internal/audit"
 	"context"
 	"database/sql"
 	"errors"
@@ -135,7 +136,13 @@ func (w *Worker) sweepAt(ctx context.Context, now time.Time) (Stats, error) {
 	if d := w.cfg.AuditDays; d > 0 {
 		cutoff := now.AddDate(0, 0, -d)
 		if err := w.inTenantTx(ctx, func(tx *sql.Tx) error {
-			n, err := exec(ctx, tx, `DELETE FROM admin_audit_log WHERE ts < $1`, cutoff)
+			// The audit trail is chained and its head commits to a count, so a
+			// deletion nobody records reads as tampering — correctly, because
+			// from the outside it is indistinguishable from one. Retention
+			// therefore REPORTS what it removed, per tenant, in the same
+			// transaction as the delete. An operator who deletes rows without
+			// this step still fails verification, which is the point.
+			n, err := w.pruneAuditPerTenant(ctx, tx, cutoff)
 			st.Audit = n
 			return err
 		}); err != nil {
@@ -198,4 +205,58 @@ func exec(ctx context.Context, tx *sql.Tx, query string, args ...any) (int64, er
 	}
 	n, _ := res.RowsAffected()
 	return n, nil
+}
+
+// pruneAuditPerTenant deletes expired audit rows and tells each tenant's audit
+// head what was removed.
+//
+// Per tenant rather than one blanket DELETE, because the head is per tenant and
+// a single total would leave every tenant's count wrong. The whole thing runs
+// in the caller's transaction, so a crash between the delete and the record
+// cannot leave a trail that reads as tampered.
+func (w *Worker) pruneAuditPerTenant(ctx context.Context, tx *sql.Tx, cutoff time.Time) (int64, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT tenant_id, count(*), COALESCE(max(id), 0)
+FROM admin_audit_log WHERE ts < $1 GROUP BY tenant_id`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	type victim struct {
+		tenant  string
+		count   int64
+		highest int64
+	}
+	var victims []victim
+	for rows.Next() {
+		var v victim
+		if err := rows.Scan(&v.tenant, &v.count, &v.highest); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		victims = append(victims, v)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, err
+	}
+	_ = rows.Close()
+
+	var total int64
+	for _, v := range victims {
+		n, err := exec(ctx, tx, `DELETE FROM admin_audit_log WHERE tenant_id = $1 AND ts < $2`,
+			v.tenant, cutoff)
+		if err != nil {
+			return total, err
+		}
+		total += n
+		// The signer is deliberately nil here: the retention worker does not
+		// hold the report signing key, and pretending otherwise would put a
+		// signing credential in a maintenance component. The head records the
+		// pruning either way; an unsigned update is visible to a reader and is
+		// not evidence to a third party, which is stated in the limits.
+		if err := audit.RecordPruning(ctx, tx, v.tenant, v.highest, n, nil); err != nil {
+			return total, err
+		}
+	}
+	return total, nil
 }

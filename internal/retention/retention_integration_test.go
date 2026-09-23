@@ -42,7 +42,13 @@ func createTables(t *testing.T, db *sql.DB) {
 		`ALTER TABLE forensic_logs ENABLE ROW LEVEL SECURITY`,
 		`ALTER TABLE forensic_logs FORCE ROW LEVEL SECURITY`,
 		`CREATE POLICY p ON forensic_logs USING (tenant_id = current_setting('app.tenant_id', true) OR current_setting('app.tenant_id', true) = '*') WITH CHECK (tenant_id = current_setting('app.tenant_id', true) OR current_setting('app.tenant_id', true) = '*')`,
-		`CREATE TABLE admin_audit_log (id BIGSERIAL PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default', ts TIMESTAMPTZ NOT NULL)`,
+		// The audit trail is chained and its head commits to a count, so the
+		// sweep records what it prunes rather than deleting silently — see
+		// internal/audit. The head table belongs to that package's schema; it
+		// is created here because this fixture builds a minimal database by
+		// hand rather than running every package's migrations.
+		`CREATE TABLE admin_audit_log (id BIGSERIAL PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'default', ts TIMESTAMPTZ NOT NULL, digest TEXT NOT NULL DEFAULT '', chain TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE admin_audit_head (tenant_id TEXT PRIMARY KEY, last_id BIGINT NOT NULL, last_chain TEXT NOT NULL DEFAULT '', entries BIGINT NOT NULL DEFAULT 0, pruned_to_id BIGINT NOT NULL DEFAULT 0, pruned_count BIGINT NOT NULL DEFAULT 0, signature TEXT NOT NULL DEFAULT '', key_id TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE api_consumers (tenant_id TEXT NOT NULL DEFAULT 'default', id TEXT NOT NULL, last_seen TIMESTAMPTZ NOT NULL, PRIMARY KEY (tenant_id, id))`,
 		`ALTER TABLE api_consumers ENABLE ROW LEVEL SECURITY`,
 		`ALTER TABLE api_consumers FORCE ROW LEVEL SECURITY`,

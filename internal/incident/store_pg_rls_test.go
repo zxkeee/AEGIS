@@ -62,6 +62,9 @@ func asRestrictedRole(t *testing.T, s *PGStore) *PGStore {
 		// permission error that names the sequence rather than the table.
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON incident_ledger TO ` + role,
 		`GRANT USAGE, SELECT ON SEQUENCE incident_ledger_seq_seq TO ` + role,
+		// The head moves in the same transaction as the ledger entry, so a role
+		// that cannot write it cannot write an incident at all.
+		`GRANT SELECT, INSERT, UPDATE, DELETE ON incident_ledger_head TO ` + role,
 	} {
 		if _, err := admin.ExecContext(ctx, stmt); err != nil {
 			t.Fatalf("cannot create a non-privileged role (%v); RLS assertions need one, "+
@@ -72,6 +75,7 @@ func asRestrictedRole(t *testing.T, s *PGStore) *PGStore {
 		_, _ = admin.Exec(`REVOKE ALL ON incidents FROM ` + role)
 		_, _ = admin.Exec(`REVOKE ALL ON incident_ledger FROM ` + role)
 		_, _ = admin.Exec(`REVOKE ALL ON SEQUENCE incident_ledger_seq_seq FROM ` + role)
+		_, _ = admin.Exec(`REVOKE ALL ON incident_ledger_head FROM ` + role)
 		_, _ = admin.Exec(`REVOKE ALL ON SCHEMA ` + pq(schema) + ` FROM ` + role)
 		_, _ = admin.Exec(`REVOKE ALL ON DATABASE ` + pq(dbName) + ` FROM ` + role)
 		_, _ = admin.Exec(`DROP ROLE IF EXISTS ` + role)

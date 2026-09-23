@@ -36,13 +36,12 @@
 //     seals: tamper-EVIDENT.
 //   - The ledger is not a backup. It records that an incident had a different
 //     state, not what that state was.
-//   - THE LEDGER HAS NO SIGNED HEAD YET. The forensic chain has one, which is
-//     what makes truncating its tail visible. Here, an operator who deletes an
-//     incident AND every ledger row that ever mentioned it leaves a state
-//     indistinguishable from "that incident never happened". What that costs
-//     today is two statements instead of one, and what closes it is the same
-//     signed head the forensic chain already has. It is not built; do not read
-//     this file as if it were.
+//   - The ledger head (ledger_head.go) commits to how far the ledger reaches,
+//     so deleting an incident together with every ledger row that mentions it
+//     is now visible. What remains is what remains for the forensic chain too:
+//     an operator holding the signing key can lower the head and re-sign it,
+//     and an operator who deletes the head along with everything else leaves a
+//     state indistinguishable from "the ledger was never enabled".
 //   - An operator with the database can still rewrite ledger rows wholesale and
 //     recompute the chain, exactly as with the seals. Only an external anchor
 //     defeats that, and there is none.
@@ -181,7 +180,7 @@ func chainDigest(prev, state, incidentID, op string, seq int64) string {
 // ledger entry could fail separately would produce exactly the state this
 // mechanism is meant to detect, and it would produce it by accident, which is
 // worse than an attack because nobody is looking.
-func appendLedger(ctx context.Context, tx *sql.Tx, tenantID, incidentID, op string) error {
+func appendLedger(ctx context.Context, tx *sql.Tx, tenantID, incidentID, op string, signer Signer) error {
 	row := tx.QueryRowContext(ctx, `
 SELECT id, title, class, subject, status, severity, severity_confirmed,
        detected_at, last_event_at, closed_at, event_count, endpoints, sources,
@@ -216,10 +215,16 @@ RETURNING seq`, tenantOr(tenantID), incidentID, op, incidentDigest(inc)).Scan(&s
 	}
 	// The chain covers seq, which the database assigns, so it is written in a
 	// second statement rather than guessed in the first.
-	_, err = tx.ExecContext(ctx, `
+	chain := chainDigest(prev, incidentDigest(inc), incidentID, op, seq)
+	if _, err = tx.ExecContext(ctx, `
 UPDATE incident_ledger SET chain = $3 WHERE tenant_id = $1 AND seq = $2`,
-		tenantOr(tenantID), seq, chainDigest(prev, incidentDigest(inc), incidentID, op, seq))
-	return err
+		tenantOr(tenantID), seq, chain); err != nil {
+		return err
+	}
+	// Same transaction as the entry, deliberately: a head written separately
+	// could be lost to a crash between the two, leaving an entry the head does
+	// not count — reported later as tampering by an operator who did nothing.
+	return advanceHead(ctx, tx, tenantID, seq, chain, signer)
 }
 
 // LedgerReport is the answer to "has this register been tampered with".
@@ -247,6 +252,12 @@ type LedgerReport struct {
 	// Entries is how many ledger rows were examined, so a reader can tell
 	// "verified, nothing wrong" from "there was nothing to verify".
 	Entries int `json:"entries"`
+	// Head is the chain-level answer: does the ledger reach as far as the head
+	// says it should. It travels with the per-incident findings in ONE result
+	// rather than behind a second method somebody has to remember to call —
+	// which is the defect this project has already paid for once, when
+	// VerifySeals existed with no production caller at all.
+	Head HeadCheck `json:"head"`
 	// Limits is what this check does not establish. It travels with the result
 	// for the same reason every signed document here carries one: the answer
 	// looks authoritative, and a reader will not qualify it unaided.
@@ -254,17 +265,25 @@ type LedgerReport struct {
 }
 
 // ledgerLimits are properties of the mechanism, not of any particular run.
-func ledgerLimits() []string {
-	return []string{
+func ledgerLimits(signed bool) []string {
+	out := []string{
 		"Tampering is detectable, not impossible: this reports that the register changed, not what it held.",
-		"The ledger has no signed head, so deleting an incident together with every ledger row that mentions it is not detected.",
-		"The ledger lives in the same database as the register, so an operator who can rewrite both can recompute the chain. Only an external anchor defeats that, and there is none.",
+		"The ledger lives in the same database as the register, so an operator who can rewrite the ledger, its head and the register together can make them agree. Only an external anchor defeats that, and there is none.",
 	}
+	if !signed {
+		// An unsigned head still records the count, so truncation is visible to
+		// anyone reading the database. What it is not is evidence against the
+		// operator who holds that database, and a reader must not take it for
+		// more than it is.
+		out = append(out, "The ledger head is NOT signed (no report signing key is configured), "+
+			"so it commits to the count for a reader but proves nothing to a third party.")
+	}
+	return out
 }
 
 // VerifyLedger recomputes the register against its ledger.
 func (s *PGStore) VerifyLedger(ctx context.Context, tenantID string) (LedgerReport, error) {
-	rep := LedgerReport{Limits: ledgerLimits()}
+	rep := LedgerReport{Limits: ledgerLimits(s.signer != nil)}
 
 	err := s.withTenantTx(ctx, tenantID, func(tx *sql.Tx) error {
 		// The ledger, in order. Read first so the chain is checked against the
@@ -279,6 +298,7 @@ FROM incident_ledger WHERE tenant_id = $1 ORDER BY seq`, tenantOr(tenantID))
 
 		latest := map[string]string{} // incident id -> last recorded digest
 		var prev string
+		var highestSeq int64
 		for rows.Next() {
 			var (
 				seq         int64
@@ -291,6 +311,9 @@ FROM incident_ledger WHERE tenant_id = $1 ORDER BY seq`, tenantOr(tenantID))
 				return err
 			}
 			rep.Entries++
+			if seq > highestSeq {
+				highestSeq = seq
+			}
 			if want := chainDigest(prev, stateDigest, incidentID, op, seq); want != chain {
 				rep.ChainBroken = append(rep.ChainBroken, seq)
 			}
@@ -337,10 +360,19 @@ FROM incidents WHERE tenant_id = $1`, tenantOr(tenantID))
 				rep.Missing = append(rep.Missing, id)
 			}
 		}
+
+		// The chain-level question the per-entry checks structurally cannot
+		// answer: is anything missing from the END. Nothing surviving refers to
+		// a deleted tail, so only a commitment to the count can see it.
+		head, err := checkHead(ctx, tx, tenantID, highestSeq, int64(rep.Entries))
+		if err != nil {
+			return err
+		}
+		rep.Head = head
 		return nil
 	})
 	if err != nil {
-		return LedgerReport{Limits: ledgerLimits()}, err
+		return LedgerReport{Limits: ledgerLimits(s.signer != nil)}, err
 	}
 
 	// Stable order: a report that reshuffles between runs cannot be diffed, and
@@ -352,6 +384,7 @@ FROM incidents WHERE tenant_id = $1`, tenantOr(tenantID))
 	sort.Slice(rep.ChainBroken, func(i, j int) bool { return rep.ChainBroken[i] < rep.ChainBroken[j] })
 
 	rep.Intact = len(rep.Missing) == 0 && len(rep.Altered) == 0 &&
-		len(rep.Unledgered) == 0 && len(rep.ChainBroken) == 0
+		len(rep.Unledgered) == 0 && len(rep.ChainBroken) == 0 &&
+		rep.Head.Complete
 	return rep, nil
 }

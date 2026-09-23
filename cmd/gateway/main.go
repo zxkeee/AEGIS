@@ -147,6 +147,22 @@ func main() {
 	// because the log is what happened and an incident is an interpretation of
 	// it. Without a DSN there is nowhere to keep an incident, so this stays off
 	// and the compliance report keeps saying the articles are not evidenced.
+	// One signer for every integrity head that wants one: the forensic seal
+	// chain, the incident ledger and the admin audit trail all commit to how
+	// far their record reaches, and all three are worth the same amount to a
+	// third party only if signed. Built once rather than per subsystem so a key
+	// that fails to load is reported once and the three behave consistently.
+	var integritySigner *attest.Signer
+	if cfg.ReportSigningKey != "" {
+		if sg, serr := attest.NewSigner(cfg.ReportSigningKey); serr == nil {
+			integritySigner = sg
+		} else {
+			log.Error("integrity heads will be unsigned: the report signing key is unusable "+
+				"(they still commit to a count for a reader; they prove nothing to a third party)",
+				map[string]any{"error": serr.Error()})
+		}
+	}
+
 	var incidents *incident.PGStore
 	var correlator *incident.Correlator
 	if cfg.ForensicDSN != "" && fSink != nil {
@@ -161,6 +177,9 @@ func main() {
 			incidents = nil
 		} else {
 			defer func() { _ = db.Close() }()
+			if integritySigner != nil {
+				incidents = incidents.WithSigner(integritySigner)
+			}
 			correlator = incident.New(incidents, log)
 			defer func() { _ = correlator.Close() }()
 			st.SetForensicSink(incident.NewSink(correlator, fSink, discovery.NormalizePath))
@@ -236,7 +255,12 @@ func main() {
 			auditStore = nil
 		} else {
 			defer func() { _ = auditStore.Close() }()
-			log.Info("admin audit log enabled", map[string]any{"backend": "postgresql"})
+			if integritySigner != nil {
+				auditStore = auditStore.WithSigner(integritySigner)
+			}
+			log.Info("admin audit log enabled", map[string]any{
+				"backend": "postgresql", "head_signed": integritySigner != nil,
+			})
 		}
 	}
 

@@ -101,6 +101,20 @@ var pgTypeMap = pgtype.NewMap()
 type PGStore struct {
 	db  *sql.DB
 	log Logger
+	// signer signs the ledger head. nil when AEGIS_REPORT_SIGNING_KEY is
+	// unset, in which case the head still records the count — an unsigned head
+	// makes truncation visible to anyone with database access, and only stops
+	// being evidence against the operator who holds the database.
+	signer Signer
+}
+
+// WithSigner attaches the key that signs the ledger head.
+//
+// Separate from NewPGStore so every existing caller keeps compiling, and so a
+// deployment without a signing key behaves exactly as it did.
+func (s *PGStore) WithSigner(sg Signer) *PGStore {
+	s.signer = sg
+	return s
 }
 
 // NewPGStore opens the store against an existing pool and applies the schema.
@@ -110,7 +124,7 @@ func NewPGStore(db *sql.DB, log Logger) (*PGStore, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := db.ExecContext(ctx, incidentSchema+ticketSchema); err != nil {
+	if _, err := db.ExecContext(ctx, incidentSchema+ticketSchema+ledgerHeadSchema); err != nil {
 		return nil, fmt.Errorf("incident: schema: %w", err)
 	}
 	return &PGStore{db: db, log: log}, nil
@@ -190,7 +204,7 @@ VALUES ($1,$2,$3,$4,$5,'open','minor',$6,$7,$8,$9,$10,$11,$12)`,
 	if err != nil {
 		return err
 	}
-	return appendLedger(ctx, tx, d.Tenant, id, opOpen)
+	return appendLedger(ctx, tx, d.Tenant, id, opOpen, s.signer)
 }
 
 func (s *PGStore) update(ctx context.Context, tx *sql.Tx, id string, d Delta) error {
@@ -229,7 +243,7 @@ WHERE tenant_id = $1 AND id = $2`,
 	if err != nil {
 		return err
 	}
-	return appendLedger(ctx, tx, d.Tenant, id, opMerge)
+	return appendLedger(ctx, tx, d.Tenant, id, opMerge, s.signer)
 }
 
 // newID is deterministic in the incident's identity and its start, so a retried
@@ -473,7 +487,7 @@ WHERE tenant_id = $1 AND id = $2`
 		if n == 0 {
 			return ErrNotFound
 		}
-		return appendLedger(ctx, tx, tenant, id, opApply)
+		return appendLedger(ctx, tx, tenant, id, opApply, s.signer)
 	})
 }
 
@@ -554,7 +568,7 @@ WHERE tenant_id = $1 AND id = $2`, tenantOr(tenant), id, string(raw))
 		if rows == 0 {
 			return ErrNotFound
 		}
-		return appendLedger(ctx, tx, tenant, id, opNotify)
+		return appendLedger(ctx, tx, tenant, id, opNotify, s.signer)
 	})
 }
 

@@ -229,6 +229,24 @@
         "ROADMAP.md",
         "RELEASE-CHECKLIST.md"
       ]
+    },
+    {
+      "name": "admin audit trail integrity",
+      "proof": {
+        "file": "internal/audit/integrity.go",
+        "contains": "admin_audit_head"
+      },
+      "keywords": [
+        "admin_audit_head",
+        "admin_audit_log",
+        "audit trail integrity",
+        "журнал действий"
+      ],
+      "must_mention": [
+        "ROADMAP.md",
+        "RELEASE-CHECKLIST.md",
+        "docs/ARCHITECTURE.md"
+      ]
     }
   ]
 }
