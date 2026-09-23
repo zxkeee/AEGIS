@@ -454,6 +454,38 @@ type AlertingConfig struct {
 	// MinSeverity gates delivery: only alerts at or above this level are sent.
 	// One of "info", "warning", "critical". Default "warning".
 	MinSeverity string `yaml:"min_severity"`
+	// Sinks are SIEM destinations, delivered to in addition to the webhook.
+	// A webhook tells a human now; a SIEM is where a security team already
+	// correlates everything else, and the two want different shapes and
+	// different thresholds.
+	Sinks []SIEMSinkConfig `yaml:"sinks"`
+}
+
+// SIEMSinkConfig is one SIEM destination.
+//
+// The token is deliberately absent: it comes from the environment
+// (AEGIS_SPLUNK_HEC_TOKEN, AEGIS_ELASTIC_API_KEY), like every other secret in
+// this file. A collector token is a write credential to the security team's own
+// data store, and Helm renders this struct into an open ConfigMap.
+type SIEMSinkConfig struct {
+	// Type is "splunk_hec" or "elastic".
+	Type string `yaml:"type"`
+	// URL is the collector endpoint. HTTPS, for the same reason the webhook is.
+	URL string `yaml:"url"`
+	// Index is Splunk's target index. Elastic names its index in the URL path
+	// and ignores this.
+	Index string `yaml:"index"`
+	// MinSeverity gates this destination independently of the webhook's: a SIEM
+	// usually wants everything while on-call wants only criticals. Empty means
+	// the webhook's threshold.
+	MinSeverity string `yaml:"min_severity"`
+	// AllowPrivate permits this sink to reach an address on the operator's own
+	// network — which is where a SIEM lives. Off by default, and required
+	// explicitly rather than inferred from the URL, so pointing a collector at
+	// an internal address is a decision somebody made rather than one that
+	// happened. Loopback, link-local (cloud metadata) and multicast stay
+	// refused regardless.
+	AllowPrivate bool `yaml:"allow_private"`
 }
 
 type TLSConfig struct {
@@ -998,6 +1030,24 @@ func applyEnvOverrides(cfg *GatewayConfig) {
 	}
 }
 
+// SIEMToken returns the environment variable holding the write credential for
+// one sink type, or "" when the type has none.
+//
+// Read at delivery time rather than stored on the config struct, so a token
+// never lands in a value Helm can render into a ConfigMap. Invariant 3 checks
+// the blanking of secrets that DO live on the struct; this one is never there
+// to blank.
+func SIEMToken(sinkType string) string {
+	switch sinkType {
+	case "splunk_hec":
+		return os.Getenv("AEGIS_SPLUNK_HEC_TOKEN")
+	case "elastic":
+		return os.Getenv("AEGIS_ELASTIC_API_KEY")
+	default:
+		return ""
+	}
+}
+
 // Validate returns an error if the configuration is unsafe to run in production.
 // Call this after Load() before starting any servers.
 func Validate(cfg GatewayConfig) error {
@@ -1344,6 +1394,41 @@ func validateAlerting(cfg GatewayConfig) error {
 		if !strings.HasPrefix(u, "https://") && !webhookHTTPDev {
 			return fmt.Errorf("alerting.webhook_url must be an https URL, got %q "+
 				"(alert bodies name what was detected and about whom)", u)
+		}
+	}
+	for i, sink := range cfg.Alerting.Sinks {
+		switch sink.Type {
+		case "splunk_hec", "elastic":
+		case "":
+			return fmt.Errorf("alerting.sinks[%d].type is empty; expected splunk_hec or elastic", i)
+		default:
+			// Refused at startup rather than discovered as a log line after the
+			// first incident, when the events that were supposed to reach the
+			// SIEM are the ones nobody can find.
+			return fmt.Errorf("alerting.sinks[%d].type %q is not a sink this build can deliver to "+
+				"(splunk_hec, elastic)", i, sink.Type)
+		}
+		if sink.URL == "" {
+			return fmt.Errorf("alerting.sinks[%d] (%s) has no url", i, sink.Type)
+		}
+		sinkHTTPDev := cfg.AdminCookieInsecure && strings.HasPrefix(sink.URL, "http://")
+		if !strings.HasPrefix(sink.URL, "https://") && !sinkHTTPDev {
+			return fmt.Errorf("alerting.sinks[%d].url must be an https URL, got %q "+
+				"(the events name what was detected and about whom)", i, sink.URL)
+		}
+		// A Splunk collector without a token accepts nothing: every event would
+		// be refused at the far end, and this side would only log it. Starting
+		// in that state means believing the SIEM is receiving events when it is
+		// receiving none, which is worse than not configuring the sink at all.
+		if sink.Type == "splunk_hec" && SIEMToken(sink.Type) == "" {
+			return fmt.Errorf("alerting.sinks[%d] is a Splunk HEC sink but AEGIS_SPLUNK_HEC_TOKEN "+
+				"is unset; every event would be rejected by the collector and only logged here", i)
+		}
+		switch sink.MinSeverity {
+		case "", "info", "warning", "critical":
+		default:
+			return fmt.Errorf("alerting.sinks[%d].min_severity %q is not one of info, warning, critical",
+				i, sink.MinSeverity)
 		}
 	}
 	return nil

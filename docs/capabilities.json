@@ -193,6 +193,25 @@
         "ROADMAP.md",
         "RELEASE-CHECKLIST.md"
       ]
+    },
+    {
+      "name": "SIEM delivery (Splunk HEC, Elasticsearch)",
+      "proof": {
+        "file": "internal/alert/sink.go",
+        "contains": "SinkSplunkHEC"
+      },
+      "keywords": [
+        "splunk_hec",
+        "Splunk",
+        "Elasticsearch",
+        "SIEM",
+        "alerting.sinks"
+      ],
+      "must_mention": [
+        "ROADMAP.md",
+        "RELEASE-CHECKLIST.md",
+        "README.md"
+      ]
     }
   ]
 }

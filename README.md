@@ -1386,10 +1386,17 @@ logging system. Security block events are also written to PostgreSQL
 counters are available as JSON through the admin API and can be scraped or
 forwarded into your metrics stack; native Prometheus exposition is available at
 `GET /metrics` on the admin plane (text format 0.0.4, behind the admin bearer).
-First-class SIEM connectors are on the roadmap; the `alerting` config block
-delivers webhook alerts (generic/Slack formats) for the BOLA/BFLA detections
-and behavioural auto-bans. Delivery is asynchronous and deduplicated per event
-and subject, and stays active in observe mode.
+The `alerting` config block delivers those detections — BOLA/BFLA, behavioural
+auto-bans, blocks — to a webhook (generic or Slack format) **and to a SIEM**:
+Splunk HTTP Event Collector and Elasticsearch are both first-class sinks, each
+with its own severity threshold, because a SIEM usually wants everything while
+on-call wants only criticals. Collector credentials come from the environment,
+never from the config file. See [`docs/siem.md`](docs/siem.md).
+
+Delivery is asynchronous, deduplicated per event and subject, and stays active
+in observe mode. It is also deliberately without a retry queue: a collector that
+is down produces a gap in the SIEM's copy rather than memory growth or latency
+in the gateway, and the forensic log in PostgreSQL has no such gap.
 
 ---
 

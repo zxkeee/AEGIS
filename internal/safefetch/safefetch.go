@@ -83,6 +83,73 @@ func Client(what string, timeout time.Duration) *http.Client {
 	}
 }
 
+// InternalClient returns a client for a destination that is SUPPOSED to be on
+// the operator's own network, and is therefore allowed to reach a private
+// address that Client refuses.
+//
+// It exists because the blanket rule is wrong for one class of destination. A
+// webhook is a public endpoint and a private address there means something has
+// gone wrong; a SIEM is the opposite — Splunk and Elasticsearch live on 10.0/8
+// in essentially every deployment that has them, and refusing to reach one is
+// refusing to integrate at all.
+//
+// What stays refused, because none of it is ever a SIEM:
+//
+//   - loopback — the gateway's own admin API listens there, so a "collector"
+//     on 127.0.0.1 is the gateway posting its alerts to itself;
+//   - link-local — 169.254.169.254 is cloud metadata, the single most valuable
+//     SSRF target there is, and metadata.google.internal resolves to it;
+//   - unspecified and multicast — not destinations.
+//
+// This is a narrower relaxation than it may look: the operator still cannot
+// point a sink at the metadata service, and the decision still happens on the
+// RESOLVED address, so a public hostname with a private A record is judged by
+// where it actually goes. What it does allow is the ordinary case, and the
+// operator has to ask for it per sink.
+func InternalClient(what string, timeout time.Duration) *http.Client {
+	d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	d.Control = func(network, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return fmt.Errorf("%s: cannot parse dial address %q: %w", what, address, err)
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return fmt.Errorf("%s: refusing to dial unparseable address %q", what, host)
+		}
+		if IsNeverADestination(ip) {
+			return fmt.Errorf("%s: refusing to connect to %s — loopback, link-local "+
+				"and multicast are never a collector, whatever the config says", what, ip)
+		}
+		return nil
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: &http.Transport{DialContext: d.DialContext, ForceAttemptHTTP2: true},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return Redirect(what, req, via)
+		},
+	}
+}
+
+// IsNeverADestination reports whether a RESOLVED address is one no configured
+// destination may be, even one deliberately marked as internal.
+//
+// Deliberately NOT a subset relationship with IsPrivateOrLocalIP that anyone
+// has to reason about: this is its own list, and private unicast is absent from
+// it on purpose.
+func IsNeverADestination(ip net.IP) bool {
+	if ip == nil {
+		return true // unknown is not safe
+	}
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	return ip.IsLoopback() || ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast()
+}
+
 // Redirect is the scheme-and-hop half of the policy, as an
 // http.Client.CheckRedirect.
 //

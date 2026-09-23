@@ -107,7 +107,8 @@ func main() {
 	defer func() { _ = st.Close() }()
 
 	// ── Alert Engine ──────────────────────────────────────────────────────────
-	alerts := alert.NewWithConfig(cfg.Alerting.WebhookURL, cfg.Alerting.Format, cfg.Alerting.MinSeverity, log)
+	alerts := alert.NewWithConfig(cfg.Alerting.WebhookURL, cfg.Alerting.Format, cfg.Alerting.MinSeverity, log).
+		WithSinks(siemSinks(cfg))
 	if cfg.Alerting.WebhookURL != "" {
 		log.Info("outbound alerting enabled", map[string]any{
 			"format":       cfg.Alerting.Format,
@@ -721,7 +722,10 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 		// Rebuild the alert engine from the new config so alerting.webhook_url,
 		// format and min_severity are hot-reloadable like the rest of the data
 		// plane, instead of being pinned to whatever was set at boot.
-		newAlerts := alert.NewWithConfig(newCfg.Alerting.WebhookURL, newCfg.Alerting.Format, newCfg.Alerting.MinSeverity, log)
+		// Rebuilt on every reload, so adding or removing a SIEM destination
+		// takes effect the same way every other config change does.
+		newAlerts := alert.NewWithConfig(newCfg.Alerting.WebhookURL, newCfg.Alerting.Format, newCfg.Alerting.MinSeverity, log).
+			WithSinks(siemSinks(newCfg))
 
 		newHandler, _, err := gateway.BuildHandlerChain(newCfg, log, st, catalog, newPosture, newAlerts)
 		if err != nil {
@@ -818,4 +822,27 @@ func pollConfigFile(path string, reload func()) {
 			reload()
 		}
 	}
+}
+
+// siemSinks turns the configured SIEM destinations into delivery clients.
+//
+// The token is fetched here, from the environment, rather than carried on the
+// config struct: a collector token is a write credential to the customer's own
+// security data store, and Helm renders that struct into an open ConfigMap.
+// config.Validate has already refused a Splunk sink with no token, so an empty
+// one here can only be Elastic with security disabled.
+func siemSinks(cfg config.GatewayConfig) []alert.Sink {
+	if len(cfg.Alerting.Sinks) == 0 {
+		return nil
+	}
+	sinks := make([]alert.Sink, 0, len(cfg.Alerting.Sinks))
+	for _, s := range cfg.Alerting.Sinks {
+		min := s.MinSeverity
+		if min == "" {
+			min = cfg.Alerting.MinSeverity
+		}
+		sinks = append(sinks, alert.NewSink(s.Type, s.URL, config.SIEMToken(s.Type), s.Index, min,
+			alert.NewSinkOptions{AllowPrivate: s.AllowPrivate}))
+	}
+	return sinks
 }

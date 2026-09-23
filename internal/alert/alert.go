@@ -41,6 +41,19 @@ type Engine struct {
 	minRank    int
 	log        *logger.Logger
 	client     *http.Client
+	// sinks are SIEM destinations, delivered to in addition to the webhook and
+	// gated by their own thresholds. See sink.go for why they are additive
+	// rather than another webhook format.
+	sinks []Sink
+}
+
+// WithSinks returns the engine with SIEM destinations attached. Separate from
+// NewWithConfig so every existing caller keeps compiling and keeps behaving
+// identically: a deployment that configures no sinks must be byte-for-byte the
+// deployment it was before this existed.
+func (e *Engine) WithSinks(sinks []Sink) *Engine {
+	e.sinks = sinks
+	return e
 }
 
 // New creates an alert Engine with sane defaults (generic format, warning
@@ -88,6 +101,11 @@ func (e *Engine) Fire(ctx context.Context, level, title, body string) {
 		e.log.Info("alert suppressed (below min_severity)", fields)
 		return
 	}
+
+	// SIEM delivery is not conditional on a webhook being configured: a
+	// deployment that ships to Splunk and pages nobody is an ordinary one, and
+	// returning early here would have silently disabled it.
+	e.fanOut(ctx, level, title, body)
 
 	if e.webhookURL == "" {
 		e.log.Info("alert fired (no webhook configured)", fields)

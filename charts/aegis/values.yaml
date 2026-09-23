@@ -130,6 +130,12 @@ secrets:
   # because a Slack/Teams/etc. webhook URL carries its own bearer token in the
   # URL itself. Empty disables alerting.
   alertWebhookUrl: ""
+  # splunkHecToken authenticates to a Splunk HTTP Event Collector, and
+  # elasticApiKey to Elasticsearch, when alerting.sinks names one. Both are
+  # write credentials to the customer's own security data store, which is why
+  # they live here and never in the gateway config rendered into a ConfigMap.
+  splunkHecToken: ""
+  elasticApiKey: ""
 
 # Gateway configuration (injected as ConfigMap — no secrets here)
 gateway:

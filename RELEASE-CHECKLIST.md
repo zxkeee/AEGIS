@@ -318,7 +318,22 @@ at all.
       **deny a known cross-owner access before forwarding** — preventing the leak,
       not just recording it; `ownership_bypass_roles` exempt support/admin. With an
       allowlist for known high-cardinality callers and explainable `why` on every event.
-- [~] **SIEM integration** (Splunk / Elastic) and **alerting** (Slack / PagerDuty)
+- [~] **SIEM integration** (Splunk / Elastic) — **done**, `docs/siem.md`:
+      Splunk HEC with its own envelope (numeric epoch `time`, which is what HEC
+      requires) and Elasticsearch in ECS field names, so events land in
+      dashboards that already exist. Each sink carries its own severity
+      threshold, because a SIEM wants everything while on-call wants criticals
+      and one shared threshold is wrong for one of them in every deployment.
+      Collector tokens come from the environment and are refused at startup when
+      missing for Splunk — the collector rejects untokenised events at the far
+      end, so the gateway would log deliveries while the SIEM held nothing.
+      Delivery is concurrent and off the request path; there is no retry queue,
+      so a collector outage is a gap in the SIEM's copy and not in the forensic
+      log. `allow_private` per sink reaches a collector on the internal network
+      while loopback, link-local (cloud metadata) and multicast stay refused.
+      Remaining under this heading: SOAR, ticketing (Jira / ServiceNow),
+      per-rule routing. Original entry follows —
+      **alerting** (Slack / PagerDuty)
       with configurable webhooks. Done: `alerting` config block (webhook URL,
       `generic`/`slack` payload format, `min_severity` gate); `AEGIS_ALERT_WEBHOOK_URL`
       env override. Remaining: per-rule routing, ticketing (Jira/ServiceNow).

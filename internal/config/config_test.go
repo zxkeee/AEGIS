@@ -989,3 +989,90 @@ func TestValidate_MirrorSink(t *testing.T) {
 		}
 	})
 }
+
+// A SIEM sink misconfigured is worse than one absent: the operator believes
+// events are reaching their security team and nothing is. Every one of these
+// is refused at startup rather than discovered as a log line after the first
+// incident, when the events that should have reached the SIEM are precisely
+// the ones nobody can find.
+func TestValidate_SIEMSinks(t *testing.T) {
+	t.Setenv("AEGIS_SPLUNK_HEC_TOKEN", "tok")
+
+	base := func(sinks ...SIEMSinkConfig) GatewayConfig {
+		cfg := validBase()
+		cfg.Alerting.Sinks = sinks
+		return cfg
+	}
+
+	cases := []struct {
+		name    string
+		sinks   []SIEMSinkConfig
+		wantErr string
+	}{
+		{
+			name:    "unknown type is refused, not ignored",
+			sinks:   []SIEMSinkConfig{{Type: "syslog", URL: "https://c.example"}},
+			wantErr: "not a sink this build can deliver to",
+		},
+		{
+			name:    "empty type",
+			sinks:   []SIEMSinkConfig{{URL: "https://c.example"}},
+			wantErr: "type is empty",
+		},
+		{
+			name:    "no url",
+			sinks:   []SIEMSinkConfig{{Type: "elastic"}},
+			wantErr: "has no url",
+		},
+		{
+			name:    "http url leaks the alert bodies in clear",
+			sinks:   []SIEMSinkConfig{{Type: "elastic", URL: "http://c.example"}},
+			wantErr: "must be an https URL",
+		},
+		{
+			name:    "unknown severity would silently rank as warning",
+			sinks:   []SIEMSinkConfig{{Type: "elastic", URL: "https://c.example", MinSeverity: "urgent"}},
+			wantErr: "min_severity",
+		},
+		{
+			name:  "a valid pair passes",
+			sinks: []SIEMSinkConfig{{Type: "elastic", URL: "https://c.example", MinSeverity: "info"}, {Type: "splunk_hec", URL: "https://s.example", Index: "aegis"}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Validate(base(tc.sinks...))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("valid config rejected: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("invalid config accepted (%s)", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v, want it to mention %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// A Splunk collector rejects every event sent without a token, and it rejects
+// them at the far end: this side would log a delivery and the SIEM would hold
+// nothing. Believing you have an audit trail you do not have is the failure
+// this refuses to start with.
+func TestValidate_SplunkSinkWithoutTokenIsRefused(t *testing.T) {
+	t.Setenv("AEGIS_SPLUNK_HEC_TOKEN", "")
+	cfg := validBase()
+	cfg.Alerting.Sinks = []SIEMSinkConfig{{Type: "splunk_hec", URL: "https://s.example"}}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("a Splunk sink with no token was accepted; every event would be rejected at the collector")
+	}
+	if !strings.Contains(err.Error(), "AEGIS_SPLUNK_HEC_TOKEN") {
+		t.Errorf("error = %v, want it to name the variable the operator must set", err)
+	}
+}

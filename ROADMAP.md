@@ -85,7 +85,9 @@ DORA ст. 18 · печати журнала (почасовой корень М
 email+паролю и по OIDC (PKCE, JIT-провижининг) · роли admin/viewer · аудит
 действий администратора · удаление старых данных по расписанию · лицензии
 Ed25519 с привязкой к железу, BUSL 1.1 · Prometheus `/metrics` · алертинг в
-вебхук (https, через `safefetch`) · Helm chart, docker-compose.
+вебхук (https, через `safefetch`) · **доставка в SIEM** — Splunk HEC и
+Elasticsearch в ECS-схеме, у каждого приёмника свой порог важности
+(`docs/siem.md`) · Helm chart, docker-compose.
 
 ---
 

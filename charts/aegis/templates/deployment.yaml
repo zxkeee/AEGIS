@@ -141,6 +141,22 @@ spec:
                   key: alert-webhook-url
                   optional: true
             {{- end }}
+            {{- if or .Values.secrets.splunkHecToken .Values.secrets.existingSecret }}
+            - name: AEGIS_SPLUNK_HEC_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: splunk-hec-token
+                  optional: true
+            {{- end }}
+            {{- if or .Values.secrets.elasticApiKey .Values.secrets.existingSecret }}
+            - name: AEGIS_ELASTIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: elastic-api-key
+                  optional: true
+            {{- end }}
           ports:
             - name: gateway
               containerPort: 8080
