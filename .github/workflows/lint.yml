@@ -111,6 +111,14 @@ jobs:
       - name: Check handoff against the merge history
         run: python3 ./scripts/check-handoff.py
 
+      # A duplicated planning row is two rows disagreeing about one subject,
+      # and a reader believes whichever they read first. Both instances so far
+      # came from a batch of document edits where one replacement failed and
+      # the script exited before writing — so the author believed all of them
+      # had landed. Prose could not stop the second one; this can.
+      - name: Planning tables must not list the same thing twice
+        run: python3 ./scripts/check-plan-tables.py
+
   # The console bundle is committed so `go build` works without Node. Nothing
   # checked that the committed bytes were built from the committed lockfile, so
   # a dependency bump could change the console's inputs while the embedded

@@ -175,6 +175,9 @@ step "repo invariants"
   || { bad "the support bundle carries secrets"; cat /tmp/preflight-bundle.log; }
 python3 ./scripts/check-doc-drift.py >/tmp/preflight-drift.log 2>&1 \
   && ok "docs match the code" || { bad "docs and code disagree about what exists"; cat /tmp/preflight-drift.log; }
+python3 ./scripts/check-plan-tables.py >/tmp/preflight-plan.log 2>&1 \
+  && ok "no duplicated rows in the planning tables" \
+  || { bad "a planning document lists the same thing twice"; cat /tmp/preflight-plan.log; }
 # Exit 2 from this check means "could not answer" (a shallow clone), which is
 # neither a pass nor a contradiction — reporting it as FAILED would put a lie in
 # the output of the tool whose whole job is not to lie about verdicts.
