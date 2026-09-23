@@ -110,7 +110,7 @@ func NewPGStore(db *sql.DB, log Logger) (*PGStore, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := db.ExecContext(ctx, incidentSchema); err != nil {
+	if _, err := db.ExecContext(ctx, incidentSchema+ticketSchema); err != nil {
 		return nil, fmt.Errorf("incident: schema: %w", err)
 	}
 	return &PGStore{db: db, log: log}, nil

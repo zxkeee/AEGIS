@@ -331,8 +331,20 @@ at all.
       so a collector outage is a gap in the SIEM's copy and not in the forensic
       log. `allow_private` per sink reaches a collector on the internal network
       while loopback, link-local (cloud metadata) and multicast stay refused.
-      Remaining under this heading: SOAR, ticketing (Jira / ServiceNow),
-      per-rule routing. Original entry follows —
+      **Ticketing is done too** (`docs/ticketing.md`): one ticket per
+      INCIDENT rather than per event, which is the difference between an
+      integration that survives its first week and one that files a thousand
+      tickets for one campaign. Jira and ServiceNow, filed by a sweep rather
+      than a callback so a slow tracker never becomes a slow gateway and an
+      outage delays filing instead of dropping it. Duplicates are handled by
+      searching the tracker for a deterministic correlation key before
+      creating, so a ticket left by a crashed run is adopted; the honest
+      guarantee is at-least-once deduplicated on the tracker side, and the
+      remaining window is documented rather than glossed. The reference lives
+      in its own table, because adding a column to `incidents` would either
+      leave a field of the evidence table uncommitted to or make every existing
+      incident read as altered after an upgrade.
+      Remaining under this heading: SOAR, per-rule routing. Original entry follows —
       **alerting** (Slack / PagerDuty)
       with configurable webhooks. Done: `alerting` config block (webhook URL,
       `generic`/`slack` payload format, `min_severity` gate); `AEGIS_ALERT_WEBHOOK_URL`

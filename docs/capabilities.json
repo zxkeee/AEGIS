@@ -212,6 +212,23 @@
         "RELEASE-CHECKLIST.md",
         "README.md"
       ]
+    },
+    {
+      "name": "incident ticketing (Jira, ServiceNow)",
+      "proof": {
+        "file": "internal/ticket/ticket.go",
+        "contains": "SystemServiceNow"
+      },
+      "keywords": [
+        "ticketing",
+        "Jira",
+        "ServiceNow",
+        "тикет"
+      ],
+      "must_mention": [
+        "ROADMAP.md",
+        "RELEASE-CHECKLIST.md"
+      ]
     }
   ]
 }

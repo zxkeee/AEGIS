@@ -157,6 +157,14 @@ spec:
                   key: elastic-api-key
                   optional: true
             {{- end }}
+            {{- if or .Values.secrets.ticketToken .Values.secrets.existingSecret }}
+            - name: AEGIS_TICKET_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: ticket-token
+                  optional: true
+            {{- end }}
           ports:
             - name: gateway
               containerPort: 8080

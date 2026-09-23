@@ -31,6 +31,7 @@ import (
 	"api-gateway/internal/retention"
 	"api-gateway/internal/sso"
 	"api-gateway/internal/store"
+	"api-gateway/internal/ticket"
 	"api-gateway/internal/tlsfp"
 
 	"github.com/fsnotify/fsnotify"
@@ -156,6 +157,7 @@ func main() {
 			log.Info("incident correlation enabled", map[string]any{
 				"window": incident.DefaultWindow.String(),
 			})
+			startTicketWorker(cfg, incidents, log)
 		}
 	}
 
@@ -845,4 +847,37 @@ func siemSinks(cfg config.GatewayConfig) []alert.Sink {
 			alert.NewSinkOptions{AllowPrivate: s.AllowPrivate}))
 	}
 	return sinks
+}
+
+// startTicketWorker files incidents into Jira or ServiceNow, when configured.
+//
+// Started here rather than on incident creation, and the trade is deliberate:
+// a callback would file sooner, and it would put a network call to a third
+// party inside the transaction that records the incident — where a slow tracker
+// becomes a slow gateway and a failed call becomes a lost incident. Polling
+// costs a delay of at most one interval and makes a tracker outage free: the
+// next sweep picks up everything, because "has no ticket" is a question about
+// the database rather than about what happened during the outage.
+//
+// A failure to build the client disables filing and says so. It is not fatal:
+// refusing to serve traffic because an issue tracker is misconfigured would
+// trade an outage in the product for a missing convenience.
+func startTicketWorker(cfg config.GatewayConfig, incidents *incident.PGStore, log *logger.Logger) {
+	if !cfg.Ticketing.Enabled || incidents == nil {
+		return
+	}
+	client, err := ticket.New(cfg.Ticketing.System, cfg.Ticketing.BaseURL, cfg.Ticketing.Project,
+		cfg.Ticketing.User, config.TicketToken(),
+		ticket.Options{AllowPrivate: cfg.Ticketing.AllowPrivate})
+	if err != nil {
+		log.Error("ticketing disabled: cannot build the tracker client",
+			map[string]any{"error": err.Error()})
+		return
+	}
+	w := ticket.NewWorker(client, incident.TicketRegister{Store: incidents}, log,
+		cfg.Ticketing.Interval, cfg.Ticketing.MinSeverity, cfg.Ticketing.Batch)
+	w.Start()
+	log.Info("incident ticketing enabled", map[string]any{
+		"system": cfg.Ticketing.System, "min_severity": cfg.Ticketing.MinSeverity,
+	})
 }

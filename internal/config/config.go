@@ -215,6 +215,7 @@ type GatewayConfig struct {
 	Redis          RedisConfig        `yaml:"redis"`
 	Logging        LoggingConfig      `yaml:"logging"`
 	Alerting       AlertingConfig     `yaml:"alerting"`
+	Ticketing      TicketingConfig    `yaml:"ticketing"`
 	Multitenancy   MultitenancyConfig `yaml:"multitenancy"`
 	Discovery      DiscoveryConfig    `yaml:"discovery"`
 	// OIDC enables single sign-on for the admin console via an external identity
@@ -484,6 +485,38 @@ type SIEMSinkConfig struct {
 	// explicitly rather than inferred from the URL, so pointing a collector at
 	// an internal address is a decision somebody made rather than one that
 	// happened. Loopback, link-local (cloud metadata) and multicast stay
+	// refused regardless.
+	AllowPrivate bool `yaml:"allow_private"`
+}
+
+// TicketingConfig files incidents into an external tracker.
+//
+// Attached to incidents rather than to events by construction: the register
+// already correlates a campaign of thousands of events into one incident, so
+// there is no deduplication window to tune and no way to produce a thousand
+// tickets by accident.
+type TicketingConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// System is "jira" or "servicenow".
+	System string `yaml:"system"`
+	// BaseURL is the tracker root: https://acme.atlassian.net.
+	BaseURL string `yaml:"base_url"`
+	// Project is Jira's project key. ServiceNow files into its incident table
+	// and ignores this.
+	Project string `yaml:"project"`
+	// User is the account the API token belongs to.
+	User string `yaml:"user"`
+	// MinSeverity is the lowest incident severity worth a ticket: one of
+	// minor, significant, major. Default major — a tracker filled with minor
+	// findings is a tracker nobody reads.
+	MinSeverity string `yaml:"min_severity"`
+	// Interval between sweeps. Default 1m.
+	Interval time.Duration `yaml:"interval"`
+	// Batch caps how many incidents one sweep files, so a backlog drains at a
+	// predictable rate instead of hitting the tracker's rate limit.
+	Batch int `yaml:"batch"`
+	// AllowPrivate permits a self-hosted tracker on the operator's own
+	// network. Loopback, link-local (cloud metadata) and multicast stay
 	// refused regardless.
 	AllowPrivate bool `yaml:"allow_private"`
 }
@@ -1030,6 +1063,12 @@ func applyEnvOverrides(cfg *GatewayConfig) {
 	}
 }
 
+// TicketToken returns the tracker API token from the environment.
+//
+// Never on the config struct: it is a write credential to the customer's issue
+// tracker, and Helm renders that struct into an open ConfigMap.
+func TicketToken() string { return os.Getenv("AEGIS_TICKET_TOKEN") }
+
 // SIEMToken returns the environment variable holding the write credential for
 // one sink type, or "" when the type has none.
 //
@@ -1394,6 +1433,36 @@ func validateAlerting(cfg GatewayConfig) error {
 		if !strings.HasPrefix(u, "https://") && !webhookHTTPDev {
 			return fmt.Errorf("alerting.webhook_url must be an https URL, got %q "+
 				"(alert bodies name what was detected and about whom)", u)
+		}
+	}
+	if t := cfg.Ticketing; t.Enabled {
+		switch t.System {
+		case "jira", "servicenow":
+		default:
+			return fmt.Errorf("ticketing.system %q is not one this build can file into (jira, servicenow)", t.System)
+		}
+		if t.BaseURL == "" {
+			return fmt.Errorf("ticketing is enabled but has no base_url")
+		}
+		ticketHTTPDev := cfg.AdminCookieInsecure && strings.HasPrefix(t.BaseURL, "http://")
+		if !strings.HasPrefix(t.BaseURL, "https://") && !ticketHTTPDev {
+			return fmt.Errorf("ticketing.base_url must be an https URL, got %q "+
+				"(the credential and the incident detail both travel on it)", t.BaseURL)
+		}
+		if t.System == "jira" && t.Project == "" {
+			return fmt.Errorf("ticketing.project is required for jira; the tracker refuses every issue without it")
+		}
+		// Without a token every call is rejected at the tracker and only logged
+		// here, so the operator would believe incidents are being filed while
+		// the tracker holds nothing.
+		if TicketToken() == "" {
+			return fmt.Errorf("ticketing is enabled but AEGIS_TICKET_TOKEN is unset; " +
+				"every call would be rejected by the tracker and only logged here")
+		}
+		switch t.MinSeverity {
+		case "", "minor", "significant", "major":
+		default:
+			return fmt.Errorf("ticketing.min_severity %q is not one of minor, significant, major", t.MinSeverity)
 		}
 	}
 	for i, sink := range cfg.Alerting.Sinks {

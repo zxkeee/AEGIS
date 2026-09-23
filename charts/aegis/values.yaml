@@ -136,6 +136,11 @@ secrets:
   # they live here and never in the gateway config rendered into a ConfigMap.
   splunkHecToken: ""
   elasticApiKey: ""
+  # ticketToken is the Jira API token or ServiceNow password used when
+  # ticketing.enabled files incidents into a tracker. A write credential to the
+  # customer's issue tracker, which is why it is here and never in the gateway
+  # config rendered into a ConfigMap.
+  ticketToken: ""
 
 # Gateway configuration (injected as ConfigMap — no secrets here)
 gateway:
