@@ -781,7 +781,67 @@ func peekGraphQLOperation(r *http.Request, graphQLPath string) *gql.Operation {
 
 // bodyIDCap bounds how much of a JSON request body is buffered for BOLA
 // object-ID extraction — same DoS-safety rationale as ownerBodyCap.
+//
+// Left at 64 KB deliberately. Raising it does not close the padding evasion
+// below: whatever the cap is, a body can be padded past it, so a larger cap
+// only costs more memory per in-flight request on a middleware that sits in
+// the request path. The cap is a memory bound, not a security control.
 const bodyIDCap = 64 * 1024
+
+var (
+	jsonFieldIDRegex = regexp.MustCompile(`"([a-zA-Z0-9_]+)"\s*:\s*(?:([0-9]{1,32})|"([0-9a-fA-F-]{36})")`)
+	jsonArrayIDRegex = regexp.MustCompile(`"([a-zA-Z0-9_]+)"\s*:\s*\[([^\]]+)\]`)
+)
+
+// extractIDsFromTruncatedJSON salvages id-shaped fields from a body that did
+// not parse, by scanning the buffered head textually.
+//
+// Why it exists: the decoder is all-or-nothing. A body padded past bodyIDCap
+// arrives truncated, Decode fails, and before this the whole body yielded no
+// object IDs at all — so a BOLA enumeration became invisible simply by
+// appending filler. Salvage means a malformed body no longer buys silence.
+//
+// What it does NOT do, so nobody mistakes its reach: it only sees the head
+// that was buffered. An attacker who puts the padding FIRST and the id after
+// it still hides the id from both paths. Closing that needs a streaming
+// tokeniser over the whole body, which is a memory bound this middleware does
+// not want. This narrows the evasion; it does not end it.
+//
+// It also matches at any nesting depth, while the parsed path reads only the
+// top level and "data". The asymmetry is left as is: it can only attribute
+// MORE ids to a caller, never fewer, so it cannot be used to evade — and it
+// applies only to bodies that were already malformed.
+func extractIDsFromTruncatedJSON(b []byte, out map[string][]string) {
+	// 1. Single scalar values
+	for _, m := range jsonFieldIDRegex.FindAllSubmatch(b, -1) {
+		k := string(m[1])
+		if !looksLikeIDField(k) {
+			continue
+		}
+		var val string
+		if len(m[2]) > 0 {
+			val = string(m[2])
+		} else if len(m[3]) > 0 {
+			val = string(m[3])
+		}
+		if looksLikeObjectID(val) {
+			out[k] = append(out[k], val)
+		}
+	}
+	// 2. Array batch values
+	for _, m := range jsonArrayIDRegex.FindAllSubmatch(b, -1) {
+		k := string(m[1])
+		if !looksLikeIDField(k) {
+			continue
+		}
+		for _, rawItem := range strings.Split(string(m[2]), ",") {
+			item := strings.Trim(strings.TrimSpace(rawItem), `"`)
+			if looksLikeObjectID(item) {
+				out[k] = append(out[k], item)
+			}
+		}
+	}
+}
 
 // bodyObjectIDs peeks up to bodyIDCap bytes of a JSON request body and
 // returns, per field name, the id-shaped values of every top-level (or
@@ -789,7 +849,7 @@ const bodyIDCap = 64 * 1024
 // ending in "_id"/"Id"). The body is rewound afterward (head + untouched
 // remainder) so WAF/DLP/the proxy still see the complete, unconsumed stream —
 // mirrors waf.go's screenXXE peek-and-rewind pattern. Returns nil for
-// non-JSON, empty, or unparsable bodies.
+// non-JSON, empty, or unparsable bodies without valid IDs.
 func bodyObjectIDs(r *http.Request) map[string][]string {
 	if r.Body == nil || r.Body == http.NoBody {
 		return nil
@@ -809,18 +869,21 @@ func bodyObjectIDs(r *http.Request) map[string][]string {
 		return nil
 	}
 
+	out := make(map[string][]string)
 	dec := json.NewDecoder(bytes.NewReader(head))
 	dec.UseNumber()
 	var m map[string]any
-	if err := dec.Decode(&m); err != nil {
-		return nil
+	if err := dec.Decode(&m); err == nil {
+		collectIDFields(m, out)
+		if d, ok := m["data"].(map[string]any); ok {
+			collectIDFields(d, out)
+		}
+	} else {
+		// Truncated or malformed tail (e.g. body exceeding bodyIDCap or trailing padding):
+		// salvage any object IDs present in the readable head buffer.
+		extractIDsFromTruncatedJSON(head, out)
 	}
 
-	out := make(map[string][]string)
-	collectIDFields(m, out)
-	if d, ok := m["data"].(map[string]any); ok {
-		collectIDFields(d, out)
-	}
 	if len(out) == 0 {
 		return nil
 	}

@@ -239,6 +239,23 @@ func (s *Store) DecrRate(ctx context.Context, key string) {
 
 const keyBlockedIPs = "blocked_ips"
 
+// keyGlobalBlockedIPs is the cross-tenant blocklist: an IP here is blocked for
+// every tenant at once. It is a SEPARATE key, reached only through the
+// *Global methods below — never through a sentinel value in the tenant
+// namespace.
+//
+// The sentinel version of this was a cross-tenant privilege escalation, and it
+// is worth writing down because the shape recurs. The global scope was selected
+// by the tenant id being the literal string "global", which ValidTenantID
+// accepts (`^[A-Za-z0-9._-]{1,64}$`). An ordinary admin of a tenant registered
+// under that name therefore wrote to the global set on every plain block, with
+// no super-admin check anywhere in the path — measured against a live Redis,
+// not reasoned about: the victim tenant saw both the IP block and the JTI
+// revocation. A reserved-name blocklist would have patched it; separate methods
+// remove the question, because there is no longer a value that means "not a
+// tenant".
+const keyGlobalBlockedIPs = "gw:global:blocked_ips"
+
 // autoBanPrefix namespaces the TTL ban-flag key. Deliberately distinct from
 // the "autoban:<ip>" strike counter used by IncrAutoBanCounter below — the two
 // used to collide on the same key, which made an auto-ban both fire on the
@@ -247,8 +264,8 @@ const keyBlockedIPs = "blocked_ips"
 const autoBanPrefix = "autoban_active:"
 
 // IsIPBlocked checks if an IP is blocked, either permanently (admin-initiated,
-// via the "blocked_ips" set) or by a still-live behaviour auto-ban (TTL key —
-// see AutoBanIP).
+// via the "blocked_ips" set, scoped to tenant or global) or by a still-live
+// behaviour auto-ban (TTL key — see AutoBanIP).
 func (s *Store) IsIPBlocked(ctx context.Context, ip string) (bool, error) {
 	member, err := s.client.SIsMember(ctx, tkey(ctx, keyBlockedIPs), ip).Result()
 	if err != nil {
@@ -261,14 +278,41 @@ func (s *Store) IsIPBlocked(ctx context.Context, ip string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return n > 0, nil
+	if n > 0 {
+		return true, nil
+	}
+	// The cross-tenant list is consulted for every tenant, unconditionally.
+	// Its error is returned rather than swallowed: this control declares
+	// fail_closed support, and a caller that cannot distinguish "not blocked"
+	// from "could not tell" cannot honour it.
+	gMember, err := s.client.SIsMember(ctx, keyGlobalBlockedIPs, ip).Result()
+	if err != nil {
+		return false, err
+	}
+	return gMember, nil
 }
 
 // BlockIP adds an IP to the permanent block list. This is the admin-initiated
 // path (POST /api/blocked-ips) — it never expires on its own, matching the
-// intent of an operator deliberately blocking an IP.
+// intent of an operator deliberately blocking an IP. Always scoped to the
+// caller's tenant — see BlockIPGlobal for the cross-tenant list.
 func (s *Store) BlockIP(ctx context.Context, ip string) error {
 	return s.client.SAdd(ctx, tkey(ctx, keyBlockedIPs), ip).Err()
+}
+
+// BlockIPGlobal adds an IP to the cross-tenant blocklist, blocking it for every
+// tenant at once. Reaching it requires a super-admin — see the authorisation in
+// the admin handler; the store deliberately does not infer scope from the
+// context, because inferring it is what made this escalatable.
+func (s *Store) BlockIPGlobal(ctx context.Context, ip string) error {
+	return s.client.SAdd(ctx, keyGlobalBlockedIPs, ip).Err()
+}
+
+// UnblockIPGlobal removes an IP from the cross-tenant blocklist. It does not
+// touch any tenant's own list: an IP can be blocked globally and by a tenant
+// independently, and lifting one must not silently lift the other.
+func (s *Store) UnblockIPGlobal(ctx context.Context, ip string) error {
+	return s.client.SRem(ctx, keyGlobalBlockedIPs, ip).Err()
 }
 
 // AutoBanIP blocks an IP for a bounded duration. Used by behaviour-based
@@ -308,6 +352,13 @@ type BlockedIPInfo struct {
 	// TTLSeconds is set only when an auto-ban is live (Source contains "auto")
 	// — how long until it self-expires.
 	TTLSeconds int64 `json:"ttl_seconds,omitempty"`
+	// Global marks an entry that comes from the cross-tenant blocklist rather
+	// than this tenant's own. It exists so the console can say so and not
+	// offer an unblock that would do nothing: UnblockIP removes the tenant's
+	// entry, and a tenant admin has no authority over the global one. An
+	// action that reports success and changes nothing is the failure this
+	// field prevents.
+	Global bool `json:"global,omitempty"`
 }
 
 // GetBlockedIPs returns every currently-blocked IP as plain strings (the
@@ -336,6 +387,15 @@ func (s *Store) GetBlockedIPDetails(ctx context.Context) ([]BlockedIPInfo, error
 	for _, ip := range manualList {
 		manual[ip] = true
 	}
+	globalList, err := s.client.SMembers(ctx, keyGlobalBlockedIPs).Result()
+	if err != nil {
+		return nil, err
+	}
+	global := make(map[string]bool, len(globalList))
+	for _, ip := range globalList {
+		manual[ip] = true
+		global[ip] = true
+	}
 
 	autoTTL := make(map[string]int64)
 	prefix := tkey(ctx, autoBanPrefix)
@@ -361,7 +421,7 @@ func (s *Store) GetBlockedIPDetails(ctx context.Context) ([]BlockedIPInfo, error
 
 	out := make([]BlockedIPInfo, 0, len(manual)+len(autoTTL))
 	for ip := range manual {
-		info := BlockedIPInfo{IP: ip, Source: "manual"}
+		info := BlockedIPInfo{IP: ip, Source: "manual", Global: global[ip]}
 		if ttl, ok := autoTTL[ip]; ok {
 			info.Source = "manual+auto"
 			info.TTLSeconds = ttl
@@ -860,22 +920,40 @@ func (s *Store) GetObjectOwner(ctx context.Context, endpoint, objectID string) (
 // ── JWT Revocation ────────────────────────────────────────────────────────────
 
 const prefixJTI = "jwt:revoked:"
+const prefixGlobalJTI = "gw:global:jwt:revoked:"
 
-// IsJTIRevoked checks if a JWT ID has been revoked.
+// IsJTIRevoked checks if a JWT ID has been revoked (scoped to tenant or global).
 func (s *Store) IsJTIRevoked(ctx context.Context, jti string) (bool, error) {
 	_, err := s.client.Get(ctx, tkey(ctx, prefixJTI+jti)).Result()
-	if err == redis.Nil {
-		return false, nil
+	if err == nil {
+		return true, nil
 	}
-	if err != nil {
+	if err != redis.Nil {
 		return false, err
 	}
-	return true, nil
+	// Checked for every tenant, unconditionally. This costs a second Redis
+	// round-trip on the JWT path only when the tenant-scoped key misses, which
+	// is the common case — accepted because a revocation that applies to one
+	// tenant only is not a revocation, and the alternative (inferring scope
+	// from the tenant id) is the escalation documented at keyGlobalBlockedIPs.
+	if _, err := s.client.Get(ctx, prefixGlobalJTI+jti).Result(); err == nil {
+		return true, nil
+	} else if err != redis.Nil {
+		return false, err
+	}
+	return false, nil
 }
 
-// RevokeJTI blacklists a JWT ID for the given duration.
+// RevokeJTI blacklists a JWT ID for the given duration, scoped to the caller's
+// tenant. See RevokeJTIGlobal for the cross-tenant revocation.
 func (s *Store) RevokeJTI(ctx context.Context, jti string, ttl time.Duration) error {
 	return s.client.Set(ctx, tkey(ctx, prefixJTI+jti), "revoked", ttl).Err()
+}
+
+// RevokeJTIGlobal blacklists a JWT ID for every tenant at once. Super-admin
+// only — enforced by the admin handler, not inferred from the context.
+func (s *Store) RevokeJTIGlobal(ctx context.Context, jti string, ttl time.Duration) error {
+	return s.client.Set(ctx, prefixGlobalJTI+jti, "revoked", ttl).Err()
 }
 
 // ── Forensics / Block Log ─────────────────────────────────────────────────────

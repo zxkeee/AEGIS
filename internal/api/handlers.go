@@ -484,16 +484,84 @@ func (h *handlers) getInventory(w http.ResponseWriter, r *http.Request) {
 
 // ── IP Management ─────────────────────────────────────────────────────────────
 
+// adminScope names what an admin operation acts on: one tenant, or the
+// cross-tenant global scope. The two are separate fields rather than one
+// string, because a string that sometimes means "a tenant" and sometimes means
+// "all of them" is how the first version of this became a privilege
+// escalation — see the note at store.keyGlobalBlockedIPs.
+type adminScope struct {
+	Tenant string // meaningful only when Global is false
+	Global bool
+}
+
+// resolveScope decides which scope an admin request may act on.
+//
+// An absent scope is the caller's own tenant, and never the global one: the
+// default has to be the narrowest thing, because the default is what every
+// existing client and the console already send.
+//
+// The global scope is addressed by "*" alone. "global" is deliberately NOT an
+// alias: it is a syntactically valid tenant id (ValidTenantID accepts
+// [A-Za-z0-9._-]{1,64}), so accepting it would leave one string meaning two
+// different things at the API boundary. "*" cannot ever be a tenant id, so
+// there is nothing to confuse it with.
+func (h *handlers) resolveScope(r *http.Request, requested string) (adminScope, bool) {
+	requested = strings.TrimSpace(requested)
+	callerTenant := tenant.From(r.Context())
+	isSuper := iam.IsSuperAdmin(r.Context())
+
+	if requested == "" {
+		return adminScope{Tenant: callerTenant}, true
+	}
+	if requested == "*" {
+		if !isSuper {
+			return adminScope{}, false
+		}
+		return adminScope{Global: true}, true
+	}
+	if !config.ValidTenantID(requested) {
+		return adminScope{}, false
+	}
+	if isSuper || requested == callerTenant {
+		return adminScope{Tenant: requested}, true
+	}
+	return adminScope{}, false
+}
+
+// label names the scope for a log line or a response body.
+func (a adminScope) label() string {
+	if a.Global {
+		return "*"
+	}
+	return a.Tenant
+}
+
+// ctx returns the context an operation on this scope should use. For the global
+// scope the caller's own tenant is kept, because nothing tenant-scoped should
+// be reached through it — the global path uses the explicit *Global store
+// methods instead.
+func (a adminScope) ctx(r *http.Request) context.Context {
+	if a.Global {
+		return r.Context()
+	}
+	return tenant.With(r.Context(), a.Tenant)
+}
+
 func (h *handlers) getBlockedIPs(w http.ResponseWriter, r *http.Request) {
 	// Structured (source + TTL) so an operator can tell a deliberate admin
 	// block from a still-live, self-expiring auto-ban before unblocking —
 	// see store.BlockedIPInfo and unblockIPHandler's ?source= param.
-	ips, err := h.store.GetBlockedIPDetails(r.Context())
+	scope, ok := h.resolveScope(r, r.URL.Query().Get("tenant"))
+	if !ok {
+		writeError(w, http.StatusForbidden, "cannot read blocked IPs for another tenant")
+		return
+	}
+	ips, err := h.store.GetBlockedIPDetails(scope.ctx(r))
 	if err != nil {
 		h.writeStoreError(w, "admin: blocked IPs fetch failed", "failed to fetch blocked IPs", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ips": ips, "count": len(ips)})
+	writeJSON(w, http.StatusOK, map[string]any{"ips": ips, "count": len(ips), "tenant": scope.label()})
 }
 
 func (h *handlers) blockIPHandler(w http.ResponseWriter, r *http.Request) {
@@ -503,9 +571,16 @@ func (h *handlers) blockIPHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IP     string `json:"ip"`
 		Reason string `json:"reason"`
+		Tenant string `json:"tenant"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	scope, ok := h.resolveScope(r, req.Tenant)
+	if !ok {
+		writeError(w, http.StatusForbidden, "cannot block IP for another tenant")
 		return
 	}
 
@@ -520,14 +595,20 @@ func (h *handlers) blockIPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.BlockIP(r.Context(), req.IP); err != nil {
-		h.log.Error("admin: block IP failed", map[string]any{"error": err.Error()})
+	var blockErr error
+	if scope.Global {
+		blockErr = h.store.BlockIPGlobal(r.Context(), req.IP)
+	} else {
+		blockErr = h.store.BlockIP(scope.ctx(r), req.IP)
+	}
+	if blockErr != nil {
+		h.log.Error("admin: block IP failed", map[string]any{"error": blockErr.Error(), "tenant": scope.label()})
 		writeError(w, http.StatusInternalServerError, "failed to block IP")
 		return
 	}
 
-	h.log.Info("ip_blocked_manual", map[string]any{"ip": req.IP, "reason": req.Reason})
-	writeJSON(w, http.StatusOK, map[string]string{"message": "IP blocked", "ip": req.IP})
+	h.log.Info("ip_blocked_manual", map[string]any{"ip": req.IP, "reason": req.Reason, "tenant": scope.label()})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "IP blocked", "ip": req.IP, "tenant": scope.label()})
 }
 
 func (h *handlers) unblockIPHandler(w http.ResponseWriter, r *http.Request) {
@@ -551,14 +632,26 @@ func (h *handlers) unblockIPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.UnblockIP(r.Context(), ip, source); err != nil {
-		h.log.Error("admin: unblock IP failed", map[string]any{"error": err.Error()})
+	scope, ok := h.resolveScope(r, r.URL.Query().Get("tenant"))
+	if !ok {
+		writeError(w, http.StatusForbidden, "cannot unblock IP for another tenant")
+		return
+	}
+
+	var unblockErr error
+	if scope.Global {
+		unblockErr = h.store.UnblockIPGlobal(r.Context(), ip)
+	} else {
+		unblockErr = h.store.UnblockIP(scope.ctx(r), ip, source)
+	}
+	if unblockErr != nil {
+		h.log.Error("admin: unblock IP failed", map[string]any{"error": unblockErr.Error(), "tenant": scope.label()})
 		writeError(w, http.StatusInternalServerError, "failed to unblock IP")
 		return
 	}
 
-	h.log.Info("ip_unblocked", map[string]any{"ip": ip})
-	writeJSON(w, http.StatusOK, map[string]string{"message": "IP unblocked", "ip": ip})
+	h.log.Info("ip_unblocked", map[string]any{"ip": ip, "tenant": scope.label()})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "IP unblocked", "ip": ip, "tenant": scope.label()})
 }
 
 // isUnblockableIP rejects addresses that would only cause self-inflicted
@@ -582,6 +675,7 @@ func (h *handlers) revokeJWT(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		JTI        string `json:"jti"`
 		TTLSeconds int    `json:"ttl_seconds"`
+		Tenant     string `json:"tenant"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		if err == io.EOF {
@@ -595,6 +689,13 @@ func (h *handlers) revokeJWT(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "jti is required")
 		return
 	}
+
+	scope, ok := h.resolveScope(r, req.Tenant)
+	if !ok {
+		writeError(w, http.StatusForbidden, "cannot revoke JWT for another tenant")
+		return
+	}
+
 	// Bounded BEFORE the conversion, not after.
 	//
 	// The range check used to run on the input and the cap on the resulting
@@ -614,16 +715,23 @@ func (h *handlers) revokeJWT(w http.ResponseWriter, r *http.Request) {
 		ttl = 24 * time.Hour // Default 24h
 	}
 
-	if err := h.store.RevokeJTI(r.Context(), req.JTI, ttl); err != nil {
-		h.log.Error("admin: JWT revoke failed", map[string]any{"error": err.Error()})
+	var revokeErr error
+	if scope.Global {
+		revokeErr = h.store.RevokeJTIGlobal(r.Context(), req.JTI, ttl)
+	} else {
+		revokeErr = h.store.RevokeJTI(scope.ctx(r), req.JTI, ttl)
+	}
+	if revokeErr != nil {
+		h.log.Error("admin: JWT revoke failed", map[string]any{"error": revokeErr.Error(), "tenant": scope.label()})
 		writeError(w, http.StatusInternalServerError, "failed to revoke token")
 		return
 	}
 
-	h.log.Info("jwt_revoked", map[string]any{"jti": req.JTI, "ttl": ttl.String()})
+	h.log.Info("jwt_revoked", map[string]any{"jti": req.JTI, "ttl": ttl.String(), "tenant": scope.label()})
 	writeJSON(w, http.StatusOK, map[string]string{
 		"message": "JWT revoked",
 		"jti":     req.JTI,
+		"tenant":  scope.label(),
 		"expires": time.Now().Add(ttl).UTC().Format(time.RFC3339),
 	})
 }

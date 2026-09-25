@@ -357,6 +357,44 @@ func TestAttemptWriter_FlushCommitsAndStreams(t *testing.T) {
 	}
 }
 
+// When a response exceeds maxAttemptBufferSize, attemptWriter must commit
+// what it has, set streamed=true to prevent unbounded memory buffering (OOM),
+// and stream subsequent chunks directly to the client.
+func TestAttemptWriter_BufferOverflowSwitchesToStreamed(t *testing.T) {
+	rec := httptest.NewRecorder()
+	aw := &attemptWriter{dst: rec, header: make(http.Header), status: http.StatusOK}
+	aw.Header().Set("X-Custom", "test")
+	aw.WriteHeader(http.StatusOK)
+
+	// Write small chunk under the 4MB cap
+	small := make([]byte, 1024)
+	copy(small, "hello")
+	n, err := aw.Write(small)
+	if err != nil || n != len(small) {
+		t.Fatalf("Write small failed: n=%d, err=%v", n, err)
+	}
+	if aw.streamed {
+		t.Fatal("writer should not be in streamed mode under the buffer cap")
+	}
+
+	// Write oversized chunk that pushes total beyond maxAttemptBufferSize
+	overflow := make([]byte, maxAttemptBufferSize)
+	copy(overflow, "world")
+	n, err = aw.Write(overflow)
+	if err != nil || n != len(overflow) {
+		t.Fatalf("Write overflow failed: n=%d, err=%v", n, err)
+	}
+	if !aw.streamed {
+		t.Fatal("writer must switch to streamed mode when buffer cap is exceeded")
+	}
+	if rec.Header().Get("X-Custom") != "test" {
+		t.Fatalf("headers not committed on overflow: %v", rec.Header())
+	}
+	if rec.Body.Len() != len(small)+len(overflow) {
+		t.Fatalf("expected %d bytes delivered, got %d", len(small)+len(overflow), rec.Body.Len())
+	}
+}
+
 // SSE must stream through the gateway in real time even when the retry path
 // (buffered first attempt) is active. The old http.TimeoutHandler wrapper made
 // this impossible: it buffered the whole response and implemented no Flusher.

@@ -1110,3 +1110,31 @@ func TestAbuse_CountsIdentityDerivedFromAddressAlone(t *testing.T) {
 		t.Error("a JWT-identified caller was counted as address-only")
 	}
 }
+
+// An oversized or truncated JSON body (e.g. padded with padding to bypass BOLA)
+// must still have its IDs extracted by bodyObjectIDs instead of failing silently.
+func TestBOLA_PaddedTruncatedBodyIDsExtracted(t *testing.T) {
+	// Construct a JSON body larger than bodyIDCap (256KB), containing an order_id
+	// near the beginning and ending abruptly without closing brackets.
+	pad := strings.Repeat("A", 300*1024)
+	bodyStr := `{"order_id": 98765, "data": "` + pad
+	r := httptest.NewRequest(http.MethodPost, "/api/orders", strings.NewReader(bodyStr))
+	r.Header.Set("Content-Type", "application/json")
+
+	ids := bodyObjectIDs(r)
+	if len(ids) == 0 {
+		t.Fatal("bodyObjectIDs failed to extract IDs from truncated/padded JSON body")
+	}
+	if len(ids["order_id"]) == 0 || ids["order_id"][0] != "98765" {
+		t.Fatalf("expected order_id 98765, got %v", ids["order_id"])
+	}
+
+	// Verify that r.Body was properly rewound so downstream components can read it
+	readBack, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("failed to read rewound body: %v", err)
+	}
+	if len(readBack) != len(bodyStr) {
+		t.Fatalf("rewound body length mismatch: got %d, want %d", len(readBack), len(bodyStr))
+	}
+}

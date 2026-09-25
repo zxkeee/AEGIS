@@ -56,3 +56,29 @@ func TestMaxRevocationTTL(t *testing.T) {
 		t.Errorf("cap = %s, want 30 days", got)
 	}
 }
+
+func TestRevokeJWT_TenantScopingAndRBAC(t *testing.T) {
+	h := &handlers{log: logger.New("error")}
+
+	// 1. Non-super admin attempting to revoke for another tenant -> 403 Forbidden
+	body := `{"jti":"victim-token","tenant":"other-tenant"}`
+	r := httptest.NewRequest(http.MethodPost, "/api/jwt/revoke", strings.NewReader(body))
+	r = r.WithContext(iam.WithRole(r.Context(), iam.RoleAdmin)) // not super admin
+	rec := httptest.NewRecorder()
+	h.revokeJWT(rec, r)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for cross-tenant revoke without superadmin, got %d", rec.Code)
+	}
+
+	// 2. Non-super admin attempting to revoke for '*' (global) -> 403 Forbidden
+	body = `{"jti":"victim-token","tenant":"*"}`
+	r = httptest.NewRequest(http.MethodPost, "/api/jwt/revoke", strings.NewReader(body))
+	r = r.WithContext(iam.WithRole(r.Context(), iam.RoleAdmin))
+	rec = httptest.NewRecorder()
+	h.revokeJWT(rec, r)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for global revoke without superadmin, got %d", rec.Code)
+	}
+}

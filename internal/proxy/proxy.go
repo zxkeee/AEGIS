@@ -399,12 +399,26 @@ func (a *attemptWriter) WriteHeader(code int) {
 	a.status = code
 }
 
+// maxAttemptBufferSize bounds how much of an upstream response body attemptWriter
+// buffers in memory for retry. A response larger than this switches to
+// passthrough streaming directly to the client: once bytes hit the wire a retry
+// is impossible anyway, and buffering an unbounded body (large downloads,
+// videos, exports) is an OOM vector against the gateway process.
+const maxAttemptBufferSize = 4 << 20 // 4 MB
+
 func (a *attemptWriter) Write(b []byte) (int, error) {
 	if a.streamed {
 		return a.dst.Write(b)
 	}
 	if !a.wrote {
 		a.WriteHeader(http.StatusOK)
+	}
+	if a.body.Len()+len(b) > maxAttemptBufferSize {
+		// Response exceeds buffer budget: commit what we have, switch to streamed
+		// passthrough so memory stays bounded. A transport failure after this point
+		// cannot be retried, matching the behavior of non-buffered streaming.
+		a.commit()
+		return a.dst.Write(b)
 	}
 	return a.body.Write(b)
 }
