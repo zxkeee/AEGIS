@@ -175,6 +175,9 @@ step "repo invariants"
   || { bad "the support bundle carries secrets"; cat /tmp/preflight-bundle.log; }
 python3 ./scripts/check-doc-drift.py >/tmp/preflight-drift.log 2>&1 \
   && ok "docs match the code" || { bad "docs and code disagree about what exists"; cat /tmp/preflight-drift.log; }
+python3 ./scripts/check-doc-facts.py >/tmp/preflight-facts.log 2>&1 \
+  && ok "docs state no fact the code denies" \
+  || { bad "a document states something the code contradicts"; cat /tmp/preflight-facts.log; }
 python3 ./scripts/check-plan-tables.py >/tmp/preflight-plan.log 2>&1 \
   && ok "no duplicated rows in the planning tables" \
   || { bad "a planning document lists the same thing twice"; cat /tmp/preflight-plan.log; }

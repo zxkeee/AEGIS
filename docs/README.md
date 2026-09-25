@@ -38,6 +38,7 @@
 | | |
 |---|---|
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Два сервера в одном процессе, цепочка middleware, модель угроз |
+| [`ARCHITECTURE_DEEP_DIVE.md`](ARCHITECTURE_DEEP_DIVE.md) | Длинный технический разбор: все 26 пакетов, 23 шага конвейера, схемы ключей, инварианты. Для технического due diligence |
 | [`aegis-explained.md`](aegis-explained.md) | Длинное объяснение продукта своими словами |
 | [`design/multitenancy.md`](design/multitenancy.md) | ADR-001: изоляция между организациями |
 | [`behaviour-profile.md`](behaviour-profile.md) | Профиль потребителя — и почему не ML |

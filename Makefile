@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker loadgen demo demo-auto doc-drift support-bundle check-binaries check-secrets check-image-pins lint-invariants hooks console console-dev sample-report render-pdf preflight stand stand-down stand-test
+.PHONY: build run test clean docker loadgen demo demo-auto doc-drift doc-facts support-bundle check-binaries check-secrets check-image-pins lint-invariants hooks console console-dev sample-report render-pdf preflight stand stand-down stand-test
 
 build:
 	go build -ldflags="-s -w" -o bin/gateway ./cmd/gateway
@@ -93,6 +93,13 @@ CONFIG ?= config/gateway.yaml
 
 doc-drift:
 	python3 ./scripts/check-doc-drift.py
+
+# doc-drift asks whether a capability is missing from the docs, and says itself
+# that it cannot tell whether the text is TRUE. This asks the part that can be
+# decided mechanically: does the variable the document tells an operator to set
+# actually exist, and is the Go version the one go.mod pins.
+doc-facts:
+	python3 ./scripts/check-doc-facts.py
 
 support-bundle:
 	./scripts/support-bundle.sh -c $(CONFIG) $(if $(ADMIN),-a $(ADMIN),)

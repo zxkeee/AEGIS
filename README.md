@@ -195,7 +195,7 @@ file (with hot-reload) and the administrative API.
 
 | Property | Value |
 |---|---|
-| Language | Go (module targets Go 1.23+; toolchain 1.25) |
+| Language | Go (module targets Go 1.26; toolchain 1.26.6) |
 | Runtime dependencies | Redis 7+ (required), PostgreSQL 14+ (optional, enables ASPM and durable forensics) |
 | WAF engine | Coraza v3 (OWASP-style rule directives) |
 | JWT | golang-jwt v5 with JWKS (keyfunc v3) |
@@ -1122,7 +1122,7 @@ A security gateway is a high-value target and must be hardened.
 
 ### 9.1 Local Binary
 
-Requirements: Go 1.23+ and a reachable Redis instance.
+Requirements: Go 1.26+ and a reachable Redis instance.
 
 ```bash
 go build -o bin/gateway ./cmd/gateway
@@ -1990,7 +1990,7 @@ YAML (з гарячим перезавантаженням) та адмініс�
 
 | Властивість | Значення |
 |---|---|
-| Мова | Go (модуль націлений на Go 1.23+; toolchain 1.25) |
+| Мова | Go (модуль націлений на Go 1.26; toolchain 1.26.6) |
 | Залежності середовища | Redis 7+ (обов'язково), PostgreSQL 14+ (опційно, вмикає ASPM і довговічну форензику) |
 | Рушій WAF | Coraza v3 (директиви правил у стилі OWASP) |
 | JWT | golang-jwt v5 з JWKS (keyfunc v3) |
@@ -2242,7 +2242,7 @@ AEGIS заблокував би.
 
 ## 9. Розгортання
 
-**Локальний бінарний файл.** Потрібні Go 1.23+ та досяжний Redis. Зберіть
+**Локальний бінарний файл.** Потрібні Go 1.26+ та досяжний Redis. Зберіть
 `go build -o bin/gateway ./cmd/gateway`, задайте змінні середовища та запустіть із
 `--config`. Площина даних — `:8080`, адміністрування — `:8081`; liveness на
 `GET /health`, readiness (перевіряє Redis) на `GET /readyz`.

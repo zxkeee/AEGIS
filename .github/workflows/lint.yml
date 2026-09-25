@@ -103,6 +103,15 @@ jobs:
       - name: Check docs against the code
         run: python3 ./scripts/check-doc-drift.py
 
+      # doc-drift checks that a capability is MENTIONED; its own docstring says
+      # it cannot tell whether the sentence is true, and a wrong one passes. The
+      # deep-dive architecture document, written for investors and grant
+      # assessors, listed five environment variables the gateway does not read —
+      # in the deployment section, the one somebody follows live. This checks
+      # the facts that have exactly one right answer.
+      - name: Check documented facts against the code
+        run: python3 ./scripts/check-doc-facts.py
+
       # Same class, different reader. doc-drift watches what a buyer reads;
       # handoff.md is what the next session reads before touching anything, and
       # it is the file that drifted furthest — describing main as of #71 while
