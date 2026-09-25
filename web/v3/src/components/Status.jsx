@@ -1,16 +1,19 @@
 import { Reveal, SectionHeader, Badge, TextLink } from '../lib/ui.jsx'
 
 const DONE = [
-  ['The full control chain', 'WAF, DLP, JWT identity, BOLA detection, passive discovery, multi-tenancy.'],
-  ['GraphQL coverage', 'BOLA, discovery, and PII detection cover GraphQL operations, not just REST paths.'],
+  ['The full control chain', 'Twenty-three middleware: WAF, DLP, signed JWT identity, BOLA and BFLA, passive discovery, multi-tenant isolation.'],
+  ['Per-consumer baselines', 'Volume, authorisation failures, missing paths and endpoint spread — each finding names the dimension and the size of the deviation.'],
+  ['GraphQL coverage', 'BOLA, discovery and PII detection cover GraphQL operations, not just REST paths.'],
   ['Schema enforcement', 'Rejects undocumented body fields against your OpenAPI contract — closes mass assignment.'],
-  ['Adversarial testing', 'WAF-evasion fuzzing and dynamic scans against a running instance.'],
-  ['Fails safe by design', 'Every control has a documented fail-open or fail-closed choice.'],
+  ['Tamper-evident evidence', 'Hourly Merkle seals on the forensic log, signed heads on the incident register and the admin action trail.'],
+  ['Fails safe by design', 'Every control carries a documented fail-open or fail-closed choice, and the default is written down with its reason.'],
 ]
+
 const OPEN = [
-  ['An external pentest', 'An independent audit before any production claim.'],
-  ['Deeper attack detection', 'Injection patterns, auth-velocity anomalies.'],
-  ['Real deployments', 'On live traffic, which is where a design partner comes in.'],
+  ['No paying customers', 'No pilot has run on somebody else’s traffic yet. You would be the first, which is exactly why a pilot starts in mirror mode.'],
+  ['No external pentest', 'The scope document is written; it is not commissioned. What exists is internal adversarial work and the discipline that found it.'],
+  ['No external anchor', 'Signed evidence lives in your database and the key is yours, so an operator holding it could rewrite a record and re-sign. A timestamp authority closes this; it is not built.'],
+  ['No certification', 'No SOC 2, no ISO certificate. Those are a process and an auditor, not a feature — what we can hand over today is the technical evidence that would go into one.'],
 ]
 
 function List({ items, label }) {
@@ -35,7 +38,7 @@ export default function Status() {
       <Reveal>
         <SectionHeader
           title="Early, and straight about it."
-          sub="A working gateway with real controls, tested by our own adversarial work. What it is not yet, it says so."
+          sub="A working gateway with real controls and more test code than product code. What it is not yet, it says here rather than letting you find out later — the second one costs more."
         />
       </Reveal>
       <Reveal delay={0.08}>

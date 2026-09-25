@@ -35,11 +35,16 @@ export default function Pilot() {
       <div className="grid gap-12 lg:grid-cols-2 lg:gap-16">
         <Reveal>
           <SectionHeader
-            title="Run AEGIS on your traffic for a week."
-            sub="We deploy in passive mode, listening and never blocking, then hand back a findings report: the shadow APIs, the endpoints leaking data, and who is calling them. No risk to production, no cost."
+            title="Run AEGIS on a copy of your traffic for a week."
+            sub="Your proxy mirrors each request to us. We are not in the path, we never touch a response, and stopping the gateway mid-pilot changes nothing for your users. At the end you get a findings report: the shadow APIs, the endpoints leaking data, and who is calling them."
           />
           <ul className="mt-6 flex flex-col gap-2 text-[13.5px] text-muted">
-            {['One-week passive assessment', 'Findings mapped to NIS2 and ISO 27001', 'No production risk'].map((t) => (
+            {[
+              'One week, mirror mode, no cost',
+              'Nothing in your request path, nothing to roll back',
+              'Findings mapped to NIS2, DORA and ISO 27001',
+              'Runs on your hardware — no traffic leaves your network',
+            ].map((t) => (
               <li key={t} className="flex gap-2.5"><span className="mt-[8px] h-1 w-1 flex-none rounded-full bg-accent" />{t}</li>
             ))}
           </ul>
@@ -65,7 +70,7 @@ export default function Pilot() {
             </div>
             <div className="col-span-2 flex flex-wrap items-center gap-5">
               <GhostButton type="submit" disabled={busy} className="disabled:opacity-50">
-                Request a pilot
+                Start a mirror pilot
               </GhostButton>
               <p className="text-[12.5px] text-muted" role="status" aria-live="polite">{note}</p>
             </div>

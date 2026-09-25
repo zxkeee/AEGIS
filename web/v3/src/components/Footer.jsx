@@ -11,7 +11,10 @@ export default function Footer() {
     <footer className="border-t border-line bg-obsidian py-12">
       <div className="mx-auto flex max-w-6xl flex-col items-start justify-between gap-6 px-6 sm:flex-row sm:items-center">
         <Wordmark />
-        <p className="text-[13px] text-muted">Inline API security gateway, built in Go. Seeking design partners.</p>
+        <p className="max-w-sm text-[13px] leading-relaxed text-muted">
+          Self-hosted API security gateway, built in Go. Your hardware, your
+          database, no traffic leaving your network. Seeking design partners.
+        </p>
         <div className="flex gap-2">
           {SOCIALS.map(([lab, href, d]) => (
             <a key={lab} href={href} target="_blank" rel="noopener" aria-label={lab} className="grid h-9 w-9 place-items-center rounded-[4px] border border-line-2 text-muted transition-colors hover:border-ink hover:text-ink">

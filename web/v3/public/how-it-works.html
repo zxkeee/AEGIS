@@ -99,12 +99,13 @@
       <h2><span class="sec-num">02</span>Why AEGIS</h2>
       <p>Normally this is three products from three vendors: an <strong>API Gateway</strong> (proxy, load balancing), a <strong>WAAP</strong> layer (firewall, rate limits, bot mitigation, DLP, identity), and an <strong>ASPM</strong> platform (catalog, risk, analytics). AEGIS is all three in one deployment — one place these three layers can't silently disagree with each other.</p>
       <p>The differentiator isn't the firewall — everyone has a signature firewall. It's that AEGIS builds an <strong>API catalog and a "who calls what" graph</strong> from day one, and object-level leak detection is built directly on top of that graph (section 06). Most WAF-only competitors have no such foundation to build on — and most of what does exist stops at REST. AEGIS parses GraphQL operations too, so the same graph and the same detector cover both.</p>
-      <p>AEGIS is <strong>self-hosted, no mandatory cloud</strong>. The only dependencies are Redis and PostgreSQL — infrastructure most companies already run. Nothing phones home.</p>
+      <p>AEGIS is <strong>self-hosted, and that is the point, not a packaging choice</strong>. Salt, Noname, Imperva and Akamai's API security are SaaS: they need a copy of your traffic inside their cloud. For a DORA-regulated bank, a hospital or a public-sector body that is not a preference, it is a bar they cannot clear. AEGIS is one Go binary on your hardware, against your database — no agents, no sidecars, no tenancy in somebody else's account, nothing phoning home. The only dependencies are Redis and PostgreSQL, infrastructure most companies already run.</p>
+      <p>The evidence side follows from the same place. Findings map to <strong>NIS2</strong> (Art. 21 risk management, Art. 23 reporting deadlines), <strong>DORA</strong> (Art. 8–10 and 17–19) and <strong>ISO 27001</strong> Annex A, through the OWASP API Top 10. Reports are signed with Ed25519 and checked by a standalone verifier that refuses to run against a key taken from the document it is checking — so an auditor verifies on their own machine without trusting you or us.</p>
     </section>
 
     <section id="lifecycle">
       <h2><span class="sec-num">03</span>The request lifecycle</h2>
-      <p>A request passes through eight grouped stages, in this exact order — outermost first, closest to your backend last:</p>
+      <p>A request passes through twenty-three middleware in eight grouped stages, in this exact order — outermost first, closest to your backend last:</p>
 
       <table class="group-table">
         <thead><tr><th>#</th><th>Stage</th><th>What runs here</th></tr></thead>
@@ -115,13 +116,13 @@
           <tr><td class="n">04</td><td class="name">Filter</td><td>IPGuard, ThreatFeed, RateLimit, BotProtection, Challenge — is this an automated attacker?</td></tr>
           <tr><td class="n">05</td><td class="name">Inspect</td><td>WAF — signature match against known attack patterns (OWASP CRS)</td></tr>
           <tr><td class="n">06</td><td class="name">Discover</td><td>Passive catalog — only requests that cleared 04–05 are recorded</td></tr>
-          <tr><td class="n">07</td><td class="name">Authorize</td><td>JWT auth, schema validation against the documented contract</td></tr>
-          <tr><td class="n">08</td><td class="name">Detect &amp; redact</td><td>Authorization-abuse detection (BOLA/BFLA), data-leak redaction, behavioral scoring</td></tr>
+          <tr><td class="n">07</td><td class="name">Authorize</td><td>JWT auth, ConsumerID (a keyed pseudonym when the credential is not a JWT), schema validation against the documented contract</td></tr>
+          <tr><td class="n">08</td><td class="name">Detect &amp; redact</td><td>Authorization-abuse detection (BOLA/BFLA), data-leak redaction, behavioral scoring, and the per-consumer baseline</td></tr>
         </tbody>
       </table>
 
       <details class="steps">
-        <summary>Show all 21 individual middleware, in exact order (source-verified)</summary>
+        <summary>Show all 23 individual middleware, in exact order (source-verified)</summary>
         <div class="steps-list">
           <span class="n">01</span><span class="t">TenantResolve</span>
           <span class="n">02</span><span class="t">CleanHeaders</span>
@@ -140,10 +141,12 @@
           <span class="n">15</span><span class="t">WAF</span>
           <span class="n">16</span><span class="t">Discovery</span>
           <span class="n">17</span><span class="t">Auth</span>
-          <span class="n">18</span><span class="t">SchemaValidation</span>
-          <span class="n">19</span><span class="t">AbuseDetection</span>
-          <span class="n">20</span><span class="t">DLP</span>
-          <span class="n">21</span><span class="t">BehaviorAnalysis</span>
+          <span class="n">18</span><span class="t">ConsumerID</span>
+          <span class="n">19</span><span class="t">SchemaValidation</span>
+          <span class="n">20</span><span class="t">AbuseDetection</span>
+          <span class="n">21</span><span class="t">DLP</span>
+          <span class="n">22</span><span class="t">BehaviorAnalysis</span>
+          <span class="n">23</span><span class="t">BehaviorProfile</span>
         </div>
       </details>
       <p style="font-size:13px;color:var(--muted)">This exact order is pinned by a named-step test in CI — reordering it without meaning to fails the build. <a href="/articles/chain-order.html">Why the order itself is part of the contract →</a></p>
@@ -185,13 +188,14 @@
     <section id="deploy">
       <h2><span class="sec-num">08</span>Deployment</h2>
       <p>Packaging is a single Docker image. <strong>Docker Compose</strong> for a demo or first pilot — one server, fast to validate on real traffic. <strong>Kubernetes + Helm</strong> for production — multiple replicas behind a load balancer, autoscaling, zero-downtime rolling updates.</p>
-      <p>Rollout is staged so a pilot can never break production traffic:</p>
+      <p>Rollout is staged so a pilot can never break production traffic — and the first stage is not in the request path at all:</p>
       <div class="check-list">
-        <div class="check-row"><span class="mark ok">01</span><div><div class="t">Observe</div><div class="d">Watches and records, blocks nothing. Builds the catalog, shows what would've been rejected.</div></div></div>
-        <div class="check-row"><span class="mark ok">02</span><div><div class="t">Tuning</div><div class="d">False positives removed from collected data, per-route rules defined.</div></div></div>
-        <div class="check-row"><span class="mark ok">03</span><div><div class="t">Enforcement</div><div class="d">Real blocking, tuned rate limits, auth turned on where required.</div></div></div>
-        <div class="check-row"><span class="mark ok">04</span><div><div class="t">Expansion</div><div class="d">Same pattern rolled out to the rest of the estate.</div></div></div>
-        <div class="check-row"><span class="mark ok">05</span><div><div class="t">Steady state</div><div class="d">Ongoing work against the posture report — coverage up, shadow endpoints down.</div></div></div>
+        <div class="check-row"><span class="mark ok">01</span><div><div class="t">Mirror</div><div class="d">Your proxy sends a <em>copy</em> of each request; AEGIS never sits in the path and never touches a response. Stop the gateway in the middle of a pilot and your traffic does not notice. This is where a first engagement starts.</div></div></div>
+        <div class="check-row"><span class="mark ok">02</span><div><div class="t">Observe</div><div class="d">Inline now, but blocking nothing. Builds the catalog, shows what would've been rejected.</div></div></div>
+        <div class="check-row"><span class="mark ok">03</span><div><div class="t">Tuning</div><div class="d">False positives removed from collected data, per-route rules defined.</div></div></div>
+        <div class="check-row"><span class="mark ok">04</span><div><div class="t">Enforcement</div><div class="d">Real blocking, tuned rate limits, auth turned on where required.</div></div></div>
+        <div class="check-row"><span class="mark ok">05</span><div><div class="t">Expansion</div><div class="d">Same pattern rolled out to the rest of the estate.</div></div></div>
+        <div class="check-row"><span class="mark ok">06</span><div><div class="t">Steady state</div><div class="d">Ongoing work against the posture report — coverage up, shadow endpoints down.</div></div></div>
       </div>
     </section>
 
@@ -199,7 +203,7 @@
       <h2><span class="sec-num">09</span>Where things stand</h2>
       <p>Engineered and tested — and honest about what's still open, not smoothed over:</p>
       <div class="check-list">
-        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Full control chain, source-verified</div><div class="d">WAF, DLP, JWT identity, BOLA/BFLA detection, passive discovery, multi-tenancy — every claim on this page checked against the actual code.</div></div></div>
+        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Full control chain, source-verified</div><div class="d">WAF, DLP, JWT identity, BOLA/BFLA detection, passive discovery, multi-tenancy — twenty-three middleware, each one checked against the actual code. This list said twenty-one until somebody counted; ConsumerID and BehaviorProfile were missing.</div></div></div>
         <div class="check-row"><span class="mark ok">✓</span><div><div class="t">REST and GraphQL alike</div><div class="d">BOLA, passive discovery, and PII attribution all parse GraphQL operations — the same detector and the same catalog, one code path for both, not a separate GraphQL module. Nested fields and fragments aren't walked yet.</div></div></div>
         <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Chaos-tested, not just documented</div><div class="d">Redis and PostgreSQL killed live under sustained load — 100% success both times.</div></div></div>
         <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Schema enforcement</div><div class="d">Rejects undocumented body fields against your OpenAPI contract — closes mass assignment.</div></div></div>
@@ -230,7 +234,7 @@
   </main>
 </div>
 
-<footer>AEGIS — inline API security gateway, built in Go.</footer>
+<footer>AEGIS — self-hosted API security gateway, built in Go. Your hardware, your database, no traffic leaving your network.</footer>
 
 </body>
 </html>

@@ -5,6 +5,7 @@ import { Wordmark, GhostButton } from '../lib/ui.jsx'
 const NAV = [
   ['Architecture', '#how'],
   ['Controls', '#controls'],
+  ['Deployment', '#deployment'],
   ['Compliance', '#compliance'],
   ['Status', '#status'],
 ]
@@ -21,7 +22,7 @@ export default function Nav() {
           ))}
         </nav>
         <div className="hidden md:block">
-          <GhostButton href="#pilot">Request a pilot</GhostButton>
+          <GhostButton href="#pilot">Start a mirror pilot</GhostButton>
         </div>
         <button className="-mr-2 p-2 text-ink md:hidden" aria-label="Menu" onClick={() => setOpen((v) => !v)}>
           {open ? <X size={20} /> : <List size={20} />}
@@ -29,7 +30,7 @@ export default function Nav() {
       </div>
       {open && (
         <div className="flex flex-col gap-1 border-t border-line px-6 py-4 md:hidden">
-          {[...NAV, ['Request a pilot', '#pilot']].map(([t, h]) => (
+          {[...NAV, ['Start a mirror pilot', '#pilot']].map(([t, h]) => (
             <a key={h} href={h} onClick={() => setOpen(false)} className="py-2.5 font-serif text-xl text-ink">{t}</a>
           ))}
         </div>

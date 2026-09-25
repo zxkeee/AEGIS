@@ -3,6 +3,7 @@ import Hero from './components/Hero.jsx'
 import TerminalSplit from './components/TerminalSplit.jsx'
 import WorkflowGrid from './components/WorkflowGrid.jsx'
 import Architecture from './components/Architecture.jsx'
+import Deployment from './components/Deployment.jsx'
 import Compliance from './components/Compliance.jsx'
 import Status from './components/Status.jsx'
 import Pilot from './components/Pilot.jsx'
@@ -20,6 +21,7 @@ export default function App() {
         <TerminalSplit />
         <WorkflowGrid />
         <Architecture />
+        <Deployment />
         <Compliance />
         <Status />
         <Pilot />

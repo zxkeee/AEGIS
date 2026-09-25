@@ -36,7 +36,36 @@ import sys
 MANIFEST = "docs/capabilities.json"
 
 
+# Extensions worth reading when a must_mention entry names a directory. Styles,
+# lockfiles and images cannot state a claim, and including them would only make
+# a keyword match on a minified blob possible.
+TREE_SUFFIXES = (".html", ".jsx", ".tsx", ".js", ".ts", ".md", ".json", ".txt")
+
+
 def read(path):
+    """Read one document, or a whole tree when the path ends with "/".
+
+    The marketing site is not one file — it is a React tree plus static pages,
+    and it is the document a buyer reads BEFORE any of the others. Requiring it
+    to name a single file would have meant picking one component and pretending
+    the rest did not exist, so a trailing slash means "this subtree, joined".
+    Build output is skipped: dist/ is generated, so a pass against it would
+    prove only that somebody ran a build, not that the source says anything.
+    """
+    if path.endswith("/"):
+        parts = []
+        for root, dirs, files in os.walk(path):
+            dirs[:] = [d for d in dirs if d not in ("node_modules", "dist") and not d.startswith(".")]
+            for f in sorted(files):
+                if f.endswith(TREE_SUFFIXES):
+                    try:
+                        with open(os.path.join(root, f), encoding="utf-8", errors="replace") as fh:
+                            parts.append(fh.read())
+                    except OSError:
+                        continue
+        if not parts:
+            return OSError(f"no readable documents under {path}")
+        return "\n".join(parts)
     try:
         with open(path, encoding="utf-8") as fh:
             return fh.read()

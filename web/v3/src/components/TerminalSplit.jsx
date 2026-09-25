@@ -22,7 +22,7 @@ export default function TerminalSplit() {
         <Reveal className="md:col-span-5">
           <SectionHeader
             title="A record of every request, not a quarterly scan."
-            sub="AEGIS sits inline and watches production traffic as it happens. Every block, redaction, and newly seen endpoint lands in a forensic log the moment it occurs."
+            sub="AEGIS reads production traffic as it happens — from a mirrored copy during a pilot, inline once you choose to enforce. Every block, redaction and newly seen endpoint lands in a forensic log the moment it occurs, sealed hourly so the log can prove it was not edited afterwards."
           />
           <div className="mt-6">
             <TextLink href="#how">See how the chain decides</TextLink>
