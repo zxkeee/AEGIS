@@ -1,4 +1,6 @@
 import { Wordmark } from '../lib/ui.jsx'
+import { useT } from '../lib/i18n.jsx'
+import LangSwitch from './LangSwitch.jsx'
 
 const SOCIALS = [
   ['LinkedIn', 'https://www.linkedin.com/in/nikita-velbovets/', 'M4.98 3.5A2.5 2.5 0 1 0 5 8.5a2.5 2.5 0 0 0 0-5ZM3 9h4v12H3V9Zm7 0h3.8v1.7h.05c.53-.95 1.83-1.95 3.77-1.95 4.03 0 4.78 2.5 4.78 5.75V21h-4v-5.3c0-1.27-.02-2.9-1.9-2.9-1.9 0-2.2 1.37-2.2 2.8V21h-4V9Z'],
@@ -7,15 +9,14 @@ const SOCIALS = [
 ]
 
 export default function Footer() {
+  const t = useT()
   return (
     <footer className="border-t border-line bg-obsidian py-12">
       <div className="mx-auto flex max-w-6xl flex-col items-start justify-between gap-6 px-6 sm:flex-row sm:items-center">
         <Wordmark />
-        <p className="max-w-sm text-[13px] leading-relaxed text-muted">
-          Self-hosted API security gateway, built in Go. Your hardware, your
-          database, no traffic leaving your network. Seeking design partners.
-        </p>
-        <div className="flex gap-2">
+        <p className="max-w-sm text-[13px] leading-relaxed text-muted">{t.footer.blurb}</p>
+        <div className="flex items-center gap-3">
+          <LangSwitch />
           {SOCIALS.map(([lab, href, d]) => (
             <a key={lab} href={href} target="_blank" rel="noopener" aria-label={lab} className="grid h-9 w-9 place-items-center rounded-[4px] border border-line-2 text-muted transition-colors hover:border-ink hover:text-ink">
               <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4"><path d={d} /></svg>

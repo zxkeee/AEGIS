@@ -1,6 +1,12 @@
 @import "tailwindcss";
 @import "@fontsource/libre-baskerville/400.css";
 @import "@fontsource/libre-baskerville/700.css";
+/* Libre Baskerville ships latin and latin-ext only — no Cyrillic. Ukrainian
+   headings would silently fall back to a system serif, so every h1 would change
+   typeface on a language switch. PT Serif carries the Cyrillic; the browser
+   resolves per glyph, so Latin still comes from Baskerville. */
+@import "@fontsource/pt-serif/400.css";
+@import "@fontsource/pt-serif/700.css";
 @import "@fontsource/inter/400.css";
 @import "@fontsource/inter/500.css";
 @import "@fontsource/inter/600.css";
@@ -27,7 +33,7 @@
   --color-navy: #1a365d;
   --color-paper: #f4f2ee;
 
-  --font-serif: "Libre Baskerville", "Source Serif Pro", Georgia, serif;
+  --font-serif: "Libre Baskerville", "PT Serif", "Source Serif Pro", Georgia, serif;
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Fira Code", ui-monospace, monospace;
 }

@@ -157,8 +157,9 @@ out anyway, and finding out from us is worth more than finding out later.
 enforced in CI. Eleven security invariants encoded as scripts, each one a bug
 that shipped once and cannot ship again. Mutation testing as
 a working discipline, not a slogan: the code is deliberately broken to prove the
-tests notice, and that practice has found fourteen tests that were passing for
-the wrong reason.
+tests notice, and that practice has found eleven tests that were passing for
+the wrong reason — each one listed individually, which is why the number is
+eleven and not a rounder one.
 
 **The release gate stands at 52 items closed, 17 partial, 3 open**, and two of
 the three open items are not tasks — they are honestly recorded limits of what

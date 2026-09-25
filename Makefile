@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker loadgen demo demo-auto doc-drift doc-facts support-bundle check-binaries check-secrets check-image-pins lint-invariants hooks console console-dev sample-report render-pdf preflight stand stand-down stand-test
+.PHONY: build run test clean docker loadgen demo demo-auto doc-drift doc-facts i18n support-bundle check-binaries check-secrets check-image-pins lint-invariants hooks console console-dev sample-report render-pdf preflight stand stand-down stand-test
 
 build:
 	go build -ldflags="-s -w" -o bin/gateway ./cmd/gateway
@@ -100,6 +100,13 @@ doc-drift:
 # actually exist, and is the Go version the one go.mod pins.
 doc-facts:
 	python3 ./scripts/check-doc-facts.py
+
+# The site is English with Polish and Ukrainian translations. A missing key
+# falls back to English at runtime with no warning, which is right for a
+# visitor and wrong for us: a translation can rot back into English one string
+# at a time and nobody who reads English would ever see it.
+i18n:
+	node ./scripts/check-i18n.mjs
 
 support-bundle:
 	./scripts/support-bundle.sh -c $(CONFIG) $(if $(ADMIN),-a $(ADMIN),)

@@ -178,6 +178,9 @@ python3 ./scripts/check-doc-drift.py >/tmp/preflight-drift.log 2>&1 \
 python3 ./scripts/check-doc-facts.py >/tmp/preflight-facts.log 2>&1 \
   && ok "docs state no fact the code denies" \
   || { bad "a document states something the code contradicts"; cat /tmp/preflight-facts.log; }
+node ./scripts/check-i18n.mjs >/tmp/preflight-i18n.log 2>&1 \
+  && ok "translations match the English source" \
+  || { bad "a translation dictionary has drifted"; cat /tmp/preflight-i18n.log; }
 python3 ./scripts/check-plan-tables.py >/tmp/preflight-plan.log 2>&1 \
   && ok "no duplicated rows in the planning tables" \
   || { bad "a planning document lists the same thing twice"; cat /tmp/preflight-plan.log; }

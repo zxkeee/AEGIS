@@ -1,5 +1,9 @@
 import { Reveal, SectionHeader, TextLink } from '../lib/ui.jsx'
+import { useT } from '../lib/i18n.jsx'
 
+/* The log lines are deliberately not translated: they are what the product
+   actually writes, and a reader who is about to run it should see the real
+   strings rather than a rendering of them. */
 const LOG = [
   { t: '09:14:22', tag: 'waf', tone: 'block', line: 'POST /v1/invoices/{id}/export  rule 941100 (XSS)  blocked' },
   { t: '09:14:26', tag: 'bola', tone: 'block', line: 'GET /v1/accounts/8841  subject 8830 is not owner  blocked' },
@@ -8,27 +12,17 @@ const LOG = [
   { t: '09:14:44', tag: 'auth', tone: 'ok', line: 'GET /v1/invoices  JWT verified, identity signed for backend' },
 ]
 
-const TONE = {
-  block: 'text-ink',
-  warn: 'text-muted',
-  info: 'text-accent',
-  ok: 'text-muted',
-}
+const TONE = { block: 'text-ink', warn: 'text-muted', info: 'text-accent', ok: 'text-muted' }
 
 export default function TerminalSplit() {
+  const t = useT()
   return (
     <section className="border-t border-line py-16 md:py-20">
       <div className="grid grid-cols-1 gap-12 md:grid-cols-12 md:gap-10">
         <Reveal className="md:col-span-5">
-          <SectionHeader
-            title="A record of every request, not a quarterly scan."
-            sub="AEGIS reads production traffic as it happens — from a mirrored copy during a pilot, inline once you choose to enforce. Every block, redaction and newly seen endpoint lands in a forensic log the moment it occurs, sealed hourly so the log can prove it was not edited afterwards."
-          />
-          <div className="mt-6">
-            <TextLink href="#how">See how the chain decides</TextLink>
-          </div>
+          <SectionHeader title={t.terminal.title} sub={t.terminal.sub} />
+          <div className="mt-6"><TextLink href="#how">{t.terminal.link}</TextLink></div>
         </Reveal>
-
         <Reveal delay={0.08} className="md:col-span-7">
           <div className="overflow-hidden rounded-2xl border border-line-2 bg-obsidian">
             <div className="flex items-center gap-1.5 border-b border-line px-4 py-3">

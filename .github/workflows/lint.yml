@@ -112,6 +112,13 @@ jobs:
       - name: Check documented facts against the code
         run: python3 ./scripts/check-doc-facts.py
 
+      # The site is English; Polish and Ukrainian are translations. A key the
+      # translation lacks renders as English at runtime with no warning, so a
+      # translated page can rot back into English one string at a time and
+      # anybody reviewing in English would see nothing wrong.
+      - name: Check translations against the English source
+        run: node ./scripts/check-i18n.mjs
+
       # Same class, different reader. doc-drift watches what a buyer reads;
       # handoff.md is what the next session reads before touching anything, and
       # it is the file that drifted furthest — describing main as of #71 while
