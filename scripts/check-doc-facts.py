@@ -24,8 +24,11 @@ A document may name a variable that does NOT exist, on purpose — saying so is
 often the point. Declare it, per file:
 
     <!-- doc-facts: ignore-env AEGIS_LISTEN AEGIS_OBSERVE -->
+    <!-- doc-facts: ignore-go 1.23 -->
 
-The directive is per file, explicit and greppable; nobody adds one by accident.
+The same goes for a Go version quoted as something that WAS claimed and is now
+wrong — this file's own handoff notes do exactly that. The directive is per
+file, explicit and greppable; nobody adds one by accident.
 """
 
 import os
@@ -35,7 +38,8 @@ import sys
 CODE_ROOTS = ("internal", "cmd")
 ENV_RE = re.compile(r"\bAEGIS_[A-Z0-9_]+\b")
 GO_VER_RE = re.compile(r"\bGo\s+1\.(\d+)\b")
-IGNORE_RE = re.compile(r"<!--\s*doc-facts:\s*ignore-env\s+([A-Z0-9_\s]+?)\s*-->")
+IGNORE_ENV_RE = re.compile(r"<!--\s*doc-facts:\s*ignore-env\s+([A-Z0-9_\s]+?)\s*-->")
+IGNORE_GO_RE = re.compile(r"<!--\s*doc-facts:\s*ignore-go\s+([0-9.\s]+?)\s*-->")
 
 
 def docs_to_check():
@@ -84,8 +88,11 @@ def main():
         with open(doc, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
         ignored = set()
-        for m in IGNORE_RE.finditer(text):
+        for m in IGNORE_ENV_RE.finditer(text):
             ignored.update(m.group(1).split())
+        ignored_go = set()
+        for m in IGNORE_GO_RE.finditer(text):
+            ignored_go.update(v.split(".")[-1] for v in m.group(1).split())
 
         for name in sorted(set(ENV_RE.findall(text))):
             if name in known or name in ignored:
@@ -103,7 +110,7 @@ def main():
             stale = []
             for i, line in enumerate(text.splitlines(), 1):
                 for m in GO_VER_RE.finditer(line):
-                    if int(m.group(1)) != go_minor:
+                    if int(m.group(1)) != go_minor and m.group(1) not in ignored_go:
                         stale.append(f"{i}: {line.strip()}")
             if stale:
                 failures.append(
