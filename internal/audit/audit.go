@@ -20,6 +20,8 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"api-gateway/internal/pglock"
 )
 
 // Logger is the minimal logging interface the store needs.
@@ -90,6 +92,14 @@ type Store struct {
 	// dropped counts entries discarded because the buffer was full, reported
 	// periodically by worker. See Record.
 	dropped atomic.Int64
+	// lastReportedDrops is how many drops the periodic log line has already
+	// announced. The ticker diffs against it instead of resetting `dropped`,
+	// because `dropped` has a second reader — Dropped(), which feeds the
+	// compliance report's coverage section and is documented as cumulative.
+	// Resetting it meant the report saw a non-zero count only inside the few
+	// seconds after a drop, and read zero the rest of the time: the gateway's
+	// own log said events were lost while the signed document said none were.
+	lastReportedDrops atomic.Int64
 	// signer signs the integrity head. nil when no report signing key is
 	// configured, in which case the head still commits to the trail for a
 	// reader and stops being evidence against the operator holding the
@@ -182,9 +192,10 @@ func (s *Store) worker() {
 		case e := <-s.ch:
 			s.insert(e)
 		case <-ticker.C:
-			if n := s.dropped.Swap(0); n > 0 {
+			total := s.dropped.Load()
+			if newly := total - s.lastReportedDrops.Swap(total); newly > 0 {
 				s.log.Error("audit: buffer full, entries dropped — the admin action trail is incomplete",
-					map[string]any{"dropped": n, "buffer_size": cap(s.ch)})
+					map[string]any{"dropped": newly, "dropped_total": total, "buffer_size": cap(s.ch)})
 			}
 		case <-s.quit:
 			for {
@@ -221,6 +232,19 @@ func (s *Store) insert(e Entry) {
 	if _, err := tx.ExecContext(ctx,
 		`SELECT set_config('app.tenant_id', $1, true)`, tenantOr(e.TenantID)); err != nil {
 		s.log.Error("audit: tenant scope failed", map[string]any{"error": err.Error()})
+		return
+	}
+
+	// Serialise the chain append for this tenant. Within one process the worker
+	// goroutine already writes serially, so this buys nothing single-node — the
+	// exposure is two admin-plane replicas on one database, which this project
+	// documents as a supported deployment. Without it, a replica that cannot yet
+	// see the other's uncommitted row chains to the wrong predecessor and
+	// verification reports tampering against an operator who did nothing.
+	// Measured at 11 false positives in 24 writes from two replicas before this
+	// lock existed. Same defect and same fix as internal/incident's ledger.
+	if err := pglock.ChainAppend(ctx, tx, tenantOr(e.TenantID)); err != nil {
+		s.log.Error("audit: chain lock failed", map[string]any{"error": err.Error()})
 		return
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -441,4 +442,193 @@ func headLastID(t *testing.T, s *Store, tenant string) int64 {
 		t.Fatalf("read head: %v", err)
 	}
 	return id
+}
+
+// THE SAME RACE THE INCIDENT LEDGER HAD, in the trail that records what
+// administrators did.
+//
+// Within one process this is invisible: Store.worker() is a single goroutine
+// draining one channel, so its own writes are already serial. The exposure is
+// the deployment this project documents as supported — more than one admin-plane
+// replica sharing one PostgreSQL. Each replica has its own worker, the two
+// workers do not know about each other, and `insert` reads the previous chain
+// link with a bare SELECT under READ COMMITTED.
+//
+// Two replicas, both writing for one tenant: B inserts, then looks for "the row
+// before mine" and cannot see A's uncommitted row, so it chains to A's
+// predecessor instead of to A. Verification walks by id and reports Broken —
+// an accusation of tampering against an operator who did nothing.
+//
+// Two Store instances on one DSN is exactly two replicas, which is why this
+// test builds them that way rather than reaching inside one.
+func TestAudit_ConcurrentReplicasKeepTheChainIntact(t *testing.T) {
+	dsn := pgtest.DSN(t, "test_audit_race")
+
+	newReplica := func() *Store {
+		s, err := New(dsn, nopLogger{})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	}
+	a, b := newReplica(), newReplica()
+
+	const perReplica = 12
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, s := range []*Store{a, b} {
+		wg.Add(1)
+		go func(s *Store) {
+			defer wg.Done()
+			<-start
+			for i := 0; i < perReplica; i++ {
+				s.Record(Entry{
+					Time: time.Now().UTC(), TenantID: "acme", ActorID: "u1",
+					ActorEmail: "root@acme.example", Role: "admin",
+					Action: "delete_user", Method: "POST", Path: "/api/users",
+					Status: 200, IP: "10.0.0.9",
+				})
+			}
+		}(s)
+	}
+	close(start)
+	wg.Wait()
+
+	// Both replicas' workers are asynchronous; wait for the trail to settle.
+	drain(t, a, "acme", perReplica*2)
+
+	chk, err := a.Verify(context.Background(), "acme")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if len(chk.Broken) != 0 {
+		t.Fatalf("%d positions report a broken chain after %d ordinary writes from "+
+			"two replicas and zero tampering: %v\n"+
+			"The admin action trail is accusing an operator who did nothing.",
+			len(chk.Broken), perReplica*2, chk.Broken)
+	}
+	if !chk.Intact {
+		t.Fatalf("trail not intact after ordinary concurrent writes: %+v", chk)
+	}
+}
+
+// The coverage section of a signed compliance report asks "how many security
+// events were lost", and Dropped() is documented as cumulative since start. A
+// background ticker used to answer that question by calling Swap(0) on the same
+// counter every three seconds — so the report read a non-zero figure only
+// inside the brief window after a drop, and zero the rest of the time. The
+// gateway's own error log said events were lost; the signed document said none
+// were. This test holds the two readers of that counter to one story.
+func TestAudit_DropCounterSurvivesThePeriodicLogLine(t *testing.T) {
+	s := integrityStore(t) // its worker(), and therefore its ticker, is running
+
+	const dropped = 7
+	for i := 0; i < dropped; i++ {
+		s.dropped.Add(1)
+	}
+	if got := s.Dropped(); got != dropped {
+		t.Fatalf("Dropped() = %d immediately after the drops, want %d", got, dropped)
+	}
+
+	// Outlast the reporting tick. The log line is allowed to fire; what it is
+	// not allowed to do is erase the figure the compliance report reads.
+	time.Sleep(dropReportInterval + 500*time.Millisecond)
+
+	if got := s.Dropped(); got != dropped {
+		t.Fatalf("Dropped() = %d after the periodic log line ran, want %d — "+
+			"the compliance report would state that no events were lost while "+
+			"the error log says %d were", got, dropped, dropped)
+	}
+}
+
+// A retention sweep prunes the audit trail with no signing key (the worker that
+// prunes deliberately does not hold one), which blanks the head's signature.
+// That is acceptable — an unsigned head still commits to the trail for a reader.
+// What is not acceptable is the report continuing to omit the "unsigned" caveat
+// because it decided from process configuration ("is a key configured?") rather
+// than from the row it just read ("is THIS head signed?").
+func TestAudit_PrunedHeadIsReportedAsUnsigned(t *testing.T) {
+	s := integrityStore(t).WithSigner(fakeAuditSigner{})
+	ctx := context.Background()
+
+	old := time.Now().UTC().Add(-90 * 24 * time.Hour)
+	for i := 0; i < 3; i++ {
+		record(t, s, "acme", "login", old)
+	}
+	record(t, s, "acme", "login", time.Now().UTC())
+	drain(t, s, "acme", 4)
+
+	before, err := s.Verify(ctx, "acme")
+	if err != nil {
+		t.Fatalf("Verify before: %v", err)
+	}
+	if before.Signature == "" {
+		t.Fatal("head is unsigned before pruning; this test cannot show what it claims")
+	}
+	for _, l := range before.Limits {
+		if strings.Contains(l, "NO signature") {
+			t.Fatalf("a signed head was reported as unsigned: %q", l)
+		}
+	}
+
+	// Prune the way retention does: in a transaction, with no signer.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.tenant_id', '*', true)`); err != nil {
+		t.Fatalf("set_config: %v", err)
+	}
+	cutoff := time.Now().UTC().Add(-24 * time.Hour)
+	var highest, n int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(max(id),0), count(*) FROM admin_audit_log WHERE tenant_id=$1 AND ts < $2`,
+		"acme", cutoff).Scan(&highest, &n); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM admin_audit_log WHERE tenant_id=$1 AND ts < $2`, "acme", cutoff); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if err := RecordPruning(ctx, tx, "acme", highest, n, nil); err != nil {
+		t.Fatalf("RecordPruning: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	after, err := s.Verify(ctx, "acme")
+	if err != nil {
+		t.Fatalf("Verify after: %v", err)
+	}
+	if after.Signature != "" {
+		t.Fatalf("pruning was expected to leave the head unsigned, got %q", after.Signature)
+	}
+	var warned bool
+	for _, l := range after.Limits {
+		if strings.Contains(l, "NO signature") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("the head lost its signature and the report does not say so; limits=%v\n"+
+			"A reader trusting the prose over the raw field believes this trail is "+
+			"attested when it is not.", after.Limits)
+	}
+}
+
+// fakeAuditSigner stands in for internal/attest; the cryptography is that
+// package's business and is tested there.
+type fakeAuditSigner struct{}
+
+func (fakeAuditSigner) SignBytes(p []byte) (string, string) {
+	return "sig:" + string(p[:minInt(len(p), 16)]), "test-key"
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

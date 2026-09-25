@@ -89,22 +89,68 @@ jobs:
       - name: Build gateway
         run: go build -ldflags "-X api-gateway/internal/license.publicKeyB64=$CI_LICENSE_PUBKEY" -o bin/gateway ./cmd/gateway
 
-      # Redis must carry a password — config.Validate rejects an empty one. The
-      # official image takes it via --requirepass.
+      # "runs-on: ubuntu-latest" is a label, not a promise of a disposable VM.
+      # This repository's CI also runs on a self-hosted act_runner on a machine
+      # that serves other things, and "-p 6379:6379" binds EVERY interface —
+      # which put a throwaway Redis with a guessable password on a home LAN on
+      # every run. e2e-smoke.yml was rewritten for exactly this and this file
+      # never got the same treatment. Same shape, same fix.
+      - name: Work out how to reach the service containers
+        run: |
+          if NET=$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' "$(hostname)" 2>/dev/null) \
+             && [ -n "$NET" ]; then
+            echo "job is containerised — joining services to network '$NET', addressing them by name"
+            {
+              echo "SCAN_OPTS_REDIS=--network $NET"
+              echo "SCAN_OPTS_ECHO=--network $NET"
+              echo "SCAN_REDIS_ADDR=aegis-scan-redis:6379"
+              echo "SCAN_ECHO_URL=http://aegis-scan-echo:8080"
+              echo "SCAN_NUCLEI_NET=--network container:$(hostname)"
+            } >> "$GITHUB_ENV"
+          else
+            echo "job runs on the host — publishing to loopback only"
+            {
+              echo "SCAN_OPTS_REDIS=-p 127.0.0.1:6379:6379"
+              echo "SCAN_OPTS_ECHO=-p 127.0.0.1:3000:8080"
+              echo "SCAN_REDIS_ADDR=127.0.0.1:6379"
+              echo "SCAN_ECHO_URL=http://127.0.0.1:3000"
+              echo "SCAN_NUCLEI_NET=--network host"
+            } >> "$GITHUB_ENV"
+          fi
+
+      # Minted per run rather than written here. config.Validate rejects an
+      # empty Redis password, which is why one exists at all — that is no reason
+      # for it to be a constant in a file anyone can read.
+      - name: Mint a throwaway Redis password
+        run: echo "SCAN_REDIS_PASSWORD=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
       - name: Start Redis (password-protected)
         run: |
-          docker run -d --name aegis-scan-redis -p 6379:6379 \
-            redis:7-alpine@sha256:9702d01c1f10c3ea9f48211b4362e44f154ff02d063e6f7268eba804059f53bf redis-server --requirepass scanpass
+          # shellcheck disable=SC2086 -- the options are meant to word-split
+          docker run -d --name aegis-scan-redis $SCAN_OPTS_REDIS \
+            redis:7-alpine@sha256:9702d01c1f10c3ea9f48211b4362e44f154ff02d063e6f7268eba804059f53bf \
+            redis-server --requirepass "$SCAN_REDIS_PASSWORD"
 
       # Disposable upstream so the proxy has somewhere to forward to.
       - name: Start echo backend
         run: |
-          docker run -d --name aegis-scan-echo -p 3000:8080 \
+          # shellcheck disable=SC2086 -- the options are meant to word-split
+          docker run -d --name aegis-scan-echo $SCAN_OPTS_ECHO \
             mendhak/http-https-echo:31@sha256:64208b871594c0eeb2a3c88736b6eb170dcb8edaa7a748c047f7fd62006e65ed
+
+      # The checked-in config names 127.0.0.1, which is right on a hosted runner
+      # and wrong inside a container. Rewrite rather than keep a second config
+      # that would drift out of step with this one.
+      - name: Point the gateway config at the services
+        run: |
+          sed -i \
+            -e "s|addr: \"127.0.0.1:6379\"|addr: \"$SCAN_REDIS_ADDR\"|" \
+            -e "s|- \"http://127.0.0.1:3000\"|- \"$SCAN_ECHO_URL\"|" \
+            tests/dynamic/gateway.ci.yaml
 
       - name: Launch AEGIS
         env:
-          AEGIS_REDIS_PASSWORD: scanpass
+          AEGIS_REDIS_PASSWORD: ${{ env.SCAN_REDIS_PASSWORD }}
           AEGIS_LICENSE_PATH: /tmp/ci-license.lic
         run: |
           # Strong admin secret (config.Validate rejects placeholders/short keys).
@@ -139,7 +185,12 @@ jobs:
           #   curl -sI -H "Authorization: Bearer $TOKEN" \
           #     -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
           #     https://registry-1.docker.io/v2/projectdiscovery/nuclei/manifests/v3.11.0 | grep -i docker-content-digest
-          docker run --rm --network host -v "$PWD/tests/dynamic:/work" \
+          # shellcheck disable=SC2086 -- SCAN_NUCLEI_NET is meant to word-split.
+          # On a containerised job this shares the JOB's network namespace, so
+          # 127.0.0.1:8081 reaches the gateway process running inside it — with
+          # --network host it would land in the machine's namespace instead,
+          # where the gateway is not listening.
+          docker run --rm $SCAN_NUCLEI_NET -v "$PWD/tests/dynamic:/work" \
             projectdiscovery/nuclei:v3.11.0@sha256:e677842fb1f50f29747565ba274a1d35dcf8c684132a42b0cb406e71fccae9fc \
             -u http://127.0.0.1:8081 \
             -severity high,critical -ni -rl 80 -timeout 5 -retries 1 \

@@ -124,11 +124,18 @@ jobs:
             } >> "$GITHUB_ENV"
           fi
 
+      # Minted per run rather than written here. config.Validate rejects an
+      # empty Redis password, which is why one exists at all — that is no reason
+      # for it to be a constant in a file anyone can read.
+      - name: Mint a throwaway Redis password
+        run: echo "E2E_REDIS_PASSWORD=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
       - name: Start Redis (password-protected)
         run: |
           # shellcheck disable=SC2086 -- the options are meant to word-split
           docker run -d --name aegis-e2e-redis $E2E_OPTS_REDIS \
-            redis:7-alpine@sha256:9702d01c1f10c3ea9f48211b4362e44f154ff02d063e6f7268eba804059f53bf redis-server --requirepass scanpass
+            redis:7-alpine@sha256:9702d01c1f10c3ea9f48211b4362e44f154ff02d063e6f7268eba804059f53bf \
+            redis-server --requirepass "$E2E_REDIS_PASSWORD"
 
       - name: Start PostgreSQL
         run: |
@@ -163,7 +170,7 @@ jobs:
 
       - name: Launch AEGIS (catalog enabled)
         env:
-          AEGIS_REDIS_PASSWORD: scanpass
+          AEGIS_REDIS_PASSWORD: ${{ env.E2E_REDIS_PASSWORD }}
           AEGIS_FORENSIC_DSN: postgres://aegis:aegis@${{ env.E2E_PG_HOST }}:5432/aegis?sslmode=disable
           AEGIS_LICENSE_PATH: /tmp/ci-license.lic
         run: |

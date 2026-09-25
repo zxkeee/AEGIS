@@ -3,7 +3,9 @@ package incident
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -470,4 +472,88 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// --- concurrency ---
+
+// THE RACE THIS MECHANISM WAS MISSING.
+//
+// appendLedger reads the previous chain value with a bare
+// `SELECT ... ORDER BY seq DESC LIMIT 1` and then inserts. Under READ
+// COMMITTED — which is what BeginTx(ctx, nil) gives — two transactions can read
+// the SAME prev before either commits. Postgres hands out distinct seq values
+// (BIGSERIAL never collides), so nothing aborts and both commit happily. The
+// later-seq row then carries a chain computed from a prev that is not its
+// actual predecessor, and VerifyLedger — which walks strictly by seq and
+// recomputes against the previous row's STORED chain — reports ChainBroken.
+//
+// Nobody tampered with anything. Two admins clicking at the same moment is
+// enough. For a product whose pitch is "you can detect tampering", a mechanism
+// that cries tampering at ordinary concurrency is worse than no mechanism: it
+// trains its reader to dismiss the alarm, and a real deletion then arrives to
+// an audience that has stopped believing it.
+//
+// The sibling mechanism in internal/forensic does not have this bug: it opens
+// at RepeatableRead and computes seq itself, so a collision aborts one writer.
+// This test exists because that protection was never carried across, and prose
+// in a commit message is not a test.
+func TestPG_Ledger_ConcurrentWritersKeepTheChainIntact(t *testing.T) {
+	s := ledgerTestStore(t)
+	ctx := context.Background()
+
+	const (
+		writers = 8
+		rounds  = 4
+	)
+
+	for round := 0; round < rounds; round++ {
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		errs := make(chan error, writers)
+
+		for w := 0; w < writers; w++ {
+			wg.Add(1)
+			go func(w int) {
+				defer wg.Done()
+				<-start // release every writer at once: the window is small
+				d := Delta{
+					Tenant:  "acme",
+					Class:   "bola",
+					Subject: fmt.Sprintf("jwt:r%d-w%d", round, w),
+					First:   t0, Last: t0, Count: 1,
+					Endpoints: []string{"GET /orders/{id}"},
+					Sources:   []string{"1.1.1.1"},
+					Reasons:   []string{"bola_object_ownership"},
+				}
+				if err := s.Merge(ctx, d, DefaultWindow); err != nil {
+					errs <- err
+				}
+			}(w)
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Fatalf("concurrent Merge failed: %v", err)
+		}
+	}
+
+	rep, err := s.VerifyLedger(ctx, "acme")
+	if err != nil {
+		t.Fatalf("VerifyLedger: %v", err)
+	}
+	if rep.Entries != writers*rounds {
+		t.Fatalf("entries = %d, want %d — a write was lost, which is a different "+
+			"bug from the one this test is about", rep.Entries, writers*rounds)
+	}
+	if len(rep.ChainBroken) != 0 {
+		t.Fatalf("%d ledger positions report a broken chain after %d ordinary "+
+			"concurrent writes and zero tampering: %v\n"+
+			"This is a false accusation of tampering produced by the mechanism "+
+			"that exists to detect tampering.",
+			len(rep.ChainBroken), writers*rounds, rep.ChainBroken)
+	}
+	if !rep.Intact {
+		t.Fatalf("ledger reported not intact after ordinary concurrency: %+v", rep)
+	}
 }

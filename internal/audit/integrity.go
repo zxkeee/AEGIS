@@ -280,8 +280,15 @@ func checkLimits(signed bool) []string {
 		"Retention deletes from this trail on a schedule. Those removals are recorded in the head and counted as accounted for, so a lawful deletion does not read as tampering — and an operator who can rewrite both the trail and its head can make them agree.",
 	}
 	if !signed {
-		out = append(out, "The audit head is NOT signed (no report signing key is configured), "+
-			"so it commits to the trail for a reader but proves nothing to a third party.")
+		// Deliberately does not say WHY. Two different causes land here and a
+		// reader must not have to guess which: no signing key is configured at
+		// all, or a retention sweep blanked the signature because the worker
+		// that prunes does not hold the key. Either way this specific head is
+		// unattested right now, which is the only thing the sentence can honestly
+		// claim.
+		out = append(out, "The audit head carries NO signature, so it commits to the trail "+
+			"for a reader but proves nothing to a third party. Either no report signing "+
+			"key is configured, or a retention sweep re-wrote the head without one.")
 	}
 	return out
 }
@@ -304,7 +311,18 @@ func (s *Store) Verify(ctx context.Context, tenantID string) (Check, error) {
 	if err != nil {
 		return chk, err
 	}
-	return compareHead(ctx, tx, tenantOr(tenantID), lastID, chk)
+	out, err := compareHead(ctx, tx, tenantOr(tenantID), lastID, chk)
+	if err != nil {
+		return out, err
+	}
+	// Recomputed from the row that was actually read, not from s.signer. Those
+	// two disagree the moment a retention sweep blanks a head — the process
+	// still has a key configured, so the config-derived verdict would report
+	// the head as attested while the row it just read carries no signature at
+	// all. The machine-readable field and the human-readable caveat have to
+	// answer the same question or one of them is decoration.
+	out.Limits = checkLimits(out.Signature != "")
+	return out, nil
 }
 
 // walkTrail recomputes every link and returns the highest id seen.

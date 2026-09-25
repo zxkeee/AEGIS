@@ -34,6 +34,10 @@ type PGSink struct {
 	// dropped counts entries discarded because the buffer was full, reported by
 	// flushWorker. See Push.
 	dropped atomic.Int64
+	// lastReportedDrops: see the same field in internal/audit. The ticker diffs
+	// against it rather than resetting `dropped`, which Dropped() reports to the
+	// compliance coverage section as a cumulative figure.
+	lastReportedDrops atomic.Int64
 }
 
 const createTableSQL = `
@@ -298,10 +302,12 @@ func (s *PGSink) flushWorker() {
 			// Report drops on the tick rather than per drop: the overflow that
 			// causes them is a burst, so a line per dropped entry would answer a
 			// flood of events with a flood of logs.
-			if n := s.dropped.Swap(0); n > 0 {
+			total := s.dropped.Load()
+			if newly := total - s.lastReportedDrops.Swap(total); newly > 0 {
 				s.log.Error("forensic: buffer full, entries dropped — the persisted record is incomplete", map[string]any{
-					"dropped":     n,
-					"buffer_size": cap(s.ch),
+					"dropped":       newly,
+					"dropped_total": total,
+					"buffer_size":   cap(s.ch),
 				})
 			}
 		case <-s.quit:
