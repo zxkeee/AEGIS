@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ograniczamy każde zapytanie do najemcy. I tak dodaliśmy zabezpieczenie na poziomie bazy — AEGIS</title>
+<meta name="description" content="Kod aplikacji kiedyś zapomni klauzuli WHERE. Baza danych egzekwująca izolację samodzielnie nie zapomina nigdy." />
+<link rel="stylesheet" href="/articles/article.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/?lang=pl">AEGIS</a>
+  <a class="back" href="/pl/articles.html">← wszystkie teksty</a>
+</nav>
+
+<div class="wrap">
+  <p class="eyebrow">Inżynieria</p>
+  <h1>Ograniczamy każde zapytanie do najemcy. I tak dodaliśmy zabezpieczenie na poziomie bazy</h1>
+  <p class="dek">Kod aplikacji kiedyś zapomni klauzuli WHERE. Baza danych egzekwująca izolację samodzielnie nie zapomina nigdy.</p>
+
+  <p>Izolacja danych w środowisku wielonajemnym ma jeden dobrze znany tryb awarii i nie jest on egzotyczny: ktoś dodaje nowe zapytanie, nowy endpoint, nowy raport za pół roku i zapomina klauzuli <code>WHERE tenant_id = ?</code>. Każda tabela AEGIS już niesie <code>tenant_id</code> w złożonym kluczu głównym, a każde zapytanie w kodzie po nim filtruje. To konieczne. Samo w sobie nie jest wystarczające — bo zależy od tego, by każda przyszła linia kodu robiła to poprawnie, na zawsze, bez drugiej warstwy łapiącej tę jedną, która tego nie zrobi.</p>
+
+  <p>Dlatego jest druga warstwa. PostgreSQL potrafi egzekwować izolację najemców sam, niezależnie od tego, czy aplikacja pamiętała, by o to poprosić.</p>
+
+  <h2>Mechanizm: RLS, wymuszone</h2>
+  <pre><code>ALTER TABLE forensic_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE forensic_logs FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON forensic_logs
+    USING (tenant_id = current_setting('app.tenant_id', true));</code></pre>
+
+  <p><code>FORCE</code> to część, którą łatwo pominąć i która znaczy najwięcej. Samo <code>ENABLE ROW LEVEL SECURITY</code> w PostgreSQL nie stosuje polityki do właściciela tabeli — a rolą bazodanową aplikacji zwykle właśnie jest ten właściciel, co oznacza, że niewymuszona polityka jest dokładnie tym rodzajem ochrony, która po cichu nie chroni tego jednego połączenia, które ma znaczenie. <code>FORCE</code> stosuje politykę także do właściciela. Połączenie, które nie ustawi jawnie, w imieniu którego najemcy działa, nie dostaje „wszystkich wierszy” przez przypadek — dostaje zero wierszy.</p>
+
+  <h2>Przeprowadzenie tożsamości najemcy przez transakcję</h2>
+  <p>Polityka czyta <code>current_setting('app.tenant_id', true)</code> — zmienną sesji Postgresa, a nie wartość kolumny, którą aplikacja podaje w zapytaniu. Każda ścieżka zapisu ustawia ją jawnie, w zakresie transakcji:</p>
+
+  <pre><code><span class="cmt">// withTenantTx przypina GUC przez set_config(..., is_local=true), więc
+// zakres najemcy nigdy nie wycieka między połączeniami z puli, pomiędzy żądaniami</span></code></pre>
+
+  <p><code>is_local=true</code> ma znaczenie właśnie dlatego, że połączenia są pulowane. Bez tego ustawienie wykonane na połączeniu z puli mogłoby nadal być widoczne dla następnego, niepowiązanego żądania, które akurat użyje tego samego połączenia — co zniweczyłoby cały sens. Ograniczenie go do transakcji sprawia, że ustawienie wyparowuje w chwili zakończenia transakcji, niezależnie od tego, co połączenie zrobi dalej.</p>
+
+  <h2>Dowodzenie kierunku fail-closed, a nie tylko twierdzenie o nim</h2>
+  <p>Własność, która naprawdę tu znaczy, brzmi: co się dzieje, gdy zakres najemcy <em>nigdy nie zostanie ustawiony</em> — błąd, pominięta ścieżka kodu, połączenie, które ominęło konfigurację. Bez testu jest to dokładnie ten scenariusz, którego twierdzenie „fail closed” zwykle nie przeżywa. Dlatego jest pokryty wprost:</p>
+
+  <pre><code>func TestPG_RLS_FailsClosedWithoutGUC(t *testing.T) {
+    <span class="cmt">// nieograniczony SELECT — bez żadnego ustawionego app.tenant_id — musi zwrócić
+    // zero wierszy, a nie wiersze wszystkich najemców</span>
+}
+
+func TestPG_RLS_RejectsCrossTenantWrite(t *testing.T) {
+    <span class="cmt">// WITH CHECK w polityce musi zablokować INSERT/UPDATE próbujący zapisać
+    // pod tenant_id niezgodnym z zakresem sesji</span>
+}</code></pre>
+
+  <p>Pierwszy test znaczy najwięcej, bo to jego naiwna implementacja najczęściej odwraca. Łatwo zbudować ograniczanie do najemcy, które przy braku zakresu zawodzi <em>otwarcie</em> — zwraca wszystko, bo nic mu nie kazało inaczej. Cały sens umieszczenia tego w warstwie bazy zamiast wyłącznie w kodzie aplikacji polega na tym, że domyślnym zachowaniem bazy, przy braku jakiejkolwiek instrukcji, jest pokazać nic, a nie wszystko.</p>
+
+  <h2>Jedna pułapka operacyjna, którą to samo ujawnia</h2>
+  <p>RLS ma w Postgresie dobrze znaną pułapkę: rola z <code>BYPASSRLS</code> albo z uprawnieniami superużytkownika ignoruje bezpieczeństwo na poziomie wiersza całkowicie, <code>FORCE</code> czy nie. Jeśli rola bazodanowa aplikacji kiedykolwiek dostanie superużytkownika — podczas incydentu, migracji, dobrze intencjonowanego „tylko żeby to szybko zdebugować” — zabezpieczenie po cichu przestaje istnieć, bez żadnego błędu, żadnej linii logu, żadnego sygnału, że to się stało. To dokładnie ten rodzaj awarii, który jest niewidoczny do dnia, w którym zaczyna mieć znaczenie, więc jest utwardzony jawnie: rola łącząca się ma <code>NOSUPERUSER NOBYPASSRLS</code>, a kontrola przy starcie głośno ostrzega, gdyby ta rola kiedykolwiek odeszła od tego stanu.</p>
+
+  <h2>Czym to jest, a czym nie</h2>
+  <ul>
+    <li>To <strong>zabezpieczenie awaryjne</strong>, a nie podstawowy mechanizm izolacji. Ograniczanie na poziomie aplikacji (każdy klucz Redis z prefiksem najemcy, każde zapytanie przefiltrowane) nadal jest tym, co działa na gorącej ścieżce. RLS łapie ten dzień, w którym to ograniczanie ma błąd.</li>
+    <li>Nie zastępuje separacji najemców na poziomie sieci, jeśli Państwa model zagrożeń tego też wymaga — działa w całości wewnątrz jednej współdzielonej bazy.</li>
+    <li>Ma realny, zmierzony koszt: w praktyce pomijalny. Test obciążeniowy z mieszanym ruchem wielu najemców pokazał narzut w granicach szumu (373,6 → 375,7 RPS, p50 +0,6 ms) wobec tej samej konfiguracji bez niego.</li>
+  </ul>
+
+  <div class="cta">
+    <p>Ciekawi Państwa, jak wygląda żywy test chaosu dla warstw poniżej tej — Redis i Postgres ubite w trakcie ruchu, a nie tylko opisane?</p>
+    <a class="btn" href="/pl/articles/chaos-test.html">Przeczytaj: We Killed Redis and Postgres Under Load, on Purpose →</a>
+  </div>
+</div>
+
+<footer>AEGIS — brama bezpieczeństwa API we własnej infrastrukturze, napisana w Go. Państwa sprzęt, Państwa baza danych, żaden ruch nie opuszcza sieci.</footer>
+
+</body>
+</html>

@@ -19,7 +19,7 @@
   <h1>The Order Is Load-Bearing</h1>
   <p class="dek">Why a security gateway's middleware order is part of its contract — and a diagram mistake we made ourselves, caught, and are writing up instead of quietly fixing.</p>
 
-  <p>Every request through AEGIS passes through roughly twenty middleware stages before it reaches your backend. The obvious question anyone asks when they see a list that long is "does the order matter, or is that just how it happened to get written?" It matters — enough that we pin the order with a named-step test that fails CI if anyone reorders it without meaning to. Three examples of why.</p>
+  <p>Every request through AEGIS passes through twenty-three middleware stages before it reaches your backend. The obvious question anyone asks when they see a list that long is "does the order matter, or is that just how it happened to get written?" It matters — enough that we pin the order with a named-step test that fails CI if anyone reorders it without meaning to. Three examples of why.</p>
 
   <h2>Identity must resolve before anything trusts it</h2>
   <p><code>TenantResolve</code> runs first, full stop, because everything downstream — rate limits, blocklists, the catalog — reads the tenant from context. Put it anywhere else and every control behind it is scoping decisions against a tenant it hasn't determined yet.</p>
@@ -45,7 +45,7 @@
   </div>
 </div>
 
-<footer>AEGIS — inline API security gateway, built in Go.</footer>
+<footer>AEGIS — self-hosted API security gateway, built in Go. Your hardware, your database, no traffic leaving your network.</footer>
 
 </body>
 </html>

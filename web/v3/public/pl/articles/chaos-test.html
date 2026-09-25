@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ubiliśmy Redisa i Postgresa pod obciążeniem, celowo — AEGIS</title>
+<meta name="description" content="„Zawodzi z gracją” to twierdzenie. Oto co się stało, gdy naprawdę wyciągnęliśmy wtyczkę obu magazynom w trakcie ruchu — z liczbami, nie przymiotnikami." />
+<link rel="stylesheet" href="/articles/article.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/?lang=pl">AEGIS</a>
+  <a class="back" href="/pl/articles.html">← wszystkie teksty</a>
+</nav>
+
+<div class="wrap">
+  <p class="eyebrow">Inżynieria</p>
+  <h1>Ubiliśmy Redisa i Postgresa pod obciążeniem, celowo</h1>
+  <p class="dek">„Zawodzi z gracją” to twierdzenie. Oto co się stało, gdy naprawdę wyciągnęliśmy wtyczkę obu magazynom w trakcie ruchu — z liczbami, nie przymiotnikami.</p>
+
+  <p>Dokumentacja każdego produktu bezpieczeństwa zawiera jakąś wersję zdania „zaprojektowany z myślą o odporności”. Prawie żadna nie pokazuje przebiegu, w którym ktoś ubił bazę w trakcie żądania i zapisał dokładnie, co się stało. To jest ten przebieg, dla obu magazynów AEGIS, plus test drenowania przy aktualizacji kroczącej, który znalazł prawdziwy błąd i doprowadził do prawdziwej naprawy — dołączamy go, bo udawanie, że pierwsze podejście było czyste, przekreśliłoby sens publikowania tego w ogóle.</p>
+
+  <h2>Redis: 50 żądań/s, ubity w trakcie przebiegu</h2>
+  <p>Redis obsługuje limitowanie żądań i reputację IP na gorącej ścieżce. Oba są domyślnie skonfigurowane jako fail-open (zobacz <a href="/pl/articles/fail-open-by-design.html">tekst towarzyszący</a> o tym, dlaczego dla jednych mechanizmów jest to decyzja zamierzona, a dla innych nie). Redis został ubity całkowicie, w trakcie ruchu, przy stałych 50 żądaniach na sekundę.</p>
+  <table>
+    <thead><tr><th>Warunek</th><th>Skuteczność</th><th>Opóźnienie p99</th></tr></thead>
+    <tbody>
+      <tr><td>Redis działa</td><td>100%</td><td>~dziesiątki ms</td></tr>
+      <tr><td>Redis całkowicie wyłączony</td><td><strong>100%</strong></td><td><strong>864 ms</strong>, maks. 1,30 s</td></tr>
+      <tr><td>Po odzyskaniu</td><td>100%</td><td>z powrotem 42 ms</td></tr>
+    </tbody>
+  </table>
+  <p>Zero nieudanych żądań przez całą awarię. Podwyższone opóźnienie to nie powolność logiki fail-open — to klient Redisa trafiający we własne limity szybkiej porażki (1 s na połączenie, 500 ms na odczyt/zapis, jedna ponowna próba), zanim przejdzie dalej, zamiast wisieć na wielosekundowych wartościach domyślnych, na których nieskonfigurowany klient siedziałby przy każdym żądaniu.</p>
+
+  <h2>PostgreSQL: 100 żądań/s, ubity w trakcie przebiegu</h2>
+  <p>Postgres obsługuje katalog API i dziennik śledczy — odczyty i zapisy do niego mają być całkowicie poza ścieżką żądania. To jest przebieg, który faktycznie sprawdza, czy tak jest, a nie tylko czy tak napisano.</p>
+  <table>
+    <thead><tr><th>Faza</th><th>Żądania</th><th>Skuteczność</th><th>p50 / p95 / p99</th></tr></thead>
+    <tbody>
+      <tr><td>Przed (PG działa)</td><td>4498</td><td>100,0%</td><td>7 / 10 / 11 ms</td></tr>
+      <tr><td><strong>PG całkowicie wyłączony</strong></td><td>2000</td><td><strong>100,0%</strong></td><td><strong>7 / 10 / 11 ms</strong></td></tr>
+      <tr><td>Po odzyskaniu</td><td>2500</td><td>100,0%</td><td>7 / 10 / 11 ms</td></tr>
+    </tbody>
+  </table>
+  <p>Płaszczyzna danych naprawdę tego nie zauważa. Opóźnienie nawet nie drgnie — bo worker katalogu i ujście dziennika śledczego są z założenia asynchroniczne, odsprzężone od proksowanego żądania, a nie tylko opisane jako odsprzężone. Odczyt po stronie administracyjnej <code>GET /api/catalog</code> (osobny endpoint spoza gorącej ścieżki) faktycznie zawodził przez okno awarii i odzyskał sprawność w chwili powrotu Postgresa, bez żadnego działania operatora.</p>
+  <p><strong>Co ten przebieg faktycznie znalazł i jak to naprawiono:</strong> w trakcie awarii ten administracyjny odczyt katalogu zwracał HTTP 500 zamiast 503. To prawdziwy błąd, który ten test wydobył — 500 czyta się jako „ten endpoint jest zepsuty”, a 503 poprawnie mówi load balancerowi albo klientowi „zależność leży, odczekaj i ponów”. Naprawione przez klasyfikowanie błędów na poziomie połączenia i zwracanie 503 konkretnie dla niedostępności magazynu we wszystkich administracyjnych endpointach odczytu, wraz z testem regresji (<code>TestStoreUnavailable_Classifies</code>), żeby nie mogło się to po cichu cofnąć.</p>
+
+  <h2>Aktualizacje kroczące: pierwsze podejście gubiło całą serię błędów połączenia</h2>
+  <p>Osobno od awarii bazy: co dzieje się z ruchem w locie podczas normalnego, zaplanowanego wdrożenia kroczącego? 100 żądań/s, SIGTERM wysłany do bramy w trakcie ruchu, żądania sklasyfikowane jako ok / 5xx / błąd połączenia.</p>
+  <p><strong>Przed naprawą:</strong> domyślny <code>Shutdown</code> w Go zamyka nasłuch natychmiast po SIGTERM. Zero żądań wróciło jako 5xx — ale każde z 1200 żądań wysłanych w oknie drenowania wróciło jako błąd połączenia, odrzucone wprost, ponieważ <code>/readyz</code> raportował zdrowie aż do chwili, gdy nasłuch się zatrzasnął. Prawdziwy load balancer nie zdążył jeszcze zauważyć, że instancja odchodzi, i kierował do niej dalej. <strong>Każde wdrożenie gubiło pełną serię błędów połączenia</strong> — nie błąd w tradycyjnym sensie, po prostu zachowanie domyślne, na które nikt jeszcze nie skierował testu chaosu.</p>
+  <p><strong>Naprawa</strong> — okres karencji „kulawej kaczki”: po SIGTERM najpierw przestaw <code>/readyz</code> na 503, obsługuj nadal nawiązane połączenia przez skonfigurowane okno karencji, a <em>dopiero potem</em> zamknij nasłuch.</p>
+  <table>
+    <thead><tr><th>Faza</th><th>n</th><th>ok</th><th>5xx</th><th>błędy połączenia</th></tr></thead>
+    <tbody>
+      <tr><td>Przed naprawą — okno drenowania</td><td>1200</td><td>0</td><td>0</td><td><strong>1200</strong></td></tr>
+      <tr><td>Po naprawie — okno drenowania</td><td>1200</td><td><strong>601</strong></td><td>0</td><td>599</td></tr>
+    </tbody>
+  </table>
+  <p>601 żądań, które zostałyby odrzucone, teraz dochodzi do końca — w oknie, którego prawdziwy load balancer potrzebuje, by zauważyć, że <code>/readyz</code> przestał być zdrowy, i przestać kierować nowy ruch. Pozostałe błędy połączenia w tym oknie to ruch wysłany <em>po</em> upływie karencji i faktycznym zakończeniu procesu — którego poprawnie bramkowany gotowością load balancer już by nie wysyłał. Oto, co „wdrożenie bez przestoju” musi naprawdę znaczyć: nie zero błędów w próżni, tylko zero błędów <em>przy load balancerze, który respektuje gotowość</em>.</p>
+
+  <h2>Część o uczciwości</h2>
+  <p>Ten przebieg odbył się na macOS z Docker Desktop — usługi zaplecza w kontenerach, brama jako plik binarny na hoście. Weryfikuje <em>zachowanie</em> (czy płaszczyzna danych przeżywa awarię, czy drenowanie faktycznie poprawnie ogranicza błędy połączenia) — jawnie <strong>nie</strong> jest testem przepustowości. Maszyna wirtualna Docker Desktop dokłada narzut planisty, który czyni bezwzględne liczby przepustowości bezwartościowymi do publikacji. Przebieg na dedykowanym sprzęcie po prawdziwe liczby wydajnościowe to osobna, niewykonana jeszcze praca — wolimy powiedzieć to wprost, niż pozwolić, by test zachowania po cichu zastąpił twierdzenie o wydajności, którego nigdy nie miał stawiać.</p>
+
+  <div class="cta">
+    <p>Decyzja o fail-open, która umożliwiła wynik Redisa — i dlaczego <em>nie</em> jest to ta sama decyzja dla każdego mechanizmu — ma własny opis.</p>
+    <a class="btn" href="/pl/articles/fail-open-by-design.html">Przeczytaj: Jedyny mechanizm bez opcji fail-closed →</a>
+  </div>
+</div>
+
+<footer>AEGIS — brama bezpieczeństwa API we własnej infrastrukturze, napisana w Go. Państwa sprzęt, Państwa baza danych, żaden ruch nie opuszcza sieci.</footer>
+
+</body>
+</html>

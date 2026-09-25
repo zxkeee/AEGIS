@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kolejność jest nośna — AEGIS</title>
+<meta name="description" content="Dlaczego kolejność łańcucha middleware jest częścią kontraktu, a nie szczegółem implementacji — wraz z błędem w diagramie, który sami popełniliśmy i złapaliśmy." />
+<link rel="stylesheet" href="/articles/article.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/?lang=pl">AEGIS</a>
+  <a class="back" href="/pl/articles.html">← wszystkie teksty</a>
+</nav>
+
+<div class="wrap">
+  <p class="eyebrow">Inżynieria</p>
+  <h1>Kolejność jest nośna</h1>
+  <p class="dek">Dlaczego kolejność middleware w bramie bezpieczeństwa jest częścią jej kontraktu — oraz błąd w diagramie, który sami popełniliśmy, złapaliśmy i opisujemy zamiast po cichu poprawić.</p>
+
+  <p>Każde żądanie przechodzące przez AEGIS mija dwadzieścia trzy etapy middleware, zanim dotrze do Państwa backendu. Oczywiste pytanie, które zadaje każdy, kto widzi tak długą listę, brzmi: „czy kolejność ma znaczenie, czy po prostu tak wyszło przy pisaniu?”. Ma znaczenie — na tyle, że przypinamy ją testem nazwanych kroków, który przerywa budowanie w CI, jeśli ktoś zmieni kolejność bez zamiaru. Trzy przykłady dlaczego.</p>
+
+  <h2>Tożsamość musi być ustalona, zanim cokolwiek jej zaufa</h2>
+  <p><code>TenantResolve</code> działa pierwszy, kropka, ponieważ wszystko niżej — limity żądań, listy blokad, katalog — czyta najemcę z kontekstu. Umieścić go gdziekolwiek indziej i każdy mechanizm za nim ogranicza decyzje do najemcy, którego jeszcze nie ustalono.</p>
+  <p><code>CleanHeaders</code> działa drugi, zaraz potem, i usuwa każdy przysłany przez klienta nagłówek <code>X-Gateway-*</code> albo <code>X-JA3-*</code>, zanim choć jeden mechanizm niżej zdąży odczytać — i zaufać — wartości, którą klient mógł podrobić. Uruchomić go później i wszystkie etapy, które były wcześniej, spędziły ten czas ufając nagłówkom, których nikt jeszcze nie zweryfikował.</p>
+
+  <h2>Odkrywanie stoi w bardzo konkretnym miejscu i nie jest to przypadek</h2>
+  <p>Middleware budujący katalog stoi <em>za</em> limitowaniem żądań, wykrywaniem botów i WAF-em, ale <em>przed</em> uwierzytelnianiem i DLP. Obie granice są zamierzone, z przeciwnych powodów:</p>
+  <ul>
+    <li><strong>Za wczesnymi filtrami</strong>, żeby żądanie już odrzucone jako atak — zablokowane przez WAF, obcięte limitem, oznaczone jako bot — w ogóle nie trafiło do katalogu. Szum ataków nie zanieczyszcza mapy Państwa rzeczywistej powierzchni API.</li>
+    <li><strong>Przed uwierzytelnianiem i DLP</strong>, żeby zapisana obserwacja wciąż odzwierciedlała to, co zdecydują późniejsze etapy — łącznie z odrzuceniem. Żądanie, które przeszło wczesne filtry, jest zapisywane niezależnie od tego, co zrobią z nim potem uwierzytelnianie albo DLP.</li>
+  </ul>
+
+  <h2>Wykrywanie nadużyć autoryzacji potrzebuje, by zweryfikowane role najpierw istniały</h2>
+  <p>Wykrywanie BOLA/BFLA działa po uwierzytelnieniu JWT z powodu, który brzmi oczywiście, gdy się go wypowie, a łatwo go odwrócić pod presją czasu: czyta role wywołującego, by rozstrzygnąć, czy uprzywilejowana trasa została użyta bez uprawnień. Uruchomić je przed uwierzytelnieniem i nie ma jeszcze żadnych zweryfikowanych ról do sprawdzenia — detektor albo nie miałby czego oceniać, albo, co gorsza, zaufałby niezweryfikowanym deklaracjom.</p>
+
+  <h2>Rzecz, której nie zamierzamy po cichu poprawić</h2>
+  <p>Wcześniejsza wersja jednego z naszych własnych diagramów objaśniających — nie na tej stronie, wewnętrznego — pokazywała tożsamość („kto to jest?”) jako <em>pierwszą</em> bramkę, którą mija żądanie, przed limitowaniem i WAF-em. To jest odwrotnie niż w rzeczywistym łańcuchu, a złapaliśmy to, wracając do pliku źródłowego zamiast ufać własnemu wcześniejszemu streszczeniu. Poprawiona, zweryfikowana kolejność to ta opisana wyżej — najpierw limity i reputacja, potem inspekcja treści, potem tożsamość, a na końcu kontrola wycieków danych i zachowania.</p>
+  <p>Wspominamy o tym wprost, zamiast wyciąć to po cichu, ponieważ to dokładnie ten tryb awarii, o którym jest cały ten tekst: opis kolejności rozjeżdża się z kolejnością faktycznie egzekwowaną i nikt tego nie zauważa, dopóki ktoś nie sprawdzi źródła zamiast streszczenia.</p>
+
+  <div class="cta">
+    <p>Detektor własności obiektu działający w tym łańcuchu — po uwierzytelnieniu, oceniany po odpowiedzi — ma własny opis.</p>
+    <a class="btn" href="/pl/articles/bola-detection.html">Przeczytaj: Catching the IDOR a Signature WAF Can&rsquo;t See →</a>
+  </div>
+</div>
+
+<footer>AEGIS — brama bezpieczeństwa API we własnej infrastrukturze, napisana w Go. Państwa sprzęt, Państwa baza danych, żaden ruch nie opuszcza sieci.</footer>
+
+</body>
+</html>

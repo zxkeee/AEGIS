@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Stały próg jest zawsze dla kogoś błędny — AEGIS</title>
+<meta name="description" content="Dlaczego „więcej niż 50 żądań na minutę jest podejrzane” rozsypuje się na prawdziwym ruchu i jak wyuczona linia bazowa per konsument naprawia oba kierunki problemu naraz." />
+<link rel="stylesheet" href="/articles/article.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/?lang=pl">AEGIS</a>
+  <a class="back" href="/pl/articles.html">← wszystkie teksty</a>
+</nav>
+
+<div class="wrap">
+  <p class="eyebrow">Inżynieria</p>
+  <h1>Stały próg jest zawsze dla kogoś błędny</h1>
+  <p class="dek">Dlaczego „więcej niż 50 żądań na minutę jest podejrzane” rozsypuje się na prawdziwym ruchu i jak wyuczona linia bazowa per konsument naprawia oba kierunki problemu naraz.</p>
+
+  <p>Wykrywanie enumeracji — oznaczanie konsumenta, który przechodzi po identyfikatorach obiektów szybciej, niż robiłby to normalny użytkownik — brzmi prosto, dopóki nie spróbują Państwo wybrać liczby. Ustawi się próg nisko i najbardziej ruchliwy legalny partner integracyjny wpada w niego co rano. Ustawi się go na tyle wysoko, że użytkownik o dużym wolumenie przestaje go wywoływać, a cierpliwy napastnik enumerujący tuż pod linią przepływa niezauważony. Nie istnieje jedna liczba poprawna dla każdego konsumenta w realnym systemie, bo „normalne” nie jest jedną liczbą — to rozkład po bardzo różnych wywołujących.</p>
+
+  <h2>Dwa kierunki porażki, konkretnie</h2>
+  <table>
+    <thead><tr><th>Scenariusz</th><th>Stały próg (np. 50/min)</th></tr></thead>
+    <tbody>
+      <tr><td>Wewnętrzne zadanie wsadowe, zwykle 200 żądań/min</td><td>Fałszywy alarm przy każdym przebiegu</td></tr>
+      <tr><td>Napastnik enumerujący z prędkością 40 żądań/min</td><td>Przeoczenie, nigdy nieoznaczony</td></tr>
+    </tbody>
+  </table>
+  <p>Obaj konsumenci są na tej samej bramie i uderzają w ten sam endpoint. Jedna stała liczba nie może być poprawna dla obu — cała przesłanka pojedynczego globalnego progu mówi, że „normalne” jest stałą, a nie jest.</p>
+
+  <h2>Co robimy zamiast tego: uczymy się normy każdego konsumenta z osobna</h2>
+  <p>Zamiast globalnej stałej AEGIS utrzymuje per konsument i per endpoint <strong>wykładniczo ważoną średnią kroczącą</strong> liczby dostępów do odrębnych obiektów i oznacza żądanie tylko wtedy, gdy bieżące okno jest odstające <em>względem własnej historii tego konkretnego konsumenta</em>, a nie względem historii wszystkich innych.</p>
+
+  <pre><code><span class="cmt">-- wplata bieżącą obserwację w zapisaną linię bazową z małą alfą,
+-- więc linia dryfuje powoli ku prawdziwej normie konsumenta,
+-- zamiast być szarpana przez pojedyncze okno</span>
+local alpha = 0.05
+local nb = alpha * cur + (1 - alpha) * b</code></pre>
+
+  <p>0,05 oznacza, że każde nowe okno przesuwa linię bazową o mniej więcej 5% drogi ku temu, co właśnie się wydarzyło. Pojedynczy nietypowy zryw ledwie trąca długoterminową średnią; trwała zmiana zachowania — konsument realnie zwiększający użycie — zostaje wchłonięta w czasie, zamiast być trwale oznaczana. I co kluczowe: linia bazowa wewnętrznego zadania wsadowego ustala się blisko 200, a 200 jest normalne <em>dla niego</em>. Ktoś inny z linią bazową blisko 5 zostanie oznaczony przy skoku do 30, na którym zadanie wsadowe nie zareagowałoby w ogóle.</p>
+
+  <h2>Część, która utrzymuje linię bazową w uczciwości: nie ucz się z ataku</h2>
+  <p>Średnia krocząca ucząca się z każdej obserwacji bezwarunkowo ma oczywistą dziurę: napastnik, który narasta dostatecznie powoli, uczy detektor, że atak jest normalny. Dlatego uczenie jest warunkowe — okno jest wplatane w linię bazową tylko wtedy, gdy <em>nie</em> przebija twardego pułapu bezwzględnego, istniejącego niezależnie od logiki adaptacyjnej:</p>
+
+  <pre><code>b, err := st.TrackBaseline(ctx, consumer, endpoint, maxCount, !overCeiling, baselineTTL)</code></pre>
+
+  <p><code>!overCeiling</code> to całe zabezpieczenie w kilkunastu znakach: ucz się tylko wtedy, gdy to okno już nie przebiło twardego pułapu. Wyraźny atak zostaje oznaczony przez pułap i nigdy nie dostaje szansy zatruć linii bazowej, względem której byłby mierzony następnym razem.</p>
+
+  <h2>Jeszcze jeden tryb porażki: podłoga pustej historii</h2>
+  <p>Zupełnie nowy konsument, prawie bez historii, ma linię bazową blisko zera — co oznacza, że niemal <em>cokolwiek</em> wygląda jak wielokrotność „normy” i wywoływałoby alarm bez przerwy pierwszego dnia. Właśnie dlatego istnieje podłoga: sprawdzenie adaptacyjne obowiązuje dopiero, gdy konsument zgromadzi minimalną liczbę zaobserwowanych obiektów, tak by konsument na zimnym starcie nie był oceniany względem linii bazowej, która nie zdążyła jeszcze nic znaczyć.</p>
+
+  <h2>Czego to nie robi</h2>
+  <ul>
+    <li><strong>To wciąż działa per endpoint, nie między endpointami.</strong> Napastnik enumerujący nisko i wolno po wielu różnych endpointach, na każdym z osobna poniżej własnej linii bazowej, nie zostanie skorelowany samym tym mechanizmem.</li>
+    <li><strong>To mnożnik wyuczonej normy, a nie model percentylowy.</strong> Prawdziwy model oparty na percentylach reagowałby inaczej na rozkłady skośne; podejście z wielokrotnością średniej kroczącej jest prostsze i tańsze do wykonania atomowo w Redisie, kosztem części precyzji.</li>
+    <li><strong>Pod spodem nadal jest twardy pułap bezwzględny</strong> — warstwa adaptacyjna siedzi na wierzchu, a nie zamiast, stałego maksimum, którego nikt nie powinien przekraczać niezależnie od własnej linii bazowej.</li>
+  </ul>
+
+  <div class="cta">
+    <p>Ta logika linii bazowej działa obok tego samego detektora własności obiektu, który łapie wycieki pojedynczych obiektów — zobacz tekst towarzyszący o tym, jak działa tamta połowa.</p>
+    <a class="btn" href="/pl/articles/bola-detection.html">Przeczytaj: Catching the IDOR a Signature WAF Can&rsquo;t See →</a>
+  </div>
+</div>
+
+<footer>AEGIS — brama bezpieczeństwa API we własnej infrastrukturze, napisana w Go. Państwa sprzęt, Państwa baza danych, żaden ruch nie opuszcza sieci.</footer>
+
+</body>
+</html>

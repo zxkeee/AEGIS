@@ -47,11 +47,20 @@ def skeleton(text):
 
 
 def english_pages():
+    """Every English page under public/, as a path relative to public/.
+
+    Walks subdirectories: the articles live in public/articles/, and a check
+    that only looked at the top level would have left six translated pages per
+    language unguarded — which is most of them.
+    """
     out = []
-    for name in sorted(os.listdir("web/v3/public")):
-        if name.endswith(".html"):
-            out.append(name)
-    return out
+    root = "web/v3/public"
+    for dirpath, dirnames, files in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in LANGS]
+        for name in files:
+            if name.endswith(".html"):
+                out.append(os.path.relpath(os.path.join(dirpath, name), root))
+    return sorted(out)
 
 
 def main():

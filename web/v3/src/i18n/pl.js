@@ -4,7 +4,7 @@
 export default {
   paths: {
     howItWorks: '/pl/how-it-works.html',
-    articles: '/articles.html',
+    articles: '/pl/articles.html',
     howItWorksTranslated: true,
   },
 
@@ -156,5 +156,4 @@ export default {
     blurb: 'Brama bezpieczeństwa API we własnej infrastrukturze, napisana w Go. Państwa sprzęt, Państwa baza danych, żaden ruch nie opuszcza sieci. Szukamy partnerów wdrożeniowych.',
   },
 
-  englishOnly: ' (po angielsku)',
 }

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Teksty — AEGIS</title>
+<meta name="description" content="Teksty inżynierskie zespołu AEGIS — zweryfikowane wobec rzeczywistego kodu, łącznie z tym, co sami zrobiliśmy źle i naprawiliśmy." />
+<link rel="stylesheet" href="/articles/article.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/?lang=pl">AEGIS</a>
+  <a class="back" href="/?lang=pl">← strona główna</a>
+</nav>
+
+<div class="wrap">
+  <p class="eyebrow">Teksty</p>
+  <h1>Notatki inżynierskie</h1>
+  <p class="dek">Jak konkretne części AEGIS naprawdę działają, sprawdzone wobec kodu, który trafia do wydania — łącznie z jednym razem, gdy nasz własny diagram miał złą kolejność.</p>
+
+  <div class="article-list">
+    <a class="article-row" href="/pl/articles/bola-detection.html">
+      <span class="tag">Detekcja</span>
+      <h3>Catching the IDOR a Signature WAF Can&rsquo;t See</h3>
+      <p>Pasywne wykrywanie własności obiektu na poziomie bramy — i dlaczego „oceniaj po odpowiedzi” jest tu całą sztuczką.</p>
+    </a>
+    <a class="article-row" href="/pl/articles/adaptive-baseline.html">
+      <span class="tag">Detekcja</span>
+      <h3>A Fixed Threshold Is Always Wrong for Someone</h3>
+      <p>Dlaczego wykrywanie enumeracji potrzebuje wyuczonej linii bazowej per konsument zamiast jednej magicznej liczby.</p>
+    </a>
+    <a class="article-row" href="/pl/articles/chain-order.html">
+      <span class="tag">Architektura</span>
+      <h3>The Order Is Load-Bearing</h3>
+      <p>Dlaczego kolejność łańcucha middleware jest częścią kontraktu — i błąd w diagramie, który sami popełniliśmy i złapaliśmy.</p>
+    </a>
+    <a class="article-row" href="/pl/articles/rls-backstop.html">
+      <span class="tag">Wielonajemność</span>
+      <h3>We Scope Every Query by Tenant. We Still Added a Database-Level Backstop</h3>
+      <p>Dlaczego ograniczanie zapytań do najemcy na poziomie aplikacji samo w sobie nie wystarcza i jak PostgreSQL domyka resztę.</p>
+    </a>
+    <a class="article-row" href="/pl/articles/fail-open-by-design.html">
+      <span class="tag">Niezawodność</span>
+      <h3>The One Control That Has No Fail-Closed Option</h3>
+      <p>Limitowanie żądań można ustawić na odmowę przy awarii. Oceny behawioralnej nie można — i to celowo.</p>
+    </a>
+    <a class="article-row" href="/pl/articles/chaos-test.html">
+      <span class="tag">Niezawodność</span>
+      <h3>We Killed Redis and Postgres Under Load, on Purpose</h3>
+      <p>Prawdziwe liczby z wyciągnięcia wtyczki obu magazynom w trakcie ruchu, plus błąd aktualizacji kroczącej, który ten przebieg znalazł i naprawił.</p>
+    </a>
+  </div>
+</div>
+
+<footer>AEGIS — brama bezpieczeństwa API we własnej infrastrukturze, napisana w Go. Państwa sprzęt, Państwa baza danych, żaden ruch nie opuszcza sieci.</footer>
+
+</body>
+</html>

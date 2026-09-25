@@ -3,7 +3,7 @@
 export default {
   paths: {
     howItWorks: '/uk/how-it-works.html',
-    articles: '/articles.html',
+    articles: '/uk/articles.html',
     howItWorksTranslated: true,
   },
 
@@ -155,5 +155,4 @@ export default {
     blurb: 'Шлюз безпеки API у власній інфраструктурі, написаний на Go. Ваше залізо, ваша база даних, жоден байт трафіку не залишає мережу. Шукаємо партнерів для впровадження.',
   },
 
-  englishOnly: ' (англійською)',
 }

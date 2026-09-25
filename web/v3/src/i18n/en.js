@@ -7,8 +7,8 @@ export default {
   paths: {
     howItWorks: '/how-it-works.html',
     articles: '/articles.html',
-    // howItWorks is translated; the engineering articles are not, so a link to
-    // them is labelled with englishOnly rather than pretending otherwise.
+    // Every static page under public/ has a Polish and a Ukrainian variant
+    // beside it, and check-page-parity keeps their skeletons identical.
     howItWorksTranslated: true,
   },
 
@@ -160,5 +160,4 @@ export default {
     blurb: 'Self-hosted API security gateway, built in Go. Your hardware, your database, no traffic leaving your network. Seeking design partners.',
   },
 
-  englishOnly: '',
 }

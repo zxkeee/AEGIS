@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Jedyny mechanizm bez opcji fail-closed — AEGIS</title>
+<meta name="description" content="Limitowanie żądań i reputację IP można ustawić tak, by przy awarii Redisa odmawiały wszystkiego. Oceny behawioralnej nie można — nie ma na to pola w konfiguracji. To decyzja, nie przeoczenie." />
+<link rel="stylesheet" href="/articles/article.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/?lang=pl">AEGIS</a>
+  <a class="back" href="/pl/articles.html">← wszystkie teksty</a>
+</nav>
+
+<div class="wrap">
+  <p class="eyebrow">Inżynieria</p>
+  <h1>Jedyny mechanizm bez opcji fail-closed</h1>
+  <p class="dek">Limitowanie żądań i reputację IP można ustawić tak, by odmawiały wszystkiego, gdy Redis leży. Oceny behawioralnej nie można — nie ma na to pola w konfiguracji. To decyzja, a nie przeoczenie.</p>
+
+  <p>„Fail open czy fail closed” bywa przedstawiane jako jeden globalny wybór, którego produkt bezpieczeństwa dokonuje raz. Nie powinno tak być. Różne mechanizmy chronią przed różnymi rzeczami, a właściwy kierunek awarii dla jednego bywa niewłaściwy dla innego, działającego w tej samej ścieżce żądania.</p>
+
+  <h2>Dwa mechanizmy, ta sama awaria, przeciwna poprawna odpowiedź</h2>
+  <p>Redis przestaje działać. Każdy mechanizm, który z niego czyta, musi zdecydować, co zrobić z żądaniem, którego już nie potrafi sprawdzić.</p>
+  <p><strong>Limitowanie żądań i reputacja IP</strong> — <code>RateLimit.FailClosed</code>, <code>IPGuard.FailClosed</code> — to realne pola konfiguracji, które operator może ustawić na <code>true</code>. Jeśli magazyn, który je egzekwuje, zniknął, odrzuć żądanie. To uzasadniona wartość domyślna dla wdrożenia o wysokich wymaganiach: lepiej nie obsłużyć niczego, niż obsłużyć wszystko bez licznika i bez filtra w trakcie awarii.</p>
+  <p><strong>Ocena behawioralna jest inna.</strong> Nigdzie w schemacie konfiguracji nie ma pola <code>Behavior.FailClosed</code>. Nie chodzi o to, że domyślnie jest <code>false</code> i można to przestawić — tej opcji po prostu nie ma. Każde żądanie, które byłoby ocenione, jest oceniane, a jeśli obliczenie oceny nie potrafi dosięgnąć swoich danych, praktycznym skutkiem jest żądanie potraktowane jako nieocenione, a nie jako winne z definicji.</p>
+
+  <h2>Dlaczego odmowa domyślna jest tu akurat błędna</h2>
+  <p>Ocena behawioralna kumuluje ryzyko na przestrzeni historii żądań z danego IP — z natury dotyczy wzorców w czasie, a nie pojedynczego żądania. Ustawić ją na fail-closed i awaria Redisa oznacza, że każdemu adresowi IP na bramie, w tym każdemu legalnemu z nieskazitelną historią, zaczyna się odmawiać wyłącznie dlatego, że system nie może już odczytać historii, która w innym razie by za nim ręczyła. Zamieniliby Państwo awarię infrastruktury w całkowitą awarię ruchu — dla mechanizmu, którego całym zadaniem jest niuans („czy wzorzec tego IP jest nietypowy”), a nie binarna bramka przepuść/odrzuć.</p>
+  <p>Limitowanie żądań i reputacja IP nie mają tego problemu w tej samej postaci — są bliższe twardemu limitowi i w miarę statycznej liście, a awaria każdego z nich w trybie fail-closed degraduje się łagodnie do „chwilowo bardziej restrykcyjnie”, a nie do „blokuj wszystkich bez względu na historię”.</p>
+
+  <h2>Co kod faktycznie robi, gdy magazyn jest nieosiągalny</h2>
+  <pre><code><span class="cmt">// Krok 1: sprawdź ocenę z wcześniejszej historii PRZED obsłużeniem żądania.</span>
+score := st.CalcBehaviorScore(r.Context(), ip, cfg.ScoreThreshold)
+if score &gt;= cfg.ScoreThreshold {
+    <span class="cmt">// ... blokuj ...</span>
+}</code></pre>
+  <p>Nie ma tu gałęzi błędu, która odrzucałaby żądanie. Ocena, której nie da się policzyć, nie jest traktowana jako maksymalnie podejrzana — nie przekracza progu, więc żądanie idzie dalej. To konkretny kształt „celowego fail-open”: nie brakujący obsługiwacz błędu, tylko obecny, zaprojektowany tak, by nie eskalować do blokady.</p>
+
+  <h2>To nie jest teza teoretyczna, tylko zmierzona</h2>
+  <p>Twierdzenia o trybach awarii są tanie, więc zostało to uruchomione na żywej instancji pod stałym ruchem, z Redisem ubitym w trakcie testu, a nie tylko przemyślane:</p>
+  <table>
+    <thead><tr><th>Warunek</th><th>Wynik</th></tr></thead>
+    <tbody>
+      <tr><td>Redis całkowicie wyłączony, 50 żądań/s bez przerwy</td><td>100% skuteczności żądań</td></tr>
+      <tr><td>Opóźnienie w trakcie awarii</td><td>p99 864 ms, maks. 1,30 s</td></tr>
+      <tr><td>Opóźnienie po odzyskaniu</td><td>p99 z powrotem 42 ms</td></tr>
+    </tbody>
+  </table>
+  <p>Podwyższone opóźnienie w trakcie awarii to nie spowolnienie logiki oceniania — to klient magazynu trafiający w swoje limity szybkiej porażki (1 s na połączenie, 500 ms na odczyt/zapis, jedna ponowna próba), zanim przejdzie do ścieżki fail-open, zamiast wisieć przez wielosekundową wartość domyślną, na której naiwny klient Redisa siedziałby przy każdym żądaniu.</p>
+
+  <h2>Uczciwy kompromis, powiedziany wprost</h2>
+  <p>Oznacza to, że w trakcie awarii Redisa automatyczne banowanie behawioralne jest faktycznie wstrzymane — adres IP, który zostałby oznaczony i zbanowany w trakcie awarii, nie zostanie, dopóki magazyn nie wróci. To realna luka, a nie ukryta. Uważamy też, że jest to oczywiście lepszy tryb awarii niż alternatywa: luka w ocenianiu podczas rzadkiego incydentu infrastrukturalnego kontra odmowa każdemu legalnemu użytkownikowi na bramie, bo system, który miał poręczyć za jego dobrą historię, był nieosiągalny.</p>
+
+  <div class="cta">
+    <p>To jeden element szerszego przebiegu testów chaosu — Postgres także został ubity pod obciążeniem, osobno.</p>
+    <a class="btn" href="/pl/articles/chaos-test.html">Przeczytaj: We Killed Redis and Postgres Under Load, on Purpose →</a>
+  </div>
+</div>
+
+<footer>AEGIS — brama bezpieczeństwa API we własnej infrastrukturze, napisana w Go. Państwa sprzęt, Państwa baza danych, żaden ruch nie opuszcza sieci.</footer>
+
+</body>
+</html>

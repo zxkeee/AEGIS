@@ -104,7 +104,7 @@
           <span class="n">23</span><span class="t">BehaviorProfile</span>
         </div>
       </details>
-      <p style="font-size:13px;color:var(--muted)">Ta kolejność jest przypięta testem nazwanych kroków w CI — zmiana kolejności bez zamiaru przerywa budowanie. <a href="/articles/chain-order.html">Dlaczego sama kolejność jest częścią kontraktu → (po angielsku)</a></p>
+      <p style="font-size:13px;color:var(--muted)">Ta kolejność jest przypięta testem nazwanych kroków w CI — zmiana kolejności bez zamiaru przerywa budowanie. <a href="/pl/articles/chain-order.html">Dlaczego sama kolejność jest częścią kontraktu →</a></p>
     </section>
 
     <section id="infra">
@@ -120,7 +120,7 @@
     <section id="tenancy">
       <h2><span class="sec-num">05</span>Wielonajemność</h2>
       <p>Gdy kilku klientów dzieli jedno wdrożenie, izolacja działa na dwóch warstwach, nie jednej. Każdy klucz Redis ma prefiks najemcy, a każda tabela Postgresa niesie <code>tenant_id</code> w złożonym kluczu głównym — to warstwa działająca przy każdym żądaniu. Pod nią sam PostgreSQL egzekwuje bezpieczeństwo na poziomie wiersza jako zabezpieczenie awaryjne, więc zapytanie, które jakimś sposobem zapomni ograniczyć się do najemcy, dostaje zero wierszy, a nie wiersze wszystkich najemców.</p>
-      <p><a href="/articles/rls-backstop.html">Przeczytaj: dlaczego zabezpieczenie na poziomie bazy istnieje, choć każde zapytanie jest już ograniczone → (po angielsku)</a></p>
+      <p><a href="/pl/articles/rls-backstop.html">Przeczytaj: dlaczego zabezpieczenie na poziomie bazy istnieje, choć każde zapytanie jest już ograniczone →</a></p>
     </section>
 
     <section id="flagship">
@@ -128,16 +128,16 @@
       <p>Sygnaturowy WAF nie jest w stanie złapać Broken Object Level Authorization (BOLA/IDOR) — żądanie o cudze dane po identyfikatorze wygląda składniowo identycznie jak żądanie o własne. AEGIS łapie to na dwa sposoby: masową enumerację (wiele identyfikatorów obiektów, szybko, mierzoną wobec wyuczonej linii bazowej danego konsumenta zamiast jednej stałej liczby dla wszystkich) oraz przypadek trudniejszy — pojedynczy błędny identyfikator bez żadnego wzorca wolumenu, wykrywany przez pasywne uczenie się z prawdziwego ruchu, kto jest właścicielem czego, i ocenę ściśle po odpowiedzi, wyłącznie przy 2xx, tak by własne 403/404 backendu nigdy nie zostało wzięte za wyciek.</p>
       <p>Gdy potwierdzony właściciel jest już zapisany, późniejsze żądanie innego podmiotu do tego samego obiektu zostaje odrzucone przed przekazaniem dalej — a nie tylko zalogowane po fakcie.</p>
       <p>To nie dotyczy wyłącznie REST. Ciało GraphQL — <code>query GetUser { user(id: 42) { ssn } }</code> — jest parsowane tak samo: argument o kształcie identyfikatora na polu najwyższego poziomu staje się kandydatem na własność obiektu dokładnie tak, jak segment ścieżki albo pole ciała JSON, z zakresem po operacji <em>i</em> po polu, więc dwa niepowiązane zapytania dzielące nazwę pola nigdy nie dzielą jednego licznika. To samo parsowanie zasila pasywne odkrywanie (każda operacja jest osobnym wpisem katalogu, a nie jednym płaskim workiem <code>/graphql</code>) i wykrywanie danych osobowych (wyciek w odpowiedzi <code>GetUser</code> przypisuje się do <code>GetUser</code>, a nie do „GraphQL” w ogóle).</p>
-      <p><a href="/articles/bola-detection.html">Przeczytaj: pełny mechanizm, wraz z rzeczywistym kodem detekcji → (po angielsku)</a><br />
-      <a href="/articles/adaptive-baseline.html">Przeczytaj: dlaczego stały próg jest zawsze dla kogoś błędny → (po angielsku)</a></p>
+      <p><a href="/pl/articles/bola-detection.html">Przeczytaj: pełny mechanizm, wraz z rzeczywistym kodem detekcji →</a><br />
+      <a href="/pl/articles/adaptive-baseline.html">Przeczytaj: dlaczego stały próg jest zawsze dla kogoś błędny →</a></p>
     </section>
 
     <section id="reliability">
       <h2><span class="sec-num">07</span>Zachowanie przy awarii</h2>
       <p>Nie każdy mechanizm zawodzi tak samo, gdy jego magazyn danych jest nieosiągalny, i jest to zamierzone. Limitowanie żądań i reputacja IP mogą być skonfigurowane tak, by przy awarii Redisa odmawiać wszystkiego (fail-closed) — to uzasadniony wybór dla wdrożenia o wysokich wymaganiach. Ocena behawioralna takiej opcji nie ma; jest zawsze fail-open, bo odmawianie każdemu adresowi IP na bramie podczas usterki infrastruktury jest gorszym wynikiem niż chwilowa luka w jednym sygnale oceny.</p>
       <p>To zostało zmierzone, a nie tylko przemyślane: przy całkowicie ubitym Redisie pod stałym obciążeniem płaszczyzna danych utrzymała <strong>100% skuteczności żądań</strong>, a opóźnienie było ograniczone limitami czasu, a nie zawieszeniem. Ten sam wynik przy ubiciu PostgreSQL pod obciążeniem — <strong>100% skuteczności, płaskie opóźnienie</strong> — ponieważ zapisy katalogu i dziennika śledczego są całkowicie odsprzężone od ścieżki żądania.</p>
-      <p><a href="/articles/fail-open-by-design.html">Przeczytaj: jedyny mechanizm bez opcji fail-closed → (po angielsku)</a><br />
-      <a href="/articles/chaos-test.html">Przeczytaj: pełne liczby z testu chaosu, w tym błąd, który ten przebieg znalazł i naprawił → (po angielsku)</a></p>
+      <p><a href="/pl/articles/fail-open-by-design.html">Przeczytaj: jedyny mechanizm bez opcji fail-closed →</a><br />
+      <a href="/pl/articles/chaos-test.html">Przeczytaj: pełne liczby z testu chaosu, w tym błąd, który ten przebieg znalazł i naprawił →</a></p>
     </section>
 
     <section id="deploy">
@@ -171,14 +171,14 @@
 
     <section id="reading">
       <h2>Dalsza lektura</h2>
-      <p style="margin-bottom:0">Każdy mechanizm streszczony powyżej ma pełny opis techniczny, sprawdzony wobec kodu, który trafia do wydania. Artykuły są dostępne po angielsku:</p>
+      <p style="margin-bottom:0">Każdy mechanizm streszczony powyżej ma pełny opis techniczny, sprawdzony wobec kodu, który trafia do wydania:</p>
       <div class="further">
-        <a href="/articles/bola-detection.html">Catching the IDOR a Signature WAF Can’t See<span class="d">Pasywne wykrywanie własności obiektu, oceniane po odpowiedzi.</span></a>
-        <a href="/articles/adaptive-baseline.html">A Fixed Threshold Is Always Wrong for Someone<span class="d">Wyuczone linie bazowe per konsument zamiast jednej liczby dla wszystkich.</span></a>
-        <a href="/articles/chain-order.html">The Order Is Load-Bearing<span class="d">Dlaczego kolejność łańcucha jest częścią kontraktu — wraz z błędem, który złapaliśmy we własnym diagramie.</span></a>
-        <a href="/articles/rls-backstop.html">We Scope Every Query by Tenant. We Still Added a Database-Level Backstop<span class="d">Obrona w głąb dla izolacji wielonajemnej.</span></a>
-        <a href="/articles/fail-open-by-design.html">The One Control That Has No Fail-Closed Option<span class="d">Dlaczego ocena behawioralna nigdy nie jest ustawiana na odmowę domyślnie.</span></a>
-        <a href="/articles/chaos-test.html">We Killed Redis and Postgres Under Load, on Purpose<span class="d">Prawdziwe liczby oraz błąd aktualizacji kroczącej, który ten przebieg znalazł i naprawił.</span></a>
+        <a href="/pl/articles/bola-detection.html">Catching the IDOR a Signature WAF Can’t See<span class="d">Pasywne wykrywanie własności obiektu, oceniane po odpowiedzi.</span></a>
+        <a href="/pl/articles/adaptive-baseline.html">A Fixed Threshold Is Always Wrong for Someone<span class="d">Wyuczone linie bazowe per konsument zamiast jednej liczby dla wszystkich.</span></a>
+        <a href="/pl/articles/chain-order.html">The Order Is Load-Bearing<span class="d">Dlaczego kolejność łańcucha jest częścią kontraktu — wraz z błędem, który złapaliśmy we własnym diagramie.</span></a>
+        <a href="/pl/articles/rls-backstop.html">We Scope Every Query by Tenant. We Still Added a Database-Level Backstop<span class="d">Obrona w głąb dla izolacji wielonajemnej.</span></a>
+        <a href="/pl/articles/fail-open-by-design.html">The One Control That Has No Fail-Closed Option<span class="d">Dlaczego ocena behawioralna nigdy nie jest ustawiana na odmowę domyślnie.</span></a>
+        <a href="/pl/articles/chaos-test.html">We Killed Redis and Postgres Under Load, on Purpose<span class="d">Prawdziwe liczby oraz błąd aktualizacji kroczącej, który ten przebieg znalazł i naprawił.</span></a>
       </div>
       <div class="cta" style="margin-top:32px">
         <p>Chcą Państwo sprawdzić, czy cokolwiek z tego wyłapie coś realnego na Państwa własnym ruchu — bez dotykania produkcji?</p>

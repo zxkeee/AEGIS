@@ -104,7 +104,7 @@
           <span class="n">23</span><span class="t">BehaviorProfile</span>
         </div>
       </details>
-      <p style="font-size:13px;color:var(--muted)">Цей порядок закріплений тестом іменованих кроків у CI — ненавмисна зміна порядку валить збірку. <a href="/articles/chain-order.html">Чому сам порядок є частиною контракту → (англійською)</a></p>
+      <p style="font-size:13px;color:var(--muted)">Цей порядок закріплений тестом іменованих кроків у CI — ненавмисна зміна порядку валить збірку. <a href="/uk/articles/chain-order.html">Чому сам порядок є частиною контракту →</a></p>
     </section>
 
     <section id="infra">
@@ -120,7 +120,7 @@
     <section id="tenancy">
       <h2><span class="sec-num">05</span>Багатоорендність</h2>
       <p>Коли кілька клієнтів ділять одне розгортання, ізоляція працює на двох рівнях, а не на одному. Кожен ключ Redis має префікс орендаря, а кожна таблиця Postgres несе <code>tenant_id</code> у складеному первинному ключі — це рівень, що працює на кожному запиті. Під ним сам PostgreSQL застосовує безпеку на рівні рядків як запобіжник, тож запит, який якимось чином забув обмежитись орендарем, отримує нуль рядків, а не рядки всіх орендарів.</p>
-      <p><a href="/articles/rls-backstop.html">Читати: чому запобіжник на рівні бази існує, хоча кожен запит уже обмежений → (англійською)</a></p>
+      <p><a href="/uk/articles/rls-backstop.html">Читати: чому запобіжник на рівні бази існує, хоча кожен запит уже обмежений →</a></p>
     </section>
 
     <section id="flagship">
@@ -128,16 +128,16 @@
       <p>Сигнатурний WAF не здатен упіймати Broken Object Level Authorization (BOLA/IDOR) — запит на чужі дані за ідентифікатором синтаксично виглядає так само, як запит на власні. AEGIS ловить це двома способами: масовий перебір (багато ідентифікаторів обʼєктів, швидко, зміряний проти вивченої базової лінії конкретного споживача, а не проти однієї фіксованої цифри для всіх) і складніший випадок — один хибний ідентифікатор без жодного шаблону обсягу, що виявляється через пасивне навчання з реального трафіку, хто чим володіє, і оцінку суворо після відповіді, лише на 2xx, щоб власні 403/404 бекенда ніколи не були прийняті за витік.</p>
       <p>Коли підтверджений власник уже записаний, пізніший запит іншої сторони до того самого обʼєкта відхиляється до пересилання — а не лише журналюється постфактум.</p>
       <p>Це стосується не лише REST. Тіло GraphQL — <code>query GetUser { user(id: 42) { ssn } }</code> — розбирається так само: аргумент у формі ідентифікатора на полі верхнього рівня стає кандидатом на власність обʼєкта точно так, як сегмент шляху чи поле тіла JSON, з областю за операцією <em>і</em> за полем, тож два непов'язані запити зі спільною назвою поля ніколи не ділять один лічильник. Той самий розбір живить пасивне виявлення (кожна операція — власний запис каталогу, а не один плаский кошик <code>/graphql</code>) і детект персональних даних (витік у відповіді <code>GetUser</code> приписується до <code>GetUser</code>, а не до «GraphQL» узагалі).</p>
-      <p><a href="/articles/bola-detection.html">Читати: повний механізм із реальним кодом детекції → (англійською)</a><br />
-      <a href="/articles/adaptive-baseline.html">Читати: чому фіксований поріг завжди для когось хибний → (англійською)</a></p>
+      <p><a href="/uk/articles/bola-detection.html">Читати: повний механізм із реальним кодом детекції →</a><br />
+      <a href="/uk/articles/adaptive-baseline.html">Читати: чому фіксований поріг завжди для когось хибний →</a></p>
     </section>
 
     <section id="reliability">
       <h2><span class="sec-num">07</span>Поведінка при відмові</h2>
       <p>Не кожен механізм відмовляє однаково, коли його сховище недосяжне, і це навмисно. Обмеження частоти та репутація IP можуть бути налаштовані так, щоб при відмові Redis відмовляти всьому (fail-closed) — обґрунтований вибір для розгортання з високими вимогами. У поведінкової оцінки такої опції немає; вона завжди fail-open, бо відмовляти кожній IP-адресі на шлюзі під час збою інфраструктури — гірший результат, ніж тимчасова прогалина в одному сигналі оцінки.</p>
       <p>Це виміряно, а не лише обґрунтовано: із повністю вбитим Redis під тривалим навантаженням площина даних утримала <strong>100% успішних запитів</strong>, а затримка була обмежена таймаутами, а не зависанням. Той самий результат із вбитим PostgreSQL під навантаженням — <strong>100% успіху, рівна затримка</strong> — бо записи каталогу та криміналістичного журналу повністю відчеплені від шляху запиту.</p>
-      <p><a href="/articles/fail-open-by-design.html">Читати: єдиний механізм без опції fail-closed → (англійською)</a><br />
-      <a href="/articles/chaos-test.html">Читати: повні цифри хаос-тесту, включно з помилкою, яку цей прогін знайшов і виправив → (англійською)</a></p>
+      <p><a href="/uk/articles/fail-open-by-design.html">Читати: єдиний механізм без опції fail-closed →</a><br />
+      <a href="/uk/articles/chaos-test.html">Читати: повні цифри хаос-тесту, включно з помилкою, яку цей прогін знайшов і виправив →</a></p>
     </section>
 
     <section id="deploy">
@@ -171,14 +171,14 @@
 
     <section id="reading">
       <h2>Додаткове читання</h2>
-      <p style="margin-bottom:0">Кожен механізм, стисло описаний вище, має повний технічний розбір, звірений із кодом, який іде у випуск. Статті доступні англійською:</p>
+      <p style="margin-bottom:0">Кожен механізм, стисло описаний вище, має повний технічний розбір, звірений із кодом, який іде у випуск:</p>
       <div class="further">
-        <a href="/articles/bola-detection.html">Catching the IDOR a Signature WAF Can’t See<span class="d">Пасивне виявлення власності обʼєкта, оцінене після відповіді.</span></a>
-        <a href="/articles/adaptive-baseline.html">A Fixed Threshold Is Always Wrong for Someone<span class="d">Вивчені базові лінії на споживача замість однієї цифри для всіх.</span></a>
-        <a href="/articles/chain-order.html">The Order Is Load-Bearing<span class="d">Чому порядок ланцюжка є частиною контракту — разом із помилкою, яку ми впіймали у власній схемі.</span></a>
-        <a href="/articles/rls-backstop.html">We Scope Every Query by Tenant. We Still Added a Database-Level Backstop<span class="d">Захист у глибину для багатоорендної ізоляції.</span></a>
-        <a href="/articles/fail-open-by-design.html">The One Control That Has No Fail-Closed Option<span class="d">Чому поведінкова оцінка ніколи не ставиться на відмову за замовчуванням.</span></a>
-        <a href="/articles/chaos-test.html">We Killed Redis and Postgres Under Load, on Purpose<span class="d">Справжні цифри та помилка кочення оновлень, яку цей прогін знайшов і виправив.</span></a>
+        <a href="/uk/articles/bola-detection.html">Catching the IDOR a Signature WAF Can’t See<span class="d">Пасивне виявлення власності обʼєкта, оцінене після відповіді.</span></a>
+        <a href="/uk/articles/adaptive-baseline.html">A Fixed Threshold Is Always Wrong for Someone<span class="d">Вивчені базові лінії на споживача замість однієї цифри для всіх.</span></a>
+        <a href="/uk/articles/chain-order.html">The Order Is Load-Bearing<span class="d">Чому порядок ланцюжка є частиною контракту — разом із помилкою, яку ми впіймали у власній схемі.</span></a>
+        <a href="/uk/articles/rls-backstop.html">We Scope Every Query by Tenant. We Still Added a Database-Level Backstop<span class="d">Захист у глибину для багатоорендної ізоляції.</span></a>
+        <a href="/uk/articles/fail-open-by-design.html">The One Control That Has No Fail-Closed Option<span class="d">Чому поведінкова оцінка ніколи не ставиться на відмову за замовчуванням.</span></a>
+        <a href="/uk/articles/chaos-test.html">We Killed Redis and Postgres Under Load, on Purpose<span class="d">Справжні цифри та помилка кочення оновлень, яку цей прогін знайшов і виправив.</span></a>
       </div>
       <div class="cta" style="margin-top:32px">
         <p>Хочете перевірити, чи впіймає щось із цього реальну проблему на вашому власному трафіку — не торкаючись продакшену?</p>

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Тексти — AEGIS</title>
+<meta name="description" content="Інженерні тексти команди AEGIS — звірені з реальним кодом, включно з тим, що ми самі зробили не так і виправили." />
+<link rel="stylesheet" href="/articles/article.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/?lang=uk">AEGIS</a>
+  <a class="back" href="/?lang=uk">← головна</a>
+</nav>
+
+<div class="wrap">
+  <p class="eyebrow">Тексти</p>
+  <h1>Інженерні нотатки</h1>
+  <p class="dek">Як конкретні частини AEGIS працюють насправді, звірено з кодом, який іде у випуск — включно з тим разом, коли наша власна схема мала хибний порядок.</p>
+
+  <div class="article-list">
+    <a class="article-row" href="/uk/articles/bola-detection.html">
+      <span class="tag">Детекція</span>
+      <h3>Catching the IDOR a Signature WAF Can&rsquo;t See</h3>
+      <p>Пасивне виявлення власності обʼєкта на рівні шлюзу — і чому «оцінюй після відповіді» тут і є весь фокус.</p>
+    </a>
+    <a class="article-row" href="/uk/articles/adaptive-baseline.html">
+      <span class="tag">Детекція</span>
+      <h3>A Fixed Threshold Is Always Wrong for Someone</h3>
+      <p>Чому виявленню перебору потрібна вивчена базова лінія на споживача, а не одна чарівна цифра.</p>
+    </a>
+    <a class="article-row" href="/uk/articles/chain-order.html">
+      <span class="tag">Архітектура</span>
+      <h3>The Order Is Load-Bearing</h3>
+      <p>Чому порядок ланцюжка middleware є частиною контракту — і помилка у схемі, яку ми зробили самі й упіймали.</p>
+    </a>
+    <a class="article-row" href="/uk/articles/rls-backstop.html">
+      <span class="tag">Багатоорендність</span>
+      <h3>We Scope Every Query by Tenant. We Still Added a Database-Level Backstop</h3>
+      <p>Чому обмеження запитів орендарем на рівні застосунку саме собою недостатнє і як PostgreSQL закриває решту.</p>
+    </a>
+    <a class="article-row" href="/uk/articles/fail-open-by-design.html">
+      <span class="tag">Надійність</span>
+      <h3>The One Control That Has No Fail-Closed Option</h3>
+      <p>Обмеження частоти можна налаштувати на відмову при збої. Поведінкову оцінку — не можна, і це навмисно.</p>
+    </a>
+    <a class="article-row" href="/uk/articles/chaos-test.html">
+      <span class="tag">Надійність</span>
+      <h3>We Killed Redis and Postgres Under Load, on Purpose</h3>
+      <p>Справжні цифри від висмикування живлення в обох сховищ посеред трафіку, плюс помилка кочення оновлень, яку цей прогін знайшов і виправив.</p>
+    </a>
+  </div>
+</div>
+
+<footer>AEGIS — шлюз безпеки API у власній інфраструктурі, написаний на Go. Ваше залізо, ваша база даних, жоден байт трафіку не залишає мережу.</footer>
+
+</body>
+</html>

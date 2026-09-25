@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Łapanie IDOR-a, którego sygnaturowy WAF nie widzi — AEGIS</title>
+<meta name="description" content="Pasywne wykrywanie własności obiektu na poziomie bramy — i dlaczego „oceniaj po odpowiedzi” jest tu całą sztuczką." />
+<link rel="stylesheet" href="/articles/article.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/?lang=pl">AEGIS</a>
+  <a class="back" href="/pl/articles.html">← wszystkie teksty</a>
+</nav>
+
+<div class="wrap">
+  <p class="eyebrow">Inżynieria</p>
+  <h1>Łapanie IDOR-a, którego sygnaturowy WAF nie widzi</h1>
+  <p class="dek">Pasywne wykrywanie własności obiektu na poziomie bramy — i dlaczego „oceniaj po odpowiedzi” jest tu całą sztuczką.</p>
+
+  <p>Weźmy najnudniejszą klasę podatności z OWASP API Top 10: Broken Object Level Authorization (BOLA), znaną też jako IDOR. Użytkownik zmienia liczbę w adresie URL —</p>
+
+  <pre><code>GET /v1/orders/1001   <span class="cmt">→ Państwa zamówienie</span>
+GET /v1/orders/1002   <span class="cmt">→ czyjeś cudze, jeśli backend zapomniał sprawdzić</span></code></pre>
+
+  <p>— i dostaje dane, które do niego nie należą. Żadnego wstrzyknięcia, żadnego zniekształconego ładunku, żadnej sztuczki z nagłówkiem. Żądanie jest składniowo bez zarzutu. Sygnaturowy WAF nie ma czego dopasować, bo nie ma żadnego wzorca. Dlatego BOLA pozostaje jednym z najczęstszych realnych naruszeń API lata po tym, jak je nazwano: klasa narzędzi, którą większość zespołów już ma (WAF, brama API, limiter), jest na nią strukturalnie ślepa.</p>
+
+  <p>AEGIS to brama bezpieczeństwa API działająca we własnej infrastrukturze. Ten tekst jest o jednym jej elemencie: jak wykrywamy wyciek pojedynczego obiektu pasywnie, na bramie, bez zbioru treningowego, bez sygnatury i — to część warta opisania — bez oznaczania normalnego przypadku, w którym autoryzacja już zadziałała.</p>
+
+  <h2>Dwa różne błędy noszące tę samą nazwę</h2>
+  <p>„Wykrywanie BOLA” zwykle oznacza jedną z dwóch bardzo różnych rzeczy, a ich mylenie jest miejscem, w którym większość naiwnych implementacji się myli.</p>
+  <p><strong>Masowa enumeracja</strong> to przypadek łatwy: jeden konsument uderzający w <code>/v1/orders/{id}</code> dla tysiąca kolejnych identyfikatorów w minutę. To anomalia wolumenu — policz odrębne identyfikatory obiektów per konsument, per endpoint, w oknie i porównaj z progiem. My też to robimy, z adaptacyjną linią bazową per konsument zamiast stałej liczby (więcej o tym w <a href="/pl/articles/adaptive-baseline.html">osobnym tekście</a>) — ale to nie jest ciekawa część.</p>
+  <p><strong>Wyciek pojedynczego obiektu</strong> to przypadek trudny i ważniejszy: konsument żąda <em>jednego</em> obiektu, którego nie jest właścicielem, raz, bez żadnej sygnatury wolumenowej. Detektory enumeracji nie strzelają — nie ma enumeracji. To jest faktyczny kształt większości realnych incydentów IDOR: nie skrypt młócący kolejne identyfikatory, tylko jeden uwierzytelniony użytkownik, który raz spróbował sąsiedniego numeru.</p>
+
+  <h2>Podejście: ucz się własności pasywnie, z ruchu, który już Państwo mają</h2>
+  <p>Nie potrzeba do tego zbioru treningowego. Sygnał już jest: sam ruch Państwa API mówi, kto jest właścicielem czego — wystarczy chcieć go obserwować.</p>
+  <p>Mechanizm w zarysie:</p>
+  <ul>
+    <li><strong>Ucz się.</strong> Brama obserwuje udane żądania i dla każdego widzianego identyfikatora obiektu śledzi, który konsument (lub konsumenci) legalnie się do niego odwoływał.</li>
+    <li><strong>Oznacz.</strong> Gdy do tego obiektu odwołuje się <em>inny</em> konsument — taki, który nigdy go nie dotykał i nie należy do dużej grupy dostępu współdzielonego — mamy kandydata na dostęp międzywłaścicielski.</li>
+    <li><strong>Potwierdź, jeśli możesz.</strong> Jeśli ciało odpowiedzi API faktycznie nazywa właściciela (np. pole <code>user_id</code>), brama czyta je wprost i porównuje z tożsamością wywołującego. To zamienia heurystykę w potwierdzony fakt.</li>
+    <li><strong>Blokuj po potwierdzeniu.</strong> Mając zapisanego potwierdzonego właściciela, późniejsze żądanie innego podmiotu do tego samego obiektu można odrzucić <em>zanim</em> trafi do Państwa backendu — a nie tylko zalogować po fakcie.</li>
+  </ul>
+  <p>Nic z tego nie wymaga etykietowania danych ani trenowania modelu. Wymaga obserwowania prawdziwego ruchu i trzymania małej mapy właścicieli w Redisie z TTL.</p>
+
+  <h2>Sztuczka, która naprawdę znaczy: oceniaj po odpowiedzi, wyłącznie przy 2xx</h2>
+  <p>Oto rozróżnienie oddzielające detektor użyteczny od hałaśliwego. Oceńcie dostęp międzywłaścicielski <em>zanim</em> poznają Państwo odpowiedź backendu, a będą Państwo generować fałszywe alarmy bez przerwy — każde poprawnie autoryzowane żądanie, w którym backend słusznie zwraca 403 albo 404, wygląda z punktu widzenia bramy identycznie jak żądanie, które za chwilę się powiedzie.</p>
+  <p>Więc nie oceniajcie wcześniej. Oceniajcie później:</p>
+
+  <pre><code><span class="cmt">// Po odpowiedzi: potwierdź własność z ciała (jeśli OwnerFields jest
+// skonfigurowane) albo wróć do heurystyki pierwszego odwołującego się.
+// Oceniane po odpowiedzi, bo 2xx potwierdza, że obiekt faktycznie został
+// zwrócony (4xx oznacza, że backend wyegzekwował autoryzację — to nie wyciek).</span>
+cw := &captureWriter{ResponseWriter: w, status: http.StatusOK}
+next.ServeHTTP(cw, r)
+if cw.status &lt; 200 || cw.status &gt;= 300 {
+    return
+}</code></pre>
+
+  <p>4xx oznacza, że własna autoryzacja Państwa backendu już to złapała — poprawnie. Oznaczenie tego jako incydentu byłoby ponownym raportowaniem tego, że Państwa kontrola dostępu działa, czyli dokładnie tym rodzajem hałasu, przez który narzędzie bezpieczeństwa zostaje wyłączone w ciągu miesiąca. Z kolei 2xx na obiekcie należącym do kogoś innego oznacza, że obiekt naprawdę trafił do kogoś, kto nie powinien go mieć — prawdziwy wyciek, a nie „być może”.</p>
+  <p>Ta jedna decyzja o kolejności odpowiada za większość tego, że detektor jest użyteczny w praktyce, a nie tylko technicznie poprawny.</p>
+
+  <h2>Własności nie obchodzi metoda HTTP</h2>
+  <p>Jeden szczegół, który łatwo pomylić: tożsamość obiektu należy śledzić niezależnie od metody HTTP, mimo że wolumen <em>enumeracji</em> powinien być śledzony per metoda.</p>
+
+  <pre><code><span class="cmt">// bolaTarget rozstrzyga klucze BOLA dla żądania: endpoint zależny od metody
+// ("METODA /szablon", używany do enumeracji), zakres obiektu NIEZALEŻNY od
+// metody ("/szablon", używany do własności) oraz konkretne identyfikatory
+// obiektów, do których nastąpił dostęp.
+//
+// Zakres obiektu celowo pomija metodę: zamówienie 1001 jest tym samym
+// obiektem, czy jest czytane (GET), modyfikowane (PUT/PATCH), czy usuwane
+// (DELETE), więc własność wyuczona z odczytu musi chronić je także przed
+// zapisem przez kogoś innego.</span></code></pre>
+
+  <p>Jeśli zakluczą Państwo własność konkretnie na <code>GET /orders/{id}</code>, napastnik, który nigdy obiektu nie <em>przeczytał</em>, ale wysyła do niego <code>DELETE</code>, przepływa prosto przez sprawdzenie własności, bo detektor nie ma zapisu dla tej metody. Zakluczenie własności samym obiektem, osobno od zastosowanego do niego czasownika, sprawia, że właściciel wyuczony z niewinnego odczytu chroni obiekt także przed zapisem przez kogoś innego, którego detektor nigdy wcześniej nie widział.</p>
+
+  <h2>Identyfikator obiektu nie zawsze jest w adresie URL</h2>
+  <p>Wszystko powyżej napisano w kategoriach segmentów ścieżki, bo taki kształt większość ludzi sobie wyobraża. Ale GraphQL całkowicie ten obraz rozbija: każda operacja idzie przez jeden endpoint, zwykle <code>POST /graphql</code>, a identyfikator obiektu mieszka w argumencie wewnątrz ciała żądania, a nie gdziekolwiek w URL-u.</p>
+
+  <pre><code>POST /graphql
+{"query": "query GetUser { user(id: 42) { ssn } }"}
+<span class="cmt">// ścieżka to "/graphql" dla każdego żądania — identyfikator 42 jest w ciele</span></code></pre>
+
+  <p>Detektor zakluczony wyłącznie na URL-u widzi jeden endpoint z nieskończonym ruchem i zerem identyfikatorów obiektów — co oznacza, że na API w GraphQL po cichu nie wykrywa niczego, wyglądając przy tym na zupełnie zdrowy. Dlatego AEGIS parsuje operację: argumenty o kształcie identyfikatora na każdym polu najwyższego poziomu stają się kandydatami na własność obiektu, zasilając dokładnie to samo śledzenie własności i enumeracji, które zasilałby segment ścieżki REST. Nic w opisanym wyżej detektorze się nie zmienia; zmienia się tylko miejsce, z którego czytany jest identyfikator.</p>
+
+  <p>Jedna subtelność warta wskazania: klucz śledzenia ma zakres po <em>operacji i polu</em>, a nie po samej nazwie pola. Dwa niepowiązane zapytania, które przypadkiem wystawiają pole o nazwie <code>user</code>, nie mogą dzielić jednego licznika enumeracji ani jednego zapisu własności — inaczej normalny ruch na jednym zapytaniu zatruwa linię bazową drugiego.</p>
+
+  <p>Ten sam parsing naprawia też odkrywanie: każda operacja staje się własnym wpisem katalogu, zamiast każdego wywołania GraphQL zapadającego się w jeden wiersz <code>/graphql</code>, a znalezisko z danymi osobowymi w odpowiedzi przypisuje się do operacji, która je zwróciła.</p>
+
+  <h2>Czym to nie pretenduje być</h2>
+  <p>Warto powiedzieć wprost o ograniczeniach, bo przechwalanie się detektorem jest sposobem, w jaki zespoły przestają mu ufać:</p>
+  <ul>
+    <li><strong>Bez skonfigurowanego <code>owner_fields</code></strong> (mówiącego bramie, które pole odpowiedzi nazywa prawdziwego właściciela) działa to jako heurystyka — powinowactwo własności „pierwszego odwołującego się” — a nie potwierdzony fakt. Dokładnie dlatego jest oznaczane niższą wagą.</li>
+    <li><strong>Zimny start.</strong> Pierwszy konsument dotykający świeżego obiektu jest uznawany za jego właściciela. Jeśli to założenie jest błędne, detektor jest w błędzie, dopóki ciało odpowiedzi nie powie inaczej.</li>
+    <li><strong>Obiekty współdzielone.</strong> Niewielka liczba legalnych współwłaścicieli (wsparcie, wspólny zasób zespołu) wymaga albo listy dozwolonych, albo progu współdzielenia — inaczej będą Państwo oznaczać zwyczajny wspólny dostęp.</li>
+    <li><strong>Parsing GraphQL kończy się na najwyższym poziomie.</strong> Jako identyfikatory obiektów czytane są tylko argumenty pól najwyższego poziomu operacji. Identyfikator pojawiający się wyłącznie w zagnieżdżonej selekcji albo osiągalny jedynie przez fragment nie jest dziś wydobywany — detektor raczej tam niedoraportowuje, niż błędnie przypisuje, ale niedoraportowuje.</li>
+    <li><strong>To siatka bezpieczeństwa, a nie zastępstwo</strong> dla poprawnej autoryzacji w Państwa backendzie. Łapie to, co się prześliźnie — nie zastępuje sprawdzenia, które powinno było złapać to pierwsze.</li>
+  </ul>
+
+  <div class="cta">
+    <p>Chcą Państwo sprawdzić, czy złapie coś realnego na Państwa własnym ruchu — bez dotykania produkcji? AEGIS ma tryb pasywny, który inspekcjonuje i zapisuje, ale niczego nie blokuje ani nie modyfikuje.</p>
+    <a class="btn" href="/?lang=pl#pilot">Zacznij pilotaż lustrzany →</a>
+  </div>
+</div>
+
+<footer>AEGIS — brama bezpieczeństwa API we własnej infrastrukturze, napisana w Go. Państwa sprzęt, Państwa baza danych, żaden ruch nie opuszcza sieci.</footer>
+
+</body>
+</html>

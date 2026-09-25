@@ -32,7 +32,7 @@ export default function Status() {
       </Reveal>
       <Reveal delay={0.14}>
         <div className="mt-10">
-          <TextLink href={t.paths.articles}>{t.status.link}{t.englishOnly}</TextLink>
+          <TextLink href={t.paths.articles}>{t.status.link}</TextLink>
         </div>
       </Reveal>
     </section>
