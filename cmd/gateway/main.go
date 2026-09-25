@@ -399,6 +399,7 @@ func main() {
 	adminSrv := api.NewServer(st, log, cfg, gw, alerts, catalog, fSink, iamStore, auditStore, ssoIface)
 	adminSrv.SetIncidents(incidents)
 	adminSrv.SetLicenseStatus(licStatus) // GET /api/license + console banner reflect this boot's outcome
+	adminSrv.SetEnforcementMode(cfg)     // the console says so when nothing is being blocked
 
 	if !cfg.AdminAuth {
 		log.Warn("SECURITY WARNING: admin_auth is disabled — admin API is open to anyone", map[string]any{
@@ -744,6 +745,7 @@ func watchConfigFile(path string, activeHandler *atomic.Value, log *logger.Logge
 		}
 		logLicenseStatus(log, newLicStatus)
 		adminSrv.SetLicenseStatus(newLicStatus)
+		adminSrv.SetEnforcementMode(newCfg)
 		currentLicensePath.Store(newCfg.LicensePath)
 		if newCfg.Observe {
 			log.Warn("hot-reload: OBSERVE MODE ACTIVE — controls coerced to passive (record-only, no blocking/redaction)",

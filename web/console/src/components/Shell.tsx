@@ -18,6 +18,7 @@ import {
 import { type ReactNode } from "react";
 import { Badge, Button } from "./ui";
 import { LicenseBanner } from "./LicenseBanner";
+import { EnforcementBanner } from "./EnforcementBanner";
 import { useTheme } from "@/lib/theme";
 import { type Session } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -265,6 +266,7 @@ export function Shell({
           </div>
         </header>
 
+        <EnforcementBanner />
         <LicenseBanner />
 
         <main className="flex-1 px-4 py-6 md:px-8">

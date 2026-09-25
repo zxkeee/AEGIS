@@ -38,7 +38,8 @@
         "ROADMAP.md",
         "docs/PRODUCT.md",
         "RELEASE-CHECKLIST.md",
-        "web/v3/"
+        "web/v3/",
+        "web/console/src/"
       ]
     },
     {
@@ -55,7 +56,8 @@
         "README.md",
         "ROADMAP.md",
         "docs/PRODUCT.md",
-        "RELEASE-CHECKLIST.md"
+        "RELEASE-CHECKLIST.md",
+        "web/console/src/"
       ]
     },
     {
@@ -109,7 +111,8 @@
         "ROADMAP.md",
         "docs/PRODUCT.md",
         "RELEASE-CHECKLIST.md",
-        "web/v3/"
+        "web/v3/",
+        "web/console/src/"
       ]
     },
     {

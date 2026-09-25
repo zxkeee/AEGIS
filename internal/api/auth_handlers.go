@@ -555,10 +555,27 @@ func (h *handlers) establishSession(ctx context.Context, w http.ResponseWriter, 
 // calls this on every load to rehydrate who's signed in (the login response
 // is only seen once, at login time, and doesn't survive a page refresh).
 func (h *handlers) getSession(w http.ResponseWriter, r *http.Request) {
+	// The enforcement mode rides along with the session because the console
+	// fetches this once per load and on every reconnect, and a banner that
+	// says "nothing is being blocked" has to appear on the first paint rather
+	// than after a second round-trip.
+	//
+	// An unset value reads as enforcing. That is the deliberate direction: the
+	// failure being prevented is an operator believing they are protected when
+	// they are not, so the absence of information must never invent a warning
+	// that would train them to dismiss it. A real passive mode is always set
+	// by main.go.
+	mode := EnforcementMode{Mode: "enforce", Enforcing: true}
+	if h.enforcement != nil {
+		if m, ok := h.enforcement.Load().(EnforcementMode); ok {
+			mode = m
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tenant":      tenant.From(r.Context()),
 		"role":        string(iam.FromContext(r.Context())),
 		"super_admin": iam.IsSuperAdmin(r.Context()),
+		"enforcement": mode,
 	})
 }
 

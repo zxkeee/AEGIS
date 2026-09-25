@@ -38,6 +38,11 @@ type Server struct {
 	// loadValidatedConfig (boot, and every hot-reload — see SetLicenseStatus).
 	// atomic.Value so a concurrent GET /api/license never races a reload.
 	licenseStatus atomic.Value
+	// enforcement holds what the gateway is currently DOING to traffic, set by
+	// main.go on boot and on every hot-reload. Same shape and same reason as
+	// licenseStatus: the console must be able to say it without an operator
+	// reading gateway logs.
+	enforcement atomic.Value
 	// h is the handler set the routes close over, kept so a dependency that
 	// only exists later (see SetIncidents) can be attached to it.
 	h *handlers
@@ -52,6 +57,53 @@ func (s *Server) SetDraining(v bool) { s.draining.Store(v) }
 // hot-reload, so GET /api/license and the console banner reflect it without
 // reading gateway logs. Called from cmd/gateway/main.go.
 func (s *Server) SetLicenseStatus(st license.Status) { s.licenseStatus.Store(st) }
+
+// EnforcementMode is what the gateway is doing to traffic right now, as opposed
+// to what it is configured to detect. The two are not the same thing, and the
+// console used to show only the second.
+//
+// In observe mode every control still runs and every finding is still raised,
+// but nothing is denied and no response body is modified. In mirror mode the
+// gateway is not in the request path at all. Both are correct postures for a
+// pilot and both are deliberately offered — and in both of them a dashboard
+// headed "Security Overview", listing active controls and blocked-looking
+// findings, tells an operator they are protected when they are not.
+//
+// main.go already logs the observe warning on boot and on every hot-reload. A
+// log line is seen by whoever reads logs; this is for whoever reads the screen.
+type EnforcementMode struct {
+	// Mode is "enforce", "observe" or "mirror".
+	Mode string `json:"mode"`
+	// Enforcing is false for anything that does not deny a request. It is a
+	// separate field rather than something the caller derives from Mode,
+	// because a future fourth mode would otherwise be silently treated as
+	// enforcing by every reader that compares against a string.
+	Enforcing bool `json:"enforcing"`
+	// Reason is one sentence an operator can act on, shown verbatim.
+	Reason string `json:"reason,omitempty"`
+}
+
+// SetEnforcementMode records what the gateway does to traffic under the config
+// that just took effect. Called from cmd/gateway/main.go on boot and on every
+// hot-reload, next to SetLicenseStatus.
+func (s *Server) SetEnforcementMode(cfg config.GatewayConfig) {
+	m := EnforcementMode{Mode: "enforce", Enforcing: true}
+	switch {
+	case cfg.MirrorSink:
+		// Checked first: mirror is further from enforcing than observe, and a
+		// config can carry both.
+		m = EnforcementMode{
+			Mode:   "mirror",
+			Reason: "Mirror mode: this gateway receives a copy of traffic and is not in the request path. Nothing here can block, redact or reach your users.",
+		}
+	case cfg.Observe:
+		m = EnforcementMode{
+			Mode:   "observe",
+			Reason: "Observe mode: every control runs and every finding is recorded, but nothing is blocked and no response is redacted.",
+		}
+	}
+	s.enforcement.Store(m)
+}
 
 // SetIncidents attaches the incident record. A separate setter rather than an
 // eleventh constructor parameter — NewServer already takes ten, and a caller
@@ -93,7 +145,7 @@ func NewServer(st *store.Store, log *logger.Logger, cfg config.GatewayConfig, gw
 }
 
 func (s *Server) registerRoutes() {
-	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog, forensic: s.forensic, users: s.users, audit: s.audit, oidc: s.oidc, draining: &s.draining, licenseStatus: &s.licenseStatus}
+	h := &handlers{store: s.store, log: s.log, cfg: s.cfg, gateway: s.gateway, alerts: s.alerts, catalog: s.catalog, forensic: s.forensic, users: s.users, audit: s.audit, oidc: s.oidc, draining: &s.draining, licenseStatus: &s.licenseStatus, enforcement: &s.enforcement}
 	s.h = h
 	// Assign the spec interface only for a real catalog, so a nil *discovery.
 	// Catalog does not become a non-nil interface holding a typed-nil pointer.

@@ -74,6 +74,10 @@ type handlers struct {
 	// be nil in unit tests that construct handlers directly; getLicense treats
 	// that the same as "no status recorded yet".
 	licenseStatus *atomic.Value
+	// enforcement points at the Server's atomic.Value holding the current
+	// EnforcementMode. Nil in tests that do not set one, which reads as
+	// enforcing — see getSession for why that default is the safe one.
+	enforcement *atomic.Value
 }
 
 // auditCrossTenantRead records a super-admin GET that spans a tenant other

@@ -87,10 +87,21 @@ export interface LoginResp {
   super_admin?: boolean;
 }
 
+/** What the gateway is DOING to traffic, as opposed to what it detects.
+ * Optional because an older gateway serving a newer console will not send it —
+ * and an absent value means "not known", which the banner treats as enforcing
+ * so it never invents a warning. See internal/api EnforcementMode. */
+export interface EnforcementMode {
+  mode: "enforce" | "observe" | "mirror";
+  enforcing: boolean;
+  reason?: string;
+}
+
 export interface SessionResp {
   tenant: string;
   role: string;
   super_admin: boolean;
+  enforcement?: EnforcementMode;
 }
 
 export interface LicenseResp {
