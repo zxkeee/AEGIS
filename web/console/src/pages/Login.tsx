@@ -59,14 +59,19 @@ export function Login({ onAuthed }: { onAuthed: (s: { tenant?: string; role?: st
         transition={{ type: "spring", stiffness: 260, damping: 24 }}
         className="relative w-full max-w-sm"
       >
-        <Card className="p-8">
+        <Card className="p-8 shadow-card border-border/80">
           <div className="mb-6 flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/12 text-accent">
-              <ShieldCheck size={22} />
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent/15 text-accent border border-accent/30 shadow-[0_0_16px_hsl(var(--accent)/0.3)]">
+              <ShieldCheck size={24} weight="bold" />
             </div>
             <div>
-              <h1 className="font-serif text-lg tracking-tight">AEGIS</h1>
-              <p className="text-xs text-muted">API Protection Console</p>
+              <div className="flex items-center gap-2">
+                <h1 className="font-mono text-base font-extrabold tracking-wider text-fg">AEGIS</h1>
+                <span className="rounded bg-elevated/90 px-1.5 py-0.5 font-mono text-[9px] font-bold text-accent uppercase tracking-widest border border-border/60">
+                  SEC-GW
+                </span>
+              </div>
+              <p className="text-xs text-muted/80">Security Perimeter Command Console</p>
             </div>
           </div>
 

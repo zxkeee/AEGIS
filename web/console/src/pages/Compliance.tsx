@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
-import { ShieldCheck } from "@phosphor-icons/react";
+import { ClipboardText, ShieldCheck, ShieldWarning, Warning, WarningCircle } from "@phosphor-icons/react";
 import { ErrorNote, PageHeader, StatCard } from "@/components/PageBits";
-import { Card, EmptyState, Skeleton } from "@/components/ui";
+import { Badge, Card, EmptyState, Skeleton } from "@/components/ui";
 import { DocumentLimits } from "@/components/DocumentLimits";
 import { api, type ComplianceFramework, type ComplianceReport } from "@/lib/api";
 import { useData } from "@/lib/hooks";
@@ -12,20 +12,52 @@ export function Compliance() {
   const hasAny = data && data.frameworks.length > 0;
 
   return (
-    <div>
+    <div className="space-y-6">
       <PageHeader
-        title="Compliance"
-        desc="Findings and runtime abuse mapped to NIS2, DORA and ISO 27001 controls — the auditor's language."
+        title="Regulatory & Compliance Frameworks"
+        desc="Runtime evidence mapping against NIS2 Directive (Art. 21), DORA (Art. 8–10), and ISO/IEC 27001:2022 security controls."
+        badge={
+          <Badge tone="accent" className="font-mono text-xs">
+            {data?.frameworks.length ?? 0} FRAMEWORKS MAPPED
+          </Badge>
+        }
       />
 
       {error ? (
         <ErrorNote error={error} />
       ) : (
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          <StatCard label="Critical" value={data ? fmt(data.summary.critical) : undefined} tone="danger" loading={loading} />
-          <StatCard label="Warning" value={data ? fmt(data.summary.warning) : undefined} loading={loading} />
-          <StatCard label="Controls affected" value={data ? fmt(data.summary.controls_affected) : undefined} loading={loading} />
-          <StatCard label="Frameworks mapped" value={data ? fmt(data.frameworks.length) : undefined} loading={loading} />
+          <StatCard
+            label="Critical Gaps"
+            value={data ? fmt(data.summary.critical) : undefined}
+            icon={<WarningCircle size={16} />}
+            tone="danger"
+            loading={loading}
+            hint="immediate compliance risk"
+          />
+          <StatCard
+            label="Warning Issues"
+            value={data ? fmt(data.summary.warning) : undefined}
+            icon={<Warning size={16} />}
+            tone="warn"
+            loading={loading}
+            hint="policy deviations"
+          />
+          <StatCard
+            label="Controls Impacted"
+            value={data ? fmt(data.summary.controls_affected) : undefined}
+            icon={<ShieldWarning size={16} />}
+            tone="accent"
+            loading={loading}
+            hint="across active standards"
+          />
+          <StatCard
+            label="Frameworks Mapped"
+            value={data ? fmt(data.frameworks.length) : undefined}
+            icon={<ClipboardText size={16} />}
+            loading={loading}
+            hint="NIS2, DORA, ISO 27001"
+          />
         </div>
       )}
 

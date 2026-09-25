@@ -15,31 +15,33 @@
    one product instead of two different demos. */
 :root,
 .dark {
-  --bg: 0 0% 9.4%; /* #181818 canvas */
-  --surface: 0 0% 12.2%; /* #1f1f1f card */
-  --elevated: 0 0% 14.9%; /* #262626 */
-  --border: 0 0% 19.6%; /* #323232 */
-  --fg: 0 0% 93.3%; /* #eeeeee ink */
-  --muted: 40 5% 63.5%; /* #a4a19b */
-  --accent: 216 100% 58%; /* #2b7fff, the site's sole accent */
+  --bg: 224 45% 6%; /* #080c14 deep obsidian canvas */
+  --surface: 222 40% 9%; /* #0d1524 precision card surface */
+  --elevated: 220 35% 14%; /* #152033 elevated interactive surface */
+  --border: 218 28% 18%; /* #202b3f crisp hairline border */
+  --fg: 210 40% 98%; /* #f8fafc high-contrast ink */
+  --muted: 215 20% 65%; /* #94a3b8 high-legibility secondary */
+  --faint: 215 16% 45%; /* #5c6c84 subtle tertiary */
+  --accent: 217 91% 60%; /* #3b82f6 electric cyber blue */
   --accent-fg: 0 0% 100%;
-  --danger: 0 84% 60%;
-  --warn: 38 92% 55%;
-  --ok: 142 71% 45%;
+  --danger: 350 89% 60%; /* #f43f5e cyber crimson */
+  --warn: 38 92% 50%; /* #f59e0b vibrant amber */
+  --ok: 158 64% 52%; /* #10b981 cyber emerald */
 }
 
 .light {
-  --bg: 40 20% 97%;
-  --surface: 0 0% 100%;
-  --elevated: 40 15% 94%;
-  --border: 40 10% 86%;
-  --fg: 0 0% 9.4%;
-  --muted: 40 5% 40%;
-  --accent: 216 100% 52%;
+  --bg: 210 40% 98%; /* #f8fafc */
+  --surface: 0 0% 100%; /* #ffffff */
+  --elevated: 214 32% 93%; /* #e2e8f0 */
+  --border: 214 32% 86%; /* #cbd5e1 */
+  --fg: 222 47% 11%; /* #0f172a */
+  --muted: 215 16% 47%; /* #64748b */
+  --faint: 215 16% 65%; /* #94a3b8 */
+  --accent: 221 83% 53%; /* #2563eb */
   --accent-fg: 0 0% 100%;
-  --danger: 0 72% 46%;
-  --warn: 32 85% 42%;
-  --ok: 142 64% 34%;
+  --danger: 350 89% 50%;
+  --warn: 38 92% 45%;
+  --ok: 158 64% 40%;
 }
 
 * {
@@ -63,27 +65,39 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Custom, minimal scrollbars. */
+/* Custom, minimal engineering scrollbars. */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: hsl(var(--border));
+  background: hsl(var(--border) / 0.8);
   border-radius: 9999px;
-  border: 2px solid transparent;
-  background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: hsl(var(--muted));
-  background-clip: content-box;
+  background: hsl(var(--muted) / 0.6);
+}
+
+/* Subtle glassmorphism and card elevation */
+.glass-panel {
+  background: hsl(var(--surface) / 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid hsl(var(--border) / 0.7);
+}
+
+.subtle-border {
+  border: 1px solid hsl(var(--border) / 0.6);
 }
 
 /* Visible focus for keyboard nav (a11y). */
 :focus-visible {
-  outline: 2px solid hsl(var(--accent));
+  outline: 2px solid hsl(var(--accent) / 0.8);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 @media (prefers-reduced-motion: reduce) {

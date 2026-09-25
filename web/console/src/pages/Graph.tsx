@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { ShareNetwork } from "@phosphor-icons/react";
+import { Package, ShareNetwork, Users, Warning } from "@phosphor-icons/react";
 import { ErrorNote, PageHeader, StatCard } from "@/components/PageBits";
-import { Card, EmptyState, Skeleton } from "@/components/ui";
+import { Badge, Card, EmptyState, Skeleton } from "@/components/ui";
 import { api, type Graph as GraphData, type GraphNode } from "@/lib/api";
 import { useData } from "@/lib/hooks";
 import { fmt } from "@/lib/utils";
@@ -14,28 +14,25 @@ const R = 6;
 const CONSUMER_X = 210;
 const ENDPOINT_X = W - 210;
 
-// Grayscale-graded by "how good", not a rainbow of independent colors — only
-// the worst state (unprotected/shadow) pops in the danger color, matching the
-// rest of the console.
 function postureFill(posture?: string): string {
   switch (posture) {
     case "protected":
-      return "fill-fg";
+      return "fill-emerald-400";
     case "partial":
-      return "fill-muted";
+      return "fill-amber-400";
     default:
-      return "fill-danger"; // unprotected / shadow
+      return "fill-rose-500"; // unprotected / shadow
   }
 }
 
 function kindFill(kind?: string): string {
   switch (kind) {
     case "jwt":
-      return "fill-fg";
+      return "fill-sky-400";
     case "key":
-      return "fill-muted";
+      return "fill-amber-400";
     default:
-      return "fill-muted/50"; // ip / anonymous
+      return "fill-slate-400"; // ip / anonymous
   }
 }
 
@@ -71,23 +68,46 @@ export function Graph() {
   }, [hover, layout]);
 
   return (
-    <div>
+    <div className="space-y-6">
       <PageHeader
-        title="Map"
-        desc="Who calls what — consumers to API endpoints, weighted by traffic. Hover a node to trace its calls."
+        title="Identity & Service Flow Map"
+        desc="Interactive topological flow graph: mapping client callers to destination API endpoints, weighted by runtime throughput."
+        badge={
+          <Badge tone="accent" className="font-mono text-xs">
+            {layout ? `${layout.consumers.length} → ${layout.endpoints.length}` : "FLOW GRAPH"}
+          </Badge>
+        }
       />
 
       {!error && (
-        <div className="mb-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
-          <StatCard label="Consumers" value={data ? fmt(layout?.consumers.length) : undefined} loading={loading} />
-          <StatCard label="Endpoints" value={data ? fmt(layout?.endpoints.length) : undefined} loading={loading} />
-          <StatCard label="Edges" value={data ? fmt(data.edges.length) : undefined} loading={loading} />
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <StatCard
-            label="Under abuse"
+            label="Active Consumers"
+            value={data ? fmt(layout?.consumers.length) : undefined}
+            icon={<Users size={16} />}
+            tone="accent"
+            loading={loading}
+          />
+          <StatCard
+            label="Destination Endpoints"
+            value={data ? fmt(layout?.endpoints.length) : undefined}
+            icon={<Package size={16} />}
+            tone="ok"
+            loading={loading}
+          />
+          <StatCard
+            label="Traffic Links (Edges)"
+            value={data ? fmt(data.edges.length) : undefined}
+            icon={<ShareNetwork size={16} />}
+            loading={loading}
+          />
+          <StatCard
+            label="Under Active Abuse"
             value={data ? fmt(flaggedCount) : undefined}
+            icon={<Warning size={16} />}
             tone={flaggedCount > 0 ? "danger" : "fg"}
             loading={loading}
-            hint="flagged in recent BOLA/BFLA events"
+            hint="BOLA / BFLA flagged nodes"
           />
         </div>
       )}

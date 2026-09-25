@@ -11,7 +11,15 @@ import { timeAgo } from "@/lib/utils";
 export function Settings({ session }: { session: Session }) {
   return (
     <div className="space-y-8">
-      <PageHeader title="Settings" desc="Tenants, operators and the admin action trail." />
+      <PageHeader
+        title="System Settings & Governance"
+        desc="Multi-tenant organization partitioning, role-based access delegation, and cryptographically verified audit records."
+        badge={
+          <Badge tone="accent" className="font-mono text-xs">
+            TENANT: {session.tenant ?? "default"}
+          </Badge>
+        }
+      />
       <TenantsSection session={session} />
       <UsersSection session={session} />
       <AuditSection session={session} />
@@ -58,42 +66,72 @@ function TenantsSection({ session }: { session: Session }) {
 
   return (
     <section>
-      <h3 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted">
-        <Buildings size={15} /> Tenants
-      </h3>
-      <Card className="p-5">
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-fg">
+          <Buildings size={16} className="text-accent" />
+          <span>Tenants & Workspaces</span>
+        </h3>
+        <span className="font-mono text-xs text-muted">
+          {tenants.data?.count ?? 0} active tenant{tenants.data?.count === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      <Card className="p-5 sm:p-6">
         {session.superAdmin && (
-          <div className="mb-4 flex flex-wrap gap-2">
-            <Input value={id} onChange={(e) => setId(e.target.value)} placeholder="tenant-id" className="max-w-[10rem] font-mono" />
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Display name (optional)" className="max-w-xs" />
-            <Button onClick={create} disabled={busy === "create"}>
-              {busy === "create" ? <Spinner /> : <Buildings size={16} />}
-              Create tenant
+          <div className="mb-5 flex flex-wrap gap-2.5 border-b border-border/50 pb-4">
+            <Input
+              value={id}
+              onChange={(e) => setId(e.target.value)}
+              placeholder="tenant-id (e.g. acme-corp)"
+              className="max-w-[12rem] font-mono text-xs"
+            />
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Display name (optional)"
+              className="max-w-xs text-xs"
+            />
+            <Button onClick={create} disabled={busy === "create"} className="shrink-0">
+              {busy === "create" ? <Spinner /> : <Buildings size={15} />}
+              <span>Create Tenant</span>
             </Button>
           </div>
         )}
+
         {tenants.error ? (
           <ErrorNote error={tenants.error} />
         ) : !tenants.data?.tenants.length ? (
-          <EmptyState title="No tenants" />
+          <EmptyState title="No tenants registered" />
         ) : (
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             {tenants.data.tenants.map((t) => (
               <motion.div
                 key={t.id}
                 layout
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                className="flex items-center justify-between rounded-lg border border-border bg-bg px-3 py-2"
+                className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-bg/70 px-3.5 py-2.5 transition-colors hover:bg-elevated/40"
               >
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-xs">{t.id}</span>
-                  {t.name && t.name !== t.id && <span className="text-xs text-muted">{t.name}</span>}
-                  {t.id === session.tenant && <Badge tone="accent">you</Badge>}
+                <div className="flex items-center gap-2.5 font-mono text-xs">
+                  <span className="font-semibold text-fg">{t.id}</span>
+                  {t.name && t.name !== t.id && <span className="font-sans text-xs text-muted">({t.name})</span>}
+                  {t.id === session.tenant && (
+                    <Badge tone="ok" dot className="text-[10px]">
+                      ACTIVE CONTEXT
+                    </Badge>
+                  )}
                 </div>
+
                 {session.superAdmin && t.id !== "default" && (
-                  <Button variant="ghost" size="icon" onClick={() => remove(t.id)} disabled={busy === t.id} aria-label={`Delete ${t.id}`}>
-                    {busy === t.id ? <Spinner /> : <Trash size={15} className="text-muted hover:text-danger" />}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => remove(t.id)}
+                    disabled={busy === t.id}
+                    aria-label={`Delete ${t.id}`}
+                    className="text-muted hover:text-danger"
+                  >
+                    {busy === t.id ? <Spinner /> : <Trash size={15} />}
                   </Button>
                 )}
               </motion.div>
@@ -101,7 +139,9 @@ function TenantsSection({ session }: { session: Session }) {
           </div>
         )}
         {!session.superAdmin && (
-          <p className="mt-3 text-xs text-muted/70">Only your own tenant is visible. Super-admin required to manage others.</p>
+          <p className="mt-3 text-xs text-muted/70">
+            Scope limited to tenant: <code className="text-fg">{session.tenant}</code>. Super-admin privilege required for multi-tenant administration.
+          </p>
         )}
       </Card>
     </section>
@@ -152,69 +192,94 @@ function UsersSection({ session }: { session: Session }) {
 
   return (
     <section>
-      <h3 className="mb-3 flex items-center gap-2 text-sm font-medium text-muted">
-        <UsersThree size={15} /> Operators
-      </h3>
-      <Card className="p-5">
-        <div className="mb-4 flex flex-wrap gap-2">
-          <Input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@company.com" className="max-w-[14rem]" />
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-fg">
+          <UsersThree size={16} className="text-accent" />
+          <span>Console Operators (IAM)</span>
+        </h3>
+        <span className="font-mono text-xs text-muted">
+          {users.data?.count ?? 0} operator{users.data?.count === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      <Card className="p-5 sm:p-6">
+        <div className="mb-5 flex flex-wrap items-center gap-2.5 border-b border-border/50 pb-4">
+          <Input
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="operator@company.com"
+            className="max-w-[14rem] text-xs"
+          />
           <Input
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="Password (12+ chars)"
+            placeholder="Password (min 12 chars)"
             type="password"
-            className="max-w-[12rem]"
+            className="max-w-[12rem] text-xs"
           />
           <select
             value={role}
             onChange={(e) => setRole(e.target.value)}
-            className="h-10 rounded-lg border border-border bg-bg px-3 text-sm text-fg"
+            className="h-9 rounded-lg border border-border/80 bg-bg px-3 text-xs text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
           >
-            <option value="admin">admin</option>
-            <option value="viewer">viewer</option>
+            <option value="admin">Administrator</option>
+            <option value="viewer">Security Auditor (Read-only)</option>
           </select>
           {session.superAdmin && (
-            <label className="flex items-center gap-2 rounded-lg border border-border px-3 text-xs text-muted">
+            <label className="flex h-9 items-center gap-2 rounded-lg border border-border/80 px-3 text-xs text-muted cursor-pointer hover:bg-elevated/40">
               <input type="checkbox" checked={superAdmin} onChange={(e) => setSuperAdmin(e.target.checked)} className="accent-accent" />
-              Super-admin
+              <span>Super-admin</span>
             </label>
           )}
-          <Button onClick={create} disabled={busy === "create"}>
-            {busy === "create" ? <Spinner /> : <UserPlus size={16} />}
-            Add operator
+          <Button onClick={create} disabled={busy === "create"} className="shrink-0">
+            {busy === "create" ? <Spinner /> : <UserPlus size={15} />}
+            <span>Add Operator</span>
           </Button>
         </div>
 
         {users.error ? (
           <ErrorNote error={users.error} />
         ) : !users.data?.users.length ? (
-          <EmptyState title="No operators yet" hint="Add teammates so they don't have to share the bootstrap secret." />
+          <EmptyState title="No operators configured yet" hint="Create credentials so teammates have individual audit trails." />
         ) : (
           <Table
             head={
               <>
-                <Th>Email</Th>
-                <Th>Role</Th>
-                <Th className="hidden md:table-cell">Tenant</Th>
-                <Th className="hidden text-right sm:table-cell">Created</Th>
-                <Th className="text-right">·</Th>
+                <Th>Operator Identity</Th>
+                <Th>RBAC Role</Th>
+                <Th className="hidden md:table-cell">Tenant Scope</Th>
+                <Th className="hidden text-right sm:table-cell">Enrolled</Th>
+                <Th className="text-right">Action</Th>
               </>
             }
           >
             {users.data.users.map((u, i) => (
               <Row key={u.id} i={i}>
-                <Td className="text-xs">{u.email}</Td>
+                <Td className="text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-fg">{u.email}</span>
+                  </div>
+                </Td>
                 <Td>
-                  <div className="flex items-center gap-1.5">
-                    <Badge tone={u.role === "admin" ? "accent" : "neutral"}>{u.role}</Badge>
-                    {u.super_admin && <Badge tone="warn">super</Badge>}
+                  <div className="flex items-center gap-1.5 font-mono text-xs">
+                    <Badge tone={u.role === "admin" ? "accent" : "neutral"} className="uppercase text-[10px]">
+                      {u.role}
+                    </Badge>
+                    {u.super_admin && <Badge tone="warn" className="uppercase text-[10px]">SUPER</Badge>}
                   </div>
                 </Td>
                 <Td className="hidden font-mono text-xs text-muted md:table-cell">{u.tenant_id}</Td>
-                <Td className="hidden text-right text-xs text-muted sm:table-cell">{timeAgo(u.created_at)}</Td>
+                <Td className="hidden text-right font-mono text-xs text-muted sm:table-cell">{timeAgo(u.created_at)}</Td>
                 <Td className="text-right">
-                  <Button variant="ghost" size="icon" onClick={() => remove(u)} disabled={busy === u.id} aria-label={`Remove ${u.email}`}>
-                    {busy === u.id ? <Spinner /> : <Trash size={15} className="text-muted hover:text-danger" />}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => remove(u)}
+                    disabled={busy === u.id}
+                    aria-label={`Remove ${u.email}`}
+                    className="text-muted hover:text-danger"
+                  >
+                    {busy === u.id ? <Spinner /> : <Trash size={15} />}
                   </Button>
                 </Td>
               </Row>
@@ -235,51 +300,60 @@ function AuditSection({ session }: { session: Session }) {
   return (
     <section>
       <div className="mb-3 flex items-center justify-between">
-        <h3 className="flex items-center gap-2 text-sm font-medium text-muted">
-          <Scroll size={15} /> Audit trail
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-fg">
+          <Scroll size={16} className="text-accent" />
+          <span>Administrative Action Log</span>
         </h3>
         {session.superAdmin && (
-          <label className="flex items-center gap-2 text-xs text-muted">
+          <label className="flex items-center gap-2 font-mono text-xs text-muted cursor-pointer hover:text-fg">
             <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} className="accent-accent" />
-            All tenants
+            <span>Show all cluster tenants</span>
           </label>
         )}
       </div>
+
       {audit.error && !disabled ? (
         <ErrorNote error={audit.error} />
       ) : disabled || !audit.data?.entries.length ? (
         <Card className="p-5">
           <EmptyState
             icon={<SealQuestion size={36} />}
-            title={disabled ? "Audit log disabled" : "No admin activity yet"}
-            hint={disabled ? "Set forensic_dsn to enable the audit trail." : "Logins, blocks and token revocations will appear here."}
+            title={disabled ? "Audit logging is dormant" : "No administrative events yet"}
+            hint={disabled ? "Configure forensic_dsn in aegis.yaml to enable cryptographically sealed audit logging." : "Logins, policy changes, and token revocations will record here."}
           />
         </Card>
       ) : (
         <Table
           head={
             <>
-              <Th>Action</Th>
-              <Th>Actor</Th>
+              <Th>Operation</Th>
+              <Th>Operator</Th>
               <Th className="hidden md:table-cell">Tenant</Th>
               <Th className="hidden text-right sm:table-cell">Status</Th>
-              <Th className="text-right">When</Th>
+              <Th className="text-right">Timestamp</Th>
             </>
           }
         >
           {(audit.data?.entries ?? []).map((e, i) => (
             <Row key={i} i={i}>
               <Td>
-                <Badge tone={e.action.includes("fail") ? "danger" : e.action === "login" ? "accent" : "neutral"}>
+                <Badge
+                  tone={e.action.includes("fail") ? "danger" : e.action === "login" ? "accent" : "neutral"}
+                  className="font-mono uppercase text-[10px]"
+                >
                   {e.action.replace(/_/g, " ")}
                 </Badge>
               </Td>
-              <Td className="text-xs">{e.actor_email || e.actor_id || "bootstrap secret"}</Td>
+              <Td className="font-mono text-xs">{e.actor_email || e.actor_id || "bootstrap secret"}</Td>
               <Td className="hidden font-mono text-xs text-muted md:table-cell">{e.tenant_id}</Td>
-              <Td className="hidden text-right tnum sm:table-cell">
-                {e.status ? <span className={e.status >= 400 ? "text-danger" : "text-muted"}>{e.status}</span> : "—"}
+              <Td className="hidden text-right font-mono text-xs tnum sm:table-cell">
+                {e.status ? (
+                  <span className={e.status >= 400 ? "text-danger font-semibold" : "text-ok"}>{e.status}</span>
+                ) : (
+                  <span className="text-muted/60">—</span>
+                )}
               </Td>
-              <Td className="text-right text-xs text-muted">{timeAgo(e.time)}</Td>
+              <Td className="text-right font-mono text-xs text-muted">{timeAgo(e.time)}</Td>
             </Row>
           ))}
         </Table>

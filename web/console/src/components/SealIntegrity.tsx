@@ -25,19 +25,21 @@ export function SealIntegrity() {
   const chain = data.chain;
 
   return (
-    <Card className="mb-4 p-4">
-      <div className="flex items-start gap-3">
+    <Card className="mb-4 p-4 border-border/80 bg-surface/90 shadow-card">
+      <div className="flex items-start gap-3.5">
         <div className={ok ? "text-ok" : "text-danger"}>
-          {ok ? <CheckCircle size={22} weight="fill" /> : <Warning size={22} weight="fill" />}
+          {ok ? <CheckCircle size={24} weight="fill" className="text-ok shadow-glow-ok" /> : <Warning size={24} weight="fill" />}
         </div>
 
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-sm font-medium">Log integrity</h3>
-            <Badge tone={ok ? "ok" : "danger"}>{ok ? "intact" : "tampered"}</Badge>
-            <span className="text-xs text-muted">
-              {data.summary.periods} sealed {data.summary.periods === 1 ? "period" : "periods"}
-              {data.summary.altered > 0 ? `, ${data.summary.altered} altered` : null}
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-fg font-mono">Immutable Audit Seal</h3>
+            <Badge tone={ok ? "ok" : "danger"} dot className="font-mono text-[10px] uppercase font-semibold">
+              {ok ? "VERIFIED INTACT" : "CHAIN TAMPERED"}
+            </Badge>
+            <span className="font-mono text-xs text-muted">
+              ({data.summary.periods} sealed {data.summary.periods === 1 ? "block" : "blocks"}
+              {data.summary.altered > 0 ? `, ${data.summary.altered} corrupted` : null})
             </span>
           </div>
 
