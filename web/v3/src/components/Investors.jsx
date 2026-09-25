@@ -30,7 +30,7 @@ export default function Investors() {
       <Reveal delay={0.2}>
         <p className="mt-10 max-w-2xl text-[14px] leading-relaxed text-faint">{t.investors.note}</p>
         <div className="mt-4">
-          <TextLink href="/how-it-works.html">{t.investors.link}{t.englishOnly}</TextLink>
+          <TextLink href={t.paths.howItWorks}>{t.investors.link}</TextLink>
         </div>
       </Reveal>
     </section>

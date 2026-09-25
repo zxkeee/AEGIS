@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Jak działa AEGIS, od początku do końca</title>
+<meta name="description" content="Pełny mechanizm: problem, cykl życia żądania, infrastruktura, wielonajemność, flagowy detektor, zachowanie przy awarii i sposób wdrożenia." />
+<link rel="stylesheet" href="/articles/article.css" />
+<link rel="stylesheet" href="/articles/how-it-works.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/?lang=pl">AEGIS</a>
+  <a class="back" href="/?lang=pl">← strona główna</a>
+</nav>
+
+<div class="cover">
+  <p class="eyebrow">Dokumentacja</p>
+  <h1>Jak działa AEGIS, od początku do końca</h1>
+  <p class="dek">Wszystko po kolei: problem, cykl życia żądania, infrastruktura pod spodem, wielonajemność, flagowy detektor, sposób w jaki zawodzi i sposób w jaki się go wdraża. Żadna sekcja nie zakłada, że przeczytali Państwo inną.</p>
+</div>
+
+<div class="shell">
+  <nav class="toc">
+    <span class="lab">Spis treści</span>
+    <a href="#problem">01 · Problem</a>
+    <a href="#why">02 · Dlaczego AEGIS</a>
+    <a href="#lifecycle">03 · Cykl życia żądania</a>
+    <a href="#infra">04 · Infrastruktura</a>
+    <a href="#tenancy">05 · Wielonajemność</a>
+    <a href="#flagship">06 · Flagowy detektor</a>
+    <a href="#reliability">07 · Zachowanie przy awarii</a>
+    <a href="#deploy">08 · Wdrożenie</a>
+    <a href="#status">09 · Stan faktyczny</a>
+    <a href="#reading">Dalsza lektura</a>
+  </nav>
+
+  <main class="wrap">
+
+    <section id="problem">
+      <h2><span class="sec-num">01</span>Problem</h2>
+      <p>Współczesne API rosną szybciej, niż ktokolwiek jest w stanie śledzić ręcznie. Cztery strukturalne luki pojawiają się w niemal każdym realnym systemie:</p>
+      <ul>
+        <li><strong>Zapomniane endpointy.</strong> Wydane, nigdy nieprzejrzane, nigdy niewycofane — nikt nie jest właścicielem tej decyzji.</li>
+        <li><strong>Niespójna ochrona.</strong> Każdy zespół konfiguruje uwierzytelnianie i limity inaczej; „chronione” znaczy coś innego w każdej usłudze.</li>
+        <li><strong>Brak widoczności konsumentów.</strong> Na pytanie „kto to wywołuje i jak często?” nie ma szybkiej odpowiedzi — dane są rozsypane po logach.</li>
+        <li><strong>Ciche ujawnianie danych.</strong> Dane osobowe i płatnicze wyciekają w odpowiedziach niezauważone, dopóki ktoś z zewnątrz tego nie zgłosi.</li>
+      </ul>
+      <p>AEGIS istnieje po to, by być jednym punktem, który widzi to wszystko — bo cały ruch przez niego przechodzi.</p>
+    </section>
+
+    <section id="why">
+      <h2><span class="sec-num">02</span>Dlaczego AEGIS</h2>
+      <p>Zwykle są to trzy produkty od trzech dostawców: <strong>API Gateway</strong> (proxy, równoważenie obciążenia), warstwa <strong>WAAP</strong> (firewall, limity żądań, ochrona przed botami, DLP, tożsamość) i platforma <strong>ASPM</strong> (katalog, ryzyko, analityka). AEGIS jest wszystkimi trzema w jednym wdrożeniu — jednym miejscem, w którym te trzy warstwy nie mogą po cichu się ze sobą nie zgadzać.</p>
+      <p>Wyróżnikiem nie jest firewall — sygnaturowy firewall ma każdy. Wyróżnikiem jest to, że AEGIS od pierwszego dnia buduje <strong>katalog API i graf „kto co wywołuje”</strong>, a wykrywanie wycieków na poziomie obiektu jest zbudowane bezpośrednio na tym grafie (sekcja 06). Większość konkurentów wywodzących się z WAF nie ma takiego fundamentu — a to, co istnieje, kończy się zwykle na REST. AEGIS parsuje także operacje GraphQL, więc ten sam graf i ten sam detektor obejmują oba światy.</p>
+      <p>AEGIS jest <strong>self-hosted i to jest sedno, a nie kwestia pakowania</strong>. Salt, Noname, Imperva i Akamai dostarczają bezpieczeństwo API jako SaaS: potrzebują kopii Państwa ruchu we własnej chmurze. Dla banku podlegającego DORA, dla szpitala czy podmiotu publicznego to nie preferencja, tylko próg, którego nie są w stanie przekroczyć. AEGIS to jeden plik binarny w języku Go, na Państwa sprzęcie i Państwa bazie danych — bez agentów, bez sidecarów, bez konta u kogoś innego, bez łączeń „do domu”. Jedyne zależności to Redis i PostgreSQL, czyli infrastruktura, którą większość firm już utrzymuje.</p>
+      <p>Strona dowodowa wynika z tego samego miejsca. Ustalenia odnoszą się do <strong>NIS2</strong> (art. 21 zarządzanie ryzykiem, art. 23 terminy zgłoszeń), <strong>DORA</strong> (art. 8–10 oraz 17–19) i <strong>ISO 27001</strong> Załącznik A, poprzez OWASP API Top 10. Raporty są podpisywane Ed25519 i sprawdzane samodzielnym narzędziem, które odmawia działania z kluczem wziętym z weryfikowanego dokumentu — audytor weryfikuje na własnej maszynie, nie ufając ani Państwu, ani nam.</p>
+    </section>
+
+    <section id="lifecycle">
+      <h2><span class="sec-num">03</span>Cykl życia żądania</h2>
+      <p>Żądanie przechodzi przez dwadzieścia trzy middleware w ośmiu zgrupowanych etapach, dokładnie w tej kolejności — od najbardziej zewnętrznego do najbliższego Państwa backendowi:</p>
+
+      <table class="group-table">
+        <thead><tr><th>#</th><th>Etap</th><th>Co tu działa</th></tr></thead>
+        <tbody>
+          <tr><td class="n">01</td><td class="name">Ustalenie</td><td>TenantResolve, CleanHeaders, LicenseRateLimit — tożsamość samego żądania, zanim cokolwiek niżej jej zaufa</td></tr>
+          <tr><td class="n">02</td><td class="name">Odcisk palca</td><td>UpstreamFingerprint, TLSFingerprint — prawdziwy odcisk ClientHello, nie podrabialny nagłówek</td></tr>
+          <tr><td class="n">03</td><td class="name">Utwardzenie</td><td>SecurityHeaders, RequestID, PathSanity, CORS</td></tr>
+          <tr><td class="n">04</td><td class="name">Filtrowanie</td><td>IPGuard, ThreatFeed, RateLimit, BotProtection, Challenge — czy to zautomatyzowany napastnik?</td></tr>
+          <tr><td class="n">05</td><td class="name">Inspekcja</td><td>WAF — dopasowanie sygnatur do znanych wzorców ataku (OWASP CRS)</td></tr>
+          <tr><td class="n">06</td><td class="name">Odkrywanie</td><td>Pasywny katalog — zapisywane są wyłącznie żądania, które przeszły 04–05</td></tr>
+          <tr><td class="n">07</td><td class="name">Autoryzacja</td><td>Uwierzytelnianie JWT, ConsumerID (pseudonim z kluczem, gdy poświadczenie nie jest tokenem JWT), walidacja schematu wobec udokumentowanego kontraktu</td></tr>
+          <tr><td class="n">08</td><td class="name">Wykrywanie i redakcja</td><td>Wykrywanie nadużyć autoryzacji (BOLA/BFLA), redakcja wycieków danych, ocena behawioralna i profil per konsument</td></tr>
+        </tbody>
+      </table>
+
+      <details class="steps">
+        <summary>Pokaż wszystkie 23 middleware, w dokładnej kolejności (zweryfikowane wobec kodu)</summary>
+        <div class="steps-list">
+          <span class="n">01</span><span class="t">TenantResolve</span>
+          <span class="n">02</span><span class="t">CleanHeaders</span>
+          <span class="n">03</span><span class="t">LicenseRateLimit</span>
+          <span class="n">04</span><span class="t">UpstreamFingerprint</span>
+          <span class="n">05</span><span class="t">TLSFingerprint</span>
+          <span class="n">06</span><span class="t">SecurityHeaders</span>
+          <span class="n">07</span><span class="t">RequestID</span>
+          <span class="n">08</span><span class="t">PathSanity</span>
+          <span class="n">09</span><span class="t">CORS</span>
+          <span class="n">10</span><span class="t">IPGuard</span>
+          <span class="n">11</span><span class="t">ThreatFeed</span>
+          <span class="n">12</span><span class="t">RateLimit</span>
+          <span class="n">13</span><span class="t">BotProtection</span>
+          <span class="n">14</span><span class="t">Challenge</span>
+          <span class="n">15</span><span class="t">WAF</span>
+          <span class="n">16</span><span class="t">Discovery</span>
+          <span class="n">17</span><span class="t">Auth</span>
+          <span class="n">18</span><span class="t">ConsumerID</span>
+          <span class="n">19</span><span class="t">SchemaValidation</span>
+          <span class="n">20</span><span class="t">AbuseDetection</span>
+          <span class="n">21</span><span class="t">DLP</span>
+          <span class="n">22</span><span class="t">BehaviorAnalysis</span>
+          <span class="n">23</span><span class="t">BehaviorProfile</span>
+        </div>
+      </details>
+      <p style="font-size:13px;color:var(--muted)">Ta kolejność jest przypięta testem nazwanych kroków w CI — zmiana kolejności bez zamiaru przerywa budowanie. <a href="/articles/chain-order.html">Dlaczego sama kolejność jest częścią kontraktu → (po angielsku)</a></p>
+    </section>
+
+    <section id="infra">
+      <h2><span class="sec-num">04</span>Infrastruktura</h2>
+      <div class="check-list">
+        <div class="check-row"><span class="mark ok">•</span><div><div class="t">Dwa porty, jeden proces</div><div class="d">Płaszczyzna danych dla ruchu produkcyjnego, płaszczyzna administracyjna do zarządzania — atak na pierwszą nie odcina drugiej.</div></div></div>
+        <div class="check-row"><span class="mark ok">•</span><div><div class="t">Redis</div><div class="d">Wszystko szybkie i krótkotrwałe: limity żądań, listy blokowanych IP, oceny behawioralne, sesje. Większość kluczy ma TTL.</div></div></div>
+        <div class="check-row"><span class="mark ok">•</span><div><div class="t">PostgreSQL — opcjonalny</div><div class="d">Katalog API i dziennik śledczy, w pełni asynchronicznie i poza ścieżką żądania. Bez niego AEGIS nadal działa; po prostu nie prowadzi długoterminowego katalogu.</div></div></div>
+        <div class="check-row"><span class="mark ok">•</span><div><div class="t">Konfiguracja przeładowuje się na gorąco</div><div class="d">Zmiana reguły działa bez restartu i bez zrywania trwających połączeń.</div></div></div>
+      </div>
+    </section>
+
+    <section id="tenancy">
+      <h2><span class="sec-num">05</span>Wielonajemność</h2>
+      <p>Gdy kilku klientów dzieli jedno wdrożenie, izolacja działa na dwóch warstwach, nie jednej. Każdy klucz Redis ma prefiks najemcy, a każda tabela Postgresa niesie <code>tenant_id</code> w złożonym kluczu głównym — to warstwa działająca przy każdym żądaniu. Pod nią sam PostgreSQL egzekwuje bezpieczeństwo na poziomie wiersza jako zabezpieczenie awaryjne, więc zapytanie, które jakimś sposobem zapomni ograniczyć się do najemcy, dostaje zero wierszy, a nie wiersze wszystkich najemców.</p>
+      <p><a href="/articles/rls-backstop.html">Przeczytaj: dlaczego zabezpieczenie na poziomie bazy istnieje, choć każde zapytanie jest już ograniczone → (po angielsku)</a></p>
+    </section>
+
+    <section id="flagship">
+      <h2><span class="sec-num">06</span>Flagowy detektor</h2>
+      <p>Sygnaturowy WAF nie jest w stanie złapać Broken Object Level Authorization (BOLA/IDOR) — żądanie o cudze dane po identyfikatorze wygląda składniowo identycznie jak żądanie o własne. AEGIS łapie to na dwa sposoby: masową enumerację (wiele identyfikatorów obiektów, szybko, mierzoną wobec wyuczonej linii bazowej danego konsumenta zamiast jednej stałej liczby dla wszystkich) oraz przypadek trudniejszy — pojedynczy błędny identyfikator bez żadnego wzorca wolumenu, wykrywany przez pasywne uczenie się z prawdziwego ruchu, kto jest właścicielem czego, i ocenę ściśle po odpowiedzi, wyłącznie przy 2xx, tak by własne 403/404 backendu nigdy nie zostało wzięte za wyciek.</p>
+      <p>Gdy potwierdzony właściciel jest już zapisany, późniejsze żądanie innego podmiotu do tego samego obiektu zostaje odrzucone przed przekazaniem dalej — a nie tylko zalogowane po fakcie.</p>
+      <p>To nie dotyczy wyłącznie REST. Ciało GraphQL — <code>query GetUser { user(id: 42) { ssn } }</code> — jest parsowane tak samo: argument o kształcie identyfikatora na polu najwyższego poziomu staje się kandydatem na własność obiektu dokładnie tak, jak segment ścieżki albo pole ciała JSON, z zakresem po operacji <em>i</em> po polu, więc dwa niepowiązane zapytania dzielące nazwę pola nigdy nie dzielą jednego licznika. To samo parsowanie zasila pasywne odkrywanie (każda operacja jest osobnym wpisem katalogu, a nie jednym płaskim workiem <code>/graphql</code>) i wykrywanie danych osobowych (wyciek w odpowiedzi <code>GetUser</code> przypisuje się do <code>GetUser</code>, a nie do „GraphQL” w ogóle).</p>
+      <p><a href="/articles/bola-detection.html">Przeczytaj: pełny mechanizm, wraz z rzeczywistym kodem detekcji → (po angielsku)</a><br />
+      <a href="/articles/adaptive-baseline.html">Przeczytaj: dlaczego stały próg jest zawsze dla kogoś błędny → (po angielsku)</a></p>
+    </section>
+
+    <section id="reliability">
+      <h2><span class="sec-num">07</span>Zachowanie przy awarii</h2>
+      <p>Nie każdy mechanizm zawodzi tak samo, gdy jego magazyn danych jest nieosiągalny, i jest to zamierzone. Limitowanie żądań i reputacja IP mogą być skonfigurowane tak, by przy awarii Redisa odmawiać wszystkiego (fail-closed) — to uzasadniony wybór dla wdrożenia o wysokich wymaganiach. Ocena behawioralna takiej opcji nie ma; jest zawsze fail-open, bo odmawianie każdemu adresowi IP na bramie podczas usterki infrastruktury jest gorszym wynikiem niż chwilowa luka w jednym sygnale oceny.</p>
+      <p>To zostało zmierzone, a nie tylko przemyślane: przy całkowicie ubitym Redisie pod stałym obciążeniem płaszczyzna danych utrzymała <strong>100% skuteczności żądań</strong>, a opóźnienie było ograniczone limitami czasu, a nie zawieszeniem. Ten sam wynik przy ubiciu PostgreSQL pod obciążeniem — <strong>100% skuteczności, płaskie opóźnienie</strong> — ponieważ zapisy katalogu i dziennika śledczego są całkowicie odsprzężone od ścieżki żądania.</p>
+      <p><a href="/articles/fail-open-by-design.html">Przeczytaj: jedyny mechanizm bez opcji fail-closed → (po angielsku)</a><br />
+      <a href="/articles/chaos-test.html">Przeczytaj: pełne liczby z testu chaosu, w tym błąd, który ten przebieg znalazł i naprawił → (po angielsku)</a></p>
+    </section>
+
+    <section id="deploy">
+      <h2><span class="sec-num">08</span>Wdrożenie</h2>
+      <p>Pakowanie to pojedynczy obraz Docker. <strong>Docker Compose</strong> na demo albo pierwszy pilotaż — jeden serwer, szybka weryfikacja na prawdziwym ruchu. <strong>Kubernetes + Helm</strong> na produkcję — wiele replik za load balancerem, autoskalowanie, aktualizacje bez przestoju.</p>
+      <p>Wdrożenie jest etapowe, tak by pilotaż nigdy nie mógł zepsuć ruchu produkcyjnego — a pierwszy etap w ogóle nie jest na ścieżce żądania:</p>
+      <div class="check-list">
+        <div class="check-row"><span class="mark ok">01</span><div><div class="t">Lustro</div><div class="d">Państwa proxy wysyła <em>kopię</em> każdego żądania; AEGIS nigdy nie stoi na ścieżce i nigdy nie dotyka odpowiedzi. Można zatrzymać bramę w środku pilotażu — ruch tego nie zauważy. Tu zaczyna się pierwsza współpraca.</div></div></div>
+        <div class="check-row"><span class="mark ok">02</span><div><div class="t">Obserwacja</div><div class="d">Już inline, ale nic nie blokuje. Buduje katalog, pokazuje, co zostałoby odrzucone.</div></div></div>
+        <div class="check-row"><span class="mark ok">03</span><div><div class="t">Strojenie</div><div class="d">Fałszywe alarmy usunięte na podstawie zebranych danych, reguły zdefiniowane per trasa.</div></div></div>
+        <div class="check-row"><span class="mark ok">04</span><div><div class="t">Egzekwowanie</div><div class="d">Realne blokowanie, dostrojone limity żądań, uwierzytelnianie włączone tam, gdzie wymagane.</div></div></div>
+        <div class="check-row"><span class="mark ok">05</span><div><div class="t">Rozszerzenie</div><div class="d">Ten sam wzorzec rozwinięty na resztę środowiska.</div></div></div>
+        <div class="check-row"><span class="mark ok">06</span><div><div class="t">Stan ustalony</div><div class="d">Bieżąca praca według raportu postawy — pokrycie w górę, ukryte endpointy w dół.</div></div></div>
+      </div>
+    </section>
+
+    <section id="status">
+      <h2><span class="sec-num">09</span>Stan faktyczny</h2>
+      <p>Zbudowane i przetestowane — i uczciwe co do tego, co pozostaje otwarte, zamiast zamiatania tego pod dywan:</p>
+      <div class="check-list">
+        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Pełny łańcuch mechanizmów, zweryfikowany wobec źródeł</div><div class="d">WAF, DLP, tożsamość JWT, wykrywanie BOLA/BFLA, pasywne odkrywanie, wielonajemność — dwadzieścia trzy middleware, każdy sprawdzony wobec rzeczywistego kodu. Ta lista podawała dwadzieścia jeden, dopóki ktoś nie przeliczył; brakowało ConsumerID i BehaviorProfile.</div></div></div>
+        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">REST i GraphQL tak samo</div><div class="d">BOLA, pasywne odkrywanie i przypisywanie danych osobowych parsują operacje GraphQL — ten sam detektor i ten sam katalog, jedna ścieżka kodu dla obu, a nie osobny moduł GraphQL. Pola zagnieżdżone i fragmenty nie są jeszcze przechodzone.</div></div></div>
+        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Przetestowane chaosem, nie tylko opisane</div><div class="d">Redis i PostgreSQL ubite na żywo pod stałym obciążeniem — 100% skuteczności w obu przypadkach.</div></div></div>
+        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Egzekwowanie schematu</div><div class="d">Odrzuca nieudokumentowane pola ciała wobec Państwa kontraktu OpenAPI — zamyka mass assignment.</div></div></div>
+        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Bezpieczne zachowanie przy awarii</div><div class="d">Każdy mechanizm ma udokumentowany, świadomy wybór fail-open albo fail-closed — a nie wartość domyślną, której nikt nie przeanalizował.</div></div></div>
+        <div class="check-row"><span class="mark open">—</span><div><div class="t">Zewnętrzny test penetracyjny</div><div class="d">Jeszcze nie wykonany — niezależny audyt przed jakimkolwiek twierdzeniem o gotowości produkcyjnej.</div></div></div>
+        <div class="check-row"><span class="mark open">—</span><div><div class="t">Brak zewnętrznej kotwicy dla podpisanych dowodów</div><div class="d">Pieczęcie i rejestry żyją we własnej bazie klienta, a klucz podpisujący należy do niego — operator, który go trzyma, mógłby nadpisać zapis i podpisać go ponownie. Urząd znacznika czasu albo dziennik przejrzystości to zamyka; nie jest zbudowany.</div></div></div>
+        <div class="check-row"><span class="mark open">—</span><div><div class="t">Realne wdrożenia</div><div class="d">Na żywym ruchu produkcyjnym — i tu właśnie wchodzi partner wdrożeniowy.</div></div></div>
+      </div>
+    </section>
+
+    <section id="reading">
+      <h2>Dalsza lektura</h2>
+      <p style="margin-bottom:0">Każdy mechanizm streszczony powyżej ma pełny opis techniczny, sprawdzony wobec kodu, który trafia do wydania. Artykuły są dostępne po angielsku:</p>
+      <div class="further">
+        <a href="/articles/bola-detection.html">Catching the IDOR a Signature WAF Can’t See<span class="d">Pasywne wykrywanie własności obiektu, oceniane po odpowiedzi.</span></a>
+        <a href="/articles/adaptive-baseline.html">A Fixed Threshold Is Always Wrong for Someone<span class="d">Wyuczone linie bazowe per konsument zamiast jednej liczby dla wszystkich.</span></a>
+        <a href="/articles/chain-order.html">The Order Is Load-Bearing<span class="d">Dlaczego kolejność łańcucha jest częścią kontraktu — wraz z błędem, który złapaliśmy we własnym diagramie.</span></a>
+        <a href="/articles/rls-backstop.html">We Scope Every Query by Tenant. We Still Added a Database-Level Backstop<span class="d">Obrona w głąb dla izolacji wielonajemnej.</span></a>
+        <a href="/articles/fail-open-by-design.html">The One Control That Has No Fail-Closed Option<span class="d">Dlaczego ocena behawioralna nigdy nie jest ustawiana na odmowę domyślnie.</span></a>
+        <a href="/articles/chaos-test.html">We Killed Redis and Postgres Under Load, on Purpose<span class="d">Prawdziwe liczby oraz błąd aktualizacji kroczącej, który ten przebieg znalazł i naprawił.</span></a>
+      </div>
+      <div class="cta" style="margin-top:32px">
+        <p>Chcą Państwo sprawdzić, czy cokolwiek z tego wyłapie coś realnego na Państwa własnym ruchu — bez dotykania produkcji?</p>
+        <a class="btn" href="/?lang=pl#pilot">Zacznij pilotaż lustrzany →</a>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<footer>AEGIS — brama bezpieczeństwa API we własnej infrastrukturze, napisana w Go. Państwa sprzęt, Państwa baza danych, żaden ruch nie opuszcza sieci.</footer>
+
+</body>
+</html>

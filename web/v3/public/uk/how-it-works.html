@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Як працює AEGIS, від початку до кінця</title>
+<meta name="description" content="Повний механізм: проблема, життєвий цикл запиту, інфраструктура, багатоорендність, флагманський детектор, поведінка при відмові та спосіб розгортання." />
+<link rel="stylesheet" href="/articles/article.css" />
+<link rel="stylesheet" href="/articles/how-it-works.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="/?lang=uk">AEGIS</a>
+  <a class="back" href="/?lang=uk">← головна</a>
+</nav>
+
+<div class="cover">
+  <p class="eyebrow">Документація</p>
+  <h1>Як працює AEGIS, від початку до кінця</h1>
+  <p class="dek">Усе по порядку: проблема, життєвий цикл запиту, інфраструктура під ним, багатоорендність, флагманський детектор, як воно відмовляє і як його розгортають. Жоден розділ не припускає, що ви прочитали інший.</p>
+</div>
+
+<div class="shell">
+  <nav class="toc">
+    <span class="lab">Зміст</span>
+    <a href="#problem">01 · Проблема</a>
+    <a href="#why">02 · Навіщо AEGIS</a>
+    <a href="#lifecycle">03 · Життєвий цикл запиту</a>
+    <a href="#infra">04 · Інфраструктура</a>
+    <a href="#tenancy">05 · Багатоорендність</a>
+    <a href="#flagship">06 · Флагманський детектор</a>
+    <a href="#reliability">07 · Поведінка при відмові</a>
+    <a href="#deploy">08 · Розгортання</a>
+    <a href="#status">09 · Фактичний стан</a>
+    <a href="#reading">Додаткове читання</a>
+  </nav>
+
+  <main class="wrap">
+
+    <section id="problem">
+      <h2><span class="sec-num">01</span>Проблема</h2>
+      <p>Сучасні API ростуть швидше, ніж хтось здатен відстежувати вручну. Чотири структурні прогалини трапляються майже в кожній реальній системі:</p>
+      <ul>
+        <li><strong>Забуті ендпоїнти.</strong> Випущені, ніколи не переглянуті, ніколи не виведені з експлуатації — ніхто не володіє цим рішенням.</li>
+        <li><strong>Непослідовний захист.</strong> Кожна команда налаштовує автентифікацію й ліміти по-своєму; «захищено» означає різне в кожному сервісі.</li>
+        <li><strong>Немає видимості споживачів.</strong> На питання «хто це викликає і як часто?» немає швидкої відповіді — дані розкидані по логах.</li>
+        <li><strong>Тихий витік даних.</strong> Персональні та платіжні дані витікають у відповідях непомітно, доки хтось ззовні не повідомить.</li>
+      </ul>
+      <p>AEGIS існує, щоб бути єдиною точкою, яка бачить усе це — бо весь трафік проходить крізь нього.</p>
+    </section>
+
+    <section id="why">
+      <h2><span class="sec-num">02</span>Навіщо AEGIS</h2>
+      <p>Зазвичай це три продукти від трьох постачальників: <strong>API Gateway</strong> (проксі, балансування), рівень <strong>WAAP</strong> (фаєрвол, ліміти запитів, захист від ботів, DLP, особа) і платформа <strong>ASPM</strong> (каталог, ризик, аналітика). AEGIS — це всі три в одному розгортанні, одне місце, де ці три рівні не можуть тихо суперечити одне одному.</p>
+      <p>Відмінність не у фаєрволі — сигнатурний фаєрвол є в усіх. Відмінність у тому, що AEGIS від першого дня будує <strong>каталог API і граф «хто що викликає»</strong>, а виявлення витоків на рівні обʼєкта побудоване просто поверх цього графа (розділ 06). У більшості конкурентів, що виросли з WAF, такої основи немає — а те, що є, зазвичай зупиняється на REST. AEGIS парсить і операції GraphQL, тож той самий граф і той самий детектор покривають обидва світи.</p>
+      <p>AEGIS <strong>self-hosted, і це суть, а не спосіб упакування</strong>. Salt, Noname, Imperva та Akamai постачають безпеку API як SaaS: їм потрібна копія вашого трафіку у їхній хмарі. Для банку під DORA, для лікарні чи державного органу це не вподобання, а поріг, який вони не можуть подолати. AEGIS — один бінарник мовою Go, на вашому залізі й вашій базі даних: без агентів, без sidecar-ів, без облікового запису в чужій хмарі, без звернень «додому». Єдині залежності — Redis і PostgreSQL, тобто інфраструктура, яку більшість компаній уже тримає.</p>
+      <p>Доказова частина випливає з того самого. Знахідки зіставляються з <strong>NIS2</strong> (ст. 21 управління ризиками, ст. 23 строки сповіщень), <strong>DORA</strong> (ст. 8–10 та 17–19) і <strong>ISO 27001</strong> Додаток A, через OWASP API Top 10. Звіти підписуються Ed25519 і перевіряються окремою утилітою, яка відмовляється працювати з ключем, узятим із того самого документа — аудитор перевіряє на власній машині, не довіряючи ані вам, ані нам.</p>
+    </section>
+
+    <section id="lifecycle">
+      <h2><span class="sec-num">03</span>Життєвий цикл запиту</h2>
+      <p>Запит проходить двадцять три middleware у вісьмох згрупованих етапах, саме в цьому порядку — від найзовнішнього до найближчого до вашого бекенда:</p>
+
+      <table class="group-table">
+        <thead><tr><th>#</th><th>Етап</th><th>Що тут працює</th></tr></thead>
+        <tbody>
+          <tr><td class="n">01</td><td class="name">Визначення</td><td>TenantResolve, CleanHeaders, LicenseRateLimit — особа самого запиту, перш ніж щось нижче їй повірить</td></tr>
+          <tr><td class="n">02</td><td class="name">Відбиток</td><td>UpstreamFingerprint, TLSFingerprint — справжній відбиток ClientHello, а не підробний заголовок</td></tr>
+          <tr><td class="n">03</td><td class="name">Загартування</td><td>SecurityHeaders, RequestID, PathSanity, CORS</td></tr>
+          <tr><td class="n">04</td><td class="name">Фільтрація</td><td>IPGuard, ThreatFeed, RateLimit, BotProtection, Challenge — чи це автоматизований нападник?</td></tr>
+          <tr><td class="n">05</td><td class="name">Інспекція</td><td>WAF — звірення сигнатур із відомими шаблонами атак (OWASP CRS)</td></tr>
+          <tr><td class="n">06</td><td class="name">Виявлення</td><td>Пасивний каталог — записуються лише запити, що пройшли 04–05</td></tr>
+          <tr><td class="n">07</td><td class="name">Авторизація</td><td>Автентифікація JWT, ConsumerID (псевдонім із ключем, коли посвідчення не є JWT), перевірка схеми за задокументованим контрактом</td></tr>
+          <tr><td class="n">08</td><td class="name">Виявлення й редагування</td><td>Виявлення зловживань авторизацією (BOLA/BFLA), редагування витоків даних, поведінкова оцінка та профіль на споживача</td></tr>
+        </tbody>
+      </table>
+
+      <details class="steps">
+        <summary>Показати всі 23 middleware, у точному порядку (звірено з кодом)</summary>
+        <div class="steps-list">
+          <span class="n">01</span><span class="t">TenantResolve</span>
+          <span class="n">02</span><span class="t">CleanHeaders</span>
+          <span class="n">03</span><span class="t">LicenseRateLimit</span>
+          <span class="n">04</span><span class="t">UpstreamFingerprint</span>
+          <span class="n">05</span><span class="t">TLSFingerprint</span>
+          <span class="n">06</span><span class="t">SecurityHeaders</span>
+          <span class="n">07</span><span class="t">RequestID</span>
+          <span class="n">08</span><span class="t">PathSanity</span>
+          <span class="n">09</span><span class="t">CORS</span>
+          <span class="n">10</span><span class="t">IPGuard</span>
+          <span class="n">11</span><span class="t">ThreatFeed</span>
+          <span class="n">12</span><span class="t">RateLimit</span>
+          <span class="n">13</span><span class="t">BotProtection</span>
+          <span class="n">14</span><span class="t">Challenge</span>
+          <span class="n">15</span><span class="t">WAF</span>
+          <span class="n">16</span><span class="t">Discovery</span>
+          <span class="n">17</span><span class="t">Auth</span>
+          <span class="n">18</span><span class="t">ConsumerID</span>
+          <span class="n">19</span><span class="t">SchemaValidation</span>
+          <span class="n">20</span><span class="t">AbuseDetection</span>
+          <span class="n">21</span><span class="t">DLP</span>
+          <span class="n">22</span><span class="t">BehaviorAnalysis</span>
+          <span class="n">23</span><span class="t">BehaviorProfile</span>
+        </div>
+      </details>
+      <p style="font-size:13px;color:var(--muted)">Цей порядок закріплений тестом іменованих кроків у CI — ненавмисна зміна порядку валить збірку. <a href="/articles/chain-order.html">Чому сам порядок є частиною контракту → (англійською)</a></p>
+    </section>
+
+    <section id="infra">
+      <h2><span class="sec-num">04</span>Інфраструктура</h2>
+      <div class="check-list">
+        <div class="check-row"><span class="mark ok">•</span><div><div class="t">Два порти, один процес</div><div class="d">Площина даних для робочого трафіку, адміністративна — для керування; атака на першу не відрізає другу.</div></div></div>
+        <div class="check-row"><span class="mark ok">•</span><div><div class="t">Redis</div><div class="d">Усе швидке й короткоживуче: ліміти запитів, списки заблокованих IP, поведінкові оцінки, сесії. Більшість ключів мають TTL.</div></div></div>
+        <div class="check-row"><span class="mark ok">•</span><div><div class="t">PostgreSQL — необовʼязковий</div><div class="d">Каталог API і криміналістичний журнал, повністю асинхронно й поза шляхом запиту. Без нього AEGIS усе одно працює; просто не веде довготривалого каталогу.</div></div></div>
+        <div class="check-row"><span class="mark ok">•</span><div><div class="t">Конфігурація перезавантажується на ходу</div><div class="d">Зміна правила діє без перезапуску й без розриву поточних зʼєднань.</div></div></div>
+      </div>
+    </section>
+
+    <section id="tenancy">
+      <h2><span class="sec-num">05</span>Багатоорендність</h2>
+      <p>Коли кілька клієнтів ділять одне розгортання, ізоляція працює на двох рівнях, а не на одному. Кожен ключ Redis має префікс орендаря, а кожна таблиця Postgres несе <code>tenant_id</code> у складеному первинному ключі — це рівень, що працює на кожному запиті. Під ним сам PostgreSQL застосовує безпеку на рівні рядків як запобіжник, тож запит, який якимось чином забув обмежитись орендарем, отримує нуль рядків, а не рядки всіх орендарів.</p>
+      <p><a href="/articles/rls-backstop.html">Читати: чому запобіжник на рівні бази існує, хоча кожен запит уже обмежений → (англійською)</a></p>
+    </section>
+
+    <section id="flagship">
+      <h2><span class="sec-num">06</span>Флагманський детектор</h2>
+      <p>Сигнатурний WAF не здатен упіймати Broken Object Level Authorization (BOLA/IDOR) — запит на чужі дані за ідентифікатором синтаксично виглядає так само, як запит на власні. AEGIS ловить це двома способами: масовий перебір (багато ідентифікаторів обʼєктів, швидко, зміряний проти вивченої базової лінії конкретного споживача, а не проти однієї фіксованої цифри для всіх) і складніший випадок — один хибний ідентифікатор без жодного шаблону обсягу, що виявляється через пасивне навчання з реального трафіку, хто чим володіє, і оцінку суворо після відповіді, лише на 2xx, щоб власні 403/404 бекенда ніколи не були прийняті за витік.</p>
+      <p>Коли підтверджений власник уже записаний, пізніший запит іншої сторони до того самого обʼєкта відхиляється до пересилання — а не лише журналюється постфактум.</p>
+      <p>Це стосується не лише REST. Тіло GraphQL — <code>query GetUser { user(id: 42) { ssn } }</code> — розбирається так само: аргумент у формі ідентифікатора на полі верхнього рівня стає кандидатом на власність обʼєкта точно так, як сегмент шляху чи поле тіла JSON, з областю за операцією <em>і</em> за полем, тож два непов'язані запити зі спільною назвою поля ніколи не ділять один лічильник. Той самий розбір живить пасивне виявлення (кожна операція — власний запис каталогу, а не один плаский кошик <code>/graphql</code>) і детект персональних даних (витік у відповіді <code>GetUser</code> приписується до <code>GetUser</code>, а не до «GraphQL» узагалі).</p>
+      <p><a href="/articles/bola-detection.html">Читати: повний механізм із реальним кодом детекції → (англійською)</a><br />
+      <a href="/articles/adaptive-baseline.html">Читати: чому фіксований поріг завжди для когось хибний → (англійською)</a></p>
+    </section>
+
+    <section id="reliability">
+      <h2><span class="sec-num">07</span>Поведінка при відмові</h2>
+      <p>Не кожен механізм відмовляє однаково, коли його сховище недосяжне, і це навмисно. Обмеження частоти та репутація IP можуть бути налаштовані так, щоб при відмові Redis відмовляти всьому (fail-closed) — обґрунтований вибір для розгортання з високими вимогами. У поведінкової оцінки такої опції немає; вона завжди fail-open, бо відмовляти кожній IP-адресі на шлюзі під час збою інфраструктури — гірший результат, ніж тимчасова прогалина в одному сигналі оцінки.</p>
+      <p>Це виміряно, а не лише обґрунтовано: із повністю вбитим Redis під тривалим навантаженням площина даних утримала <strong>100% успішних запитів</strong>, а затримка була обмежена таймаутами, а не зависанням. Той самий результат із вбитим PostgreSQL під навантаженням — <strong>100% успіху, рівна затримка</strong> — бо записи каталогу та криміналістичного журналу повністю відчеплені від шляху запиту.</p>
+      <p><a href="/articles/fail-open-by-design.html">Читати: єдиний механізм без опції fail-closed → (англійською)</a><br />
+      <a href="/articles/chaos-test.html">Читати: повні цифри хаос-тесту, включно з помилкою, яку цей прогін знайшов і виправив → (англійською)</a></p>
+    </section>
+
+    <section id="deploy">
+      <h2><span class="sec-num">08</span>Розгортання</h2>
+      <p>Пакування — один образ Docker. <strong>Docker Compose</strong> для демо чи першого пілота: один сервер, швидка перевірка на реальному трафіку. <strong>Kubernetes + Helm</strong> для продакшену: кілька реплік за балансувальником, автомасштабування, оновлення без простою.</p>
+      <p>Розгортання поетапне, щоб пілот ніколи не міг зламати робочий трафік — і перший етап узагалі не на шляху запиту:</p>
+      <div class="check-list">
+        <div class="check-row"><span class="mark ok">01</span><div><div class="t">Дзеркало</div><div class="d">Ваш проксі надсилає <em>копію</em> кожного запиту; AEGIS ніколи не стоїть у розриві й ніколи не торкається відповіді. Зупиніть шлюз посеред пілота — трафік цього не помітить. Саме тут починається перша співпраця.</div></div></div>
+        <div class="check-row"><span class="mark ok">02</span><div><div class="t">Спостереження</div><div class="d">Уже inline, але нічого не блокує. Будує каталог, показує, що було б відхилено.</div></div></div>
+        <div class="check-row"><span class="mark ok">03</span><div><div class="t">Налаштування</div><div class="d">Хибні спрацювання прибрані за зібраними даними, правила визначені на маршрут.</div></div></div>
+        <div class="check-row"><span class="mark ok">04</span><div><div class="t">Блокування</div><div class="d">Справжнє блокування, налаштовані ліміти запитів, автентифікація увімкнена там, де потрібна.</div></div></div>
+        <div class="check-row"><span class="mark ok">05</span><div><div class="t">Розширення</div><div class="d">Той самий шаблон розгорнутий на решту середовища.</div></div></div>
+        <div class="check-row"><span class="mark ok">06</span><div><div class="t">Сталий стан</div><div class="d">Поточна робота за звітом стану — покриття вгору, тіньові ендпоїнти вниз.</div></div></div>
+      </div>
+    </section>
+
+    <section id="status">
+      <h2><span class="sec-num">09</span>Фактичний стан</h2>
+      <p>Побудовано й перевірено — і чесно щодо того, що лишається відкритим, без згладжування:</p>
+      <div class="check-list">
+        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Повний ланцюжок механізмів, звірений із джерелами</div><div class="d">WAF, DLP, особа JWT, виявлення BOLA/BFLA, пасивне виявлення, багатоорендність — двадцять три middleware, кожен звірений із реальним кодом. Цей список подавав двадцять один, доки хтось не перелічив; бракувало ConsumerID і BehaviorProfile.</div></div></div>
+        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">REST і GraphQL однаково</div><div class="d">BOLA, пасивне виявлення й приписування персональних даних розбирають операції GraphQL — той самий детектор і той самий каталог, один шлях коду для обох, а не окремий модуль GraphQL. Вкладені поля та фрагменти поки не обходяться.</div></div></div>
+        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Перевірено хаосом, а не лише описано</div><div class="d">Redis і PostgreSQL убиті наживо під тривалим навантаженням — 100% успіху обидва рази.</div></div></div>
+        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Примус схеми</div><div class="d">Відхиляє незадокументовані поля тіла за вашим контрактом OpenAPI — закриває mass assignment.</div></div></div>
+        <div class="check-row"><span class="mark ok">✓</span><div><div class="t">Безпечна поведінка при відмові</div><div class="d">Кожен механізм має задокументований, свідомий вибір fail-open або fail-closed — а не типове значення, яке ніхто не розглядав.</div></div></div>
+        <div class="check-row"><span class="mark open">—</span><div><div class="t">Зовнішній пентест</div><div class="d">Ще не зроблений — незалежний аудит перед будь-якою заявою про готовність до продакшену.</div></div></div>
+        <div class="check-row"><span class="mark open">—</span><div><div class="t">Немає зовнішнього якоря для підписаних доказів</div><div class="d">Печатки й реєстри живуть у власній базі клієнта, і ключ підпису належить йому — оператор, який його тримає, міг би переписати запис і підписати заново. Служба міток часу або журнал прозорості це закриває; вона не побудована.</div></div></div>
+        <div class="check-row"><span class="mark open">—</span><div><div class="t">Реальні розгортання</div><div class="d">На живому робочому трафіку — і саме тут потрібен партнер для впровадження.</div></div></div>
+      </div>
+    </section>
+
+    <section id="reading">
+      <h2>Додаткове читання</h2>
+      <p style="margin-bottom:0">Кожен механізм, стисло описаний вище, має повний технічний розбір, звірений із кодом, який іде у випуск. Статті доступні англійською:</p>
+      <div class="further">
+        <a href="/articles/bola-detection.html">Catching the IDOR a Signature WAF Can’t See<span class="d">Пасивне виявлення власності обʼєкта, оцінене після відповіді.</span></a>
+        <a href="/articles/adaptive-baseline.html">A Fixed Threshold Is Always Wrong for Someone<span class="d">Вивчені базові лінії на споживача замість однієї цифри для всіх.</span></a>
+        <a href="/articles/chain-order.html">The Order Is Load-Bearing<span class="d">Чому порядок ланцюжка є частиною контракту — разом із помилкою, яку ми впіймали у власній схемі.</span></a>
+        <a href="/articles/rls-backstop.html">We Scope Every Query by Tenant. We Still Added a Database-Level Backstop<span class="d">Захист у глибину для багатоорендної ізоляції.</span></a>
+        <a href="/articles/fail-open-by-design.html">The One Control That Has No Fail-Closed Option<span class="d">Чому поведінкова оцінка ніколи не ставиться на відмову за замовчуванням.</span></a>
+        <a href="/articles/chaos-test.html">We Killed Redis and Postgres Under Load, on Purpose<span class="d">Справжні цифри та помилка кочення оновлень, яку цей прогін знайшов і виправив.</span></a>
+      </div>
+      <div class="cta" style="margin-top:32px">
+        <p>Хочете перевірити, чи впіймає щось із цього реальну проблему на вашому власному трафіку — не торкаючись продакшену?</p>
+        <a class="btn" href="/?lang=uk#pilot">Почати дзеркальний пілот →</a>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<footer>AEGIS — шлюз безпеки API у власній інфраструктурі, написаний на Go. Ваше залізо, ваша база даних, жоден байт трафіку не залишає мережу.</footer>
+
+</body>
+</html>

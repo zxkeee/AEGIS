@@ -2,6 +2,12 @@
    w kodzie. */
 
 export default {
+  paths: {
+    howItWorks: '/pl/how-it-works.html',
+    articles: '/articles.html',
+    howItWorksTranslated: true,
+  },
+
   nav: {
     items: [
       ['Architektura', '#how'],

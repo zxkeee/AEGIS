@@ -181,6 +181,9 @@ python3 ./scripts/check-doc-facts.py >/tmp/preflight-facts.log 2>&1 \
 node ./scripts/check-i18n.mjs >/tmp/preflight-i18n.log 2>&1 \
   && ok "translations match the English source" \
   || { bad "a translation dictionary has drifted"; cat /tmp/preflight-i18n.log; }
+python3 ./scripts/check-page-parity.py >/tmp/preflight-parity.log 2>&1 \
+  && ok "translated pages match the English original" \
+  || { bad "a translated page has drifted"; cat /tmp/preflight-parity.log; }
 python3 ./scripts/check-plan-tables.py >/tmp/preflight-plan.log 2>&1 \
   && ok "no duplicated rows in the planning tables" \
   || { bad "a planning document lists the same thing twice"; cat /tmp/preflight-plan.log; }

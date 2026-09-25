@@ -17,7 +17,7 @@ export default function Hero() {
       <Reveal delay={0.16}>
         <div className="mt-8 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
           <GhostButton href="#pilot">{t.hero.cta}</GhostButton>
-          <TextLink href="/how-it-works.html">{t.hero.link}{t.englishOnly}</TextLink>
+          <TextLink href={t.paths.howItWorks}>{t.hero.link}</TextLink>
         </div>
       </Reveal>
       <Reveal delay={0.2}>

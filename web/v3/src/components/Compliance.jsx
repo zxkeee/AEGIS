@@ -31,7 +31,7 @@ export default function Compliance() {
           <p className="mt-2 text-[14px] leading-relaxed text-muted">{t.compliance.limits1}</p>
           <p className="mt-3 text-[14px] leading-relaxed text-muted">{t.compliance.limits2}</p>
           <div className="mt-4">
-            <TextLink href="/articles.html">{t.compliance.limitsLink}{t.englishOnly}</TextLink>
+            <TextLink href={t.paths.articles}>{t.compliance.limitsLink}{t.englishOnly}</TextLink>
           </div>
         </div>
       </Reveal>

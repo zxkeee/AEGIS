@@ -107,6 +107,7 @@ doc-facts:
 # at a time and nobody who reads English would ever see it.
 i18n:
 	node ./scripts/check-i18n.mjs
+	python3 ./scripts/check-page-parity.py
 
 support-bundle:
 	./scripts/support-bundle.sh -c $(CONFIG) $(if $(ADMIN),-a $(ADMIN),)

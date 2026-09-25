@@ -4,6 +4,14 @@
    language — an operator greps for "BehaviorProfile", not for its Polish. */
 
 export default {
+  paths: {
+    howItWorks: '/how-it-works.html',
+    articles: '/articles.html',
+    // howItWorks is translated; the engineering articles are not, so a link to
+    // them is labelled with englishOnly rather than pretending otherwise.
+    howItWorksTranslated: true,
+  },
+
   nav: {
     items: [
       ['Architecture', '#how'],

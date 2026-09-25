@@ -1,6 +1,12 @@
 /* Українська. Назви middleware не перекладаються — це ідентифікатори в коді. */
 
 export default {
+  paths: {
+    howItWorks: '/uk/how-it-works.html',
+    articles: '/articles.html',
+    howItWorksTranslated: true,
+  },
+
   nav: {
     items: [
       ['Архітектура', '#how'],

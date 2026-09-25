@@ -119,6 +119,15 @@ jobs:
       - name: Check translations against the English source
         run: node ./scripts/check-i18n.mjs
 
+      # The static pages cannot share one dictionary the way the React site
+      # does — each language is its own HTML file, so an edit to the English
+      # page has to be repeated by hand twice. This compares the skeleton:
+      # sections, headings, rows, and the middleware names that must never be
+      # translated. It caught a Polish page silently dropping one of the
+      # honest "still open" rows, which is the drift that matters.
+      - name: Check translated pages against the English original
+        run: python3 ./scripts/check-page-parity.py
+
       # Same class, different reader. doc-drift watches what a buyer reads;
       # handoff.md is what the next session reads before touching anything, and
       # it is the file that drifted furthest — describing main as of #71 while
